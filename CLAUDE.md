@@ -11,8 +11,10 @@ docker compose up -d                                          # 启动 Postgres 
 # 后端
 npm run start:dev                                                 # NestJS 开发模式 (watch)
 npm run start:prod                                                # 生产模式
-npm run lint                                                      # ESLint (仅后端,自动 --fix)
-npm run format                                                    # Prettier (仅后端)
+npm run lint                                                      # ESLint 检查 (后端+前端,无 --fix)
+npm run lint:fix                                                  # ESLint 自动修复 (安全+格式)
+npm run format                                                    # Prettier 格式化 (后端+前端)
+npm run format:check                                              # Prettier 只检查
 
 # 测试
 npm test                                                          # 全部测试
@@ -22,8 +24,8 @@ npx jest --testPathPattern=<name>                                 # 按名称过
 # 前端 (另开终端)
 cd frontend && npm run dev                                        # Vite (5173)
 
-> ⚠️ `lint`/`format` **只覆盖后端** (`src/` + `test/`);`frontend/` 未接入任何 lint/format 配置。
-> ⚠️ `npm run lint` 内置 `--fix`,会**改写未格式化文件**——只检查、不想改代码时用 `npx eslint --no-fix <file>`。
+> ⚠️ `npm run lint` 只检查、不自动改写——需要自动修复时用 `npm run lint:fix`。
+> lint/format 覆盖后端 (`src/`+`test/`) 与前端 (`frontend/src/`、`vite.config.ts`);prettier 选项唯一来源 `.prettierrc`。
 
 # 数据播种
 npm run seed                                                      # 灌入 540+ 行种子数据 (需先启动 Docker;非幂等,重复执行会重复插入)

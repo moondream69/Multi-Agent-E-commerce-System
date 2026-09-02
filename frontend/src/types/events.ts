@@ -12,7 +12,8 @@ export const AgentEventType = {
   AGENT_STATUS_CHANGED: 'agent.status_changed',
 } as const;
 
-export type AgentEventType = typeof AgentEventType[keyof typeof AgentEventType];
+export type AgentEventType =
+  (typeof AgentEventType)[keyof typeof AgentEventType];
 
 export type AgentStatus = 'idle' | 'busy' | 'error' | 'offline';
 
@@ -38,3 +39,34 @@ export interface AgentInfo {
   status: AgentStatus;
   tools: { name: string; description: string; parameters: unknown[] }[];
 }
+
+// 与后端 src/api/websocket/agent.gateway.ts 的 chat:response 三种形状手动同步
+export interface TaskCreatedResponse {
+  type: 'task_created';
+  taskId: string;
+  taskType: string;
+  text: string;
+  timestamp: string;
+}
+
+export interface TaskResultResponse {
+  type: 'task_result';
+  taskId: string;
+  agentId: string;
+  status: string;
+  output: Record<string, unknown>;
+  steps?: unknown[];
+  timestamp: string;
+}
+
+export interface TaskErrorResponse {
+  type: 'task_error';
+  taskId: string;
+  error: string;
+  timestamp: string;
+}
+
+export type ChatResponse =
+  | TaskCreatedResponse
+  | TaskResultResponse
+  | TaskErrorResponse;

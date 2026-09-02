@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import {
-  AgentEvent, AgentEventType, AgentStatus, AgentStatusChangedPayload,
+  AgentEvent,
+  AgentEventType,
+  AgentStatus,
+  AgentStatusChangedPayload,
+  ChatResponse,
 } from '../types/events';
 
 export function useWebSocket() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
-  const [lastResponse, setLastResponse] = useState<any>(null);
+  const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
   const socketRef = useRef<Socket | null>(null);
 
@@ -30,11 +34,13 @@ export function useWebSocket() {
         }
       }
     });
-    socket.on('chat:response', (response: any) => {
+    socket.on('chat:response', (response: ChatResponse) => {
       setLastResponse(response);
     });
 
-    return () => { socket.disconnect(); };
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
   const sendMessage = useCallback((text: string) => {
