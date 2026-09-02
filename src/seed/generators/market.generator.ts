@@ -38,7 +38,7 @@ export class MarketGenerator {
 - source: 数据来源 (如 "Google Trends" / "Jungle Scout" / "海关数据" / "行业报告")
 
 只返回有效JSON数组。` },
-        ], { temperature: 0.7, maxTokens: 4000, jsonMode: true });
+        ], { temperature: 0.7, maxTokens: 8000, jsonMode: true });
 
         const items = JSON.parse(response);
         if (!Array.isArray(items)) continue;

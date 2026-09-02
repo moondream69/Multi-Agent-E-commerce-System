@@ -38,7 +38,8 @@ export class EmbeddingService {
   async embed(text: string): Promise<number[]> {
     const apiUrl = this.config.get('EMBEDDING_API_URL', '');
     const model = this.config.get('EMBEDDING_MODEL', 'bge-m3');
-    const dimension = this.config.get<number>('EMBEDDING_DIMENSION', 1024);
+    // ConfigService 从 .env 读出的值是字符串，new Array('1024') 会得到 1 维数组，故强转
+    const dimension = Number(this.config.get('EMBEDDING_DIMENSION', 1024));
     const apiKey = this.config.get('LLM_API_KEY', '');
 
     // 优先使用本地 TEI 服务，否则用 OpenAI

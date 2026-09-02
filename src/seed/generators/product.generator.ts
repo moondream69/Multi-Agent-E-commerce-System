@@ -53,7 +53,7 @@ export class ProductGenerator {
 
 只返回有效的JSON数组，不要其他文字。`,
           },
-        ], { temperature: 0.7, maxTokens: 4000, jsonMode: true });
+        ], { temperature: 0.7, maxTokens: 8000, jsonMode: true });
 
         const products = JSON.parse(response);
         if (!Array.isArray(products)) continue;
