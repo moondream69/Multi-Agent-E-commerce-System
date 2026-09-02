@@ -25,10 +25,14 @@ class TestResearchAgent extends BaseAgent {
   getTools(): ToolDefinition[] {
     return [];
   }
-  async executeTask(task: AgentTask): Promise<Record<string, unknown>> {
-    return { report: '分析结果' };
+  executeTask(task: AgentTask): Promise<Record<string, unknown>> {
+    void task;
+    return Promise.resolve({ report: '分析结果' });
   }
-  async handleEvent(_event: AgentEvent): Promise<void> {}
+  handleEvent(event: AgentEvent): Promise<void> {
+    void event;
+    return Promise.resolve();
+  }
 }
 
 class TestOrderAgent extends BaseAgent {
@@ -40,7 +44,7 @@ class TestOrderAgent extends BaseAgent {
   getTools(): ToolDefinition[] {
     return [];
   }
-  async executeTask(task: AgentTask): Promise<Record<string, unknown>> {
+  executeTask(task: AgentTask): Promise<Record<string, unknown>> {
     if (task.input.action === 'create_product') {
       this.receivedEvents.push({
         id: 'ev-1',
@@ -50,10 +54,11 @@ class TestOrderAgent extends BaseAgent {
         payload: {},
       });
     }
-    return { product: { id: 'prod-1' } };
+    return Promise.resolve({ product: { id: 'prod-1' } });
   }
-  async handleEvent(event: AgentEvent): Promise<void> {
+  handleEvent(event: AgentEvent): Promise<void> {
     this.receivedEvents.push(event);
+    return Promise.resolve();
   }
 }
 
@@ -66,11 +71,12 @@ class TestServiceAgent extends BaseAgent {
   getTools(): ToolDefinition[] {
     return [];
   }
-  async executeTask(): Promise<Record<string, unknown>> {
-    return { reply: '感谢您的咨询' };
+  executeTask(): Promise<Record<string, unknown>> {
+    return Promise.resolve({ reply: '感谢您的咨询' });
   }
-  async handleEvent(event: AgentEvent): Promise<void> {
+  handleEvent(event: AgentEvent): Promise<void> {
     this.receivedEvents.push(event);
+    return Promise.resolve();
   }
 }
 

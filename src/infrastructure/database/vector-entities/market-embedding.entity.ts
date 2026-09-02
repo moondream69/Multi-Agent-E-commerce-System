@@ -13,10 +13,10 @@ export class MarketEmbedding {
   @Column()
   source: string;
 
-  @Column('text')
+  @Column({ type: 'text' })
   content: string;
 
-  @Column({ type: 'vector', length: 1024 } as any)
+  @Column({ type: 'vector', length: 1024 })
   embedding: number[];
 
   @Column()

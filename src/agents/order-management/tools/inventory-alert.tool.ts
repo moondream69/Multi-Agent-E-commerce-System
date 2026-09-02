@@ -30,11 +30,13 @@ export class InventoryAlertTool implements ITool {
     ],
   };
 
-  async execute(params: Record<string, unknown>): Promise<unknown> {
-    return this.check(
-      params.productName as string,
-      params.currentStock as number,
-      params.threshold as number,
+  execute(params: Record<string, unknown>): Promise<unknown> {
+    return Promise.resolve(
+      this.check(
+        params.productName as string,
+        params.currentStock as number,
+        params.threshold as number,
+      ),
     );
   }
 

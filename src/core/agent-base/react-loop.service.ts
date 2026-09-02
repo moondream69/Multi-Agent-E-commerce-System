@@ -1,9 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import {
-  LlmService,
-  LlmMessage,
-  ToolCall,
-} from '../../infrastructure/llm/llm.service';
+import { LlmService, LlmMessage } from '../../infrastructure/llm/llm.service';
 import { ITool } from '../../common/interfaces/tool.interface';
 import { AgentTask, TaskStatus } from '../../common/interfaces';
 
@@ -85,9 +81,11 @@ export class ReActLoopService {
           );
           const result = await tool.execute(toolCall.arguments);
           const resultStr =
-            typeof result === 'object'
-              ? JSON.stringify(result)
-              : String(result);
+            typeof result === 'string' ||
+            typeof result === 'number' ||
+            typeof result === 'boolean'
+              ? String(result)
+              : (JSON.stringify(result) ?? '');
           onStep(toolCall.name, TaskStatus.COMPLETED, resultStr.slice(0, 200));
 
           messages.push({

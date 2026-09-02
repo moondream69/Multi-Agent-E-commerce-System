@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { EventBusService } from './event-bus.service';
-import { AgentEventType } from '../../common/interfaces';
+import { AgentEvent, AgentEventType } from '../../common/interfaces';
 
 describe('EventBusService', () => {
   let service: EventBusService;
@@ -35,11 +35,11 @@ describe('EventBusService', () => {
 
   it('broadcast应该通知所有指定handlers', async () => {
     const results: string[] = [];
-    const h1 = (e: any) => {
-      results.push('h1:' + e.payload.data);
+    const h1 = (e: AgentEvent) => {
+      results.push('h1:' + (e.payload as { data: string }).data);
     };
-    const h2 = (e: any) => {
-      results.push('h2:' + e.payload.data);
+    const h2 = (e: AgentEvent) => {
+      results.push('h2:' + (e.payload as { data: string }).data);
     };
 
     await service.broadcast(AgentEventType.REPORT_GENERATED, { data: 'test' }, [

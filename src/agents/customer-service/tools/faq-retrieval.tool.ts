@@ -28,13 +28,10 @@ export class FaqRetrievalTool implements ITool {
   constructor(private readonly embedding: EmbeddingService) {}
 
   async execute(params: Record<string, unknown>): Promise<unknown> {
-    return this.search(
-      params.question as string,
-      (params.locale as string) ?? 'zh-CN',
-    );
+    return this.search(params.question as string);
   }
 
-  async search(question: string, locale = 'zh-CN'): Promise<string> {
+  async search(question: string): Promise<string> {
     const results = await this.embedding.search({
       query: question,
       collection: 'faq',

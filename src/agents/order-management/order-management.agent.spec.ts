@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { OrderManagementAgent } from './order-management.agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
+import { TaskType } from '../../common/interfaces';
 import { ProductCrudTool } from './tools/product-crud.tool';
 import { OrderWorkflowTool } from './tools/order-workflow.tool';
 import { InventoryAlertTool } from './tools/inventory-alert.tool';
@@ -67,7 +68,7 @@ describe('OrderManagementAgent', () => {
   it('应该通过ReAct循环处理任务', async () => {
     const task = {
       id: 't1',
-      type: 'order_management' as any,
+      type: TaskType.ORDER_MANAGEMENT,
       input: {
         action: 'check_inventory',
         productName: '蓝牙耳机',

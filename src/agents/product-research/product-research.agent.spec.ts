@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ProductResearchAgent } from './product-research.agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
-import { AgentEventType } from '../../common/interfaces';
+import { AgentEventType, TaskType } from '../../common/interfaces';
 import { TrendQueryTool } from './tools/trend-query.tool';
 import { CompetitorAnalysisTool } from './tools/competitor-analysis.tool';
 import { ScoringTool } from './tools/scoring.tool';
@@ -63,7 +63,7 @@ describe('ProductResearchAgent', () => {
   it('应该通过ReAct循环处理任务', async () => {
     const task = {
       id: 't1',
-      type: 'product_research' as any,
+      type: TaskType.PRODUCT_RESEARCH,
       input: { query: 'test' },
       createdAt: new Date(),
     };

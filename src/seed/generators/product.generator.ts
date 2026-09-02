@@ -6,6 +6,17 @@ import { EmbeddingService } from '../../infrastructure/embedding/embedding.servi
 import { Product } from '../../infrastructure/database/entities/product.entity';
 import { ProductEmbedding } from '../../infrastructure/database/vector-entities/product-embedding.entity';
 
+interface SeedProduct {
+  sku: string;
+  title: string;
+  description?: string;
+  price: number;
+  category: string;
+  currency?: string;
+  platform?: string;
+  status?: string;
+}
+
 const CATEGORIES = [
   { name: '消费电子', prefix: 'ELEC', count: 25 },
   { name: '服装配饰', prefix: 'CLTH', count: 25 },
@@ -60,7 +71,7 @@ export class ProductGenerator {
           { temperature: 0.7, maxTokens: 8000, jsonMode: true },
         );
 
-        const products = JSON.parse(response);
+        const products = JSON.parse(response) as SeedProduct[];
         if (!Array.isArray(products)) continue;
 
         for (const item of products) {

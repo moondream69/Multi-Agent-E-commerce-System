@@ -44,7 +44,7 @@ export class SentimentAnalysisTool implements ITool {
       { temperature: 0, maxTokens: 200, jsonMode: true },
     );
     try {
-      const result = JSON.parse(response);
+      const result = JSON.parse(response) as SentimentResult;
       this.logger.log(`情感分析: ${result.sentiment} (${result.score})`);
       return result;
     } catch {

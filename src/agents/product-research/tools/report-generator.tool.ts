@@ -29,10 +29,9 @@ export class ReportGeneratorTool implements ITool {
     ],
   };
 
-  async execute(params: Record<string, unknown>): Promise<unknown> {
-    return this.generate(
-      params.title as string,
-      params.sections as ReportSection[],
+  execute(params: Record<string, unknown>): Promise<unknown> {
+    return Promise.resolve(
+      this.generate(params.title as string, params.sections as ReportSection[]),
     );
   }
 

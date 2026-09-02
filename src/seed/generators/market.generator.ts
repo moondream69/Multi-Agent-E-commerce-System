@@ -5,6 +5,12 @@ import { LlmService } from '../../infrastructure/llm/llm.service';
 import { EmbeddingService } from '../../infrastructure/embedding/embedding.service';
 import { MarketEmbedding } from '../../infrastructure/database/vector-entities/market-embedding.entity';
 
+interface SeedMarketItem {
+  content: string;
+  category?: string;
+  source?: string;
+}
+
 const TOPICS = [
   {
     type: '趋势分析',
@@ -67,7 +73,7 @@ export class MarketGenerator {
           { temperature: 0.7, maxTokens: 8000, jsonMode: true },
         );
 
-        const items = JSON.parse(response);
+        const items = JSON.parse(response) as SeedMarketItem[];
         if (!Array.isArray(items)) continue;
 
         for (const item of items) {

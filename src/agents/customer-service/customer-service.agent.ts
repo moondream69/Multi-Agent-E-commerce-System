@@ -57,11 +57,12 @@ export class CustomerServiceAgent extends BaseAgent {
     return this.tools.map((t: ITool) => t.definition);
   }
 
-  async handleEvent(event: AgentEvent): Promise<void> {
+  handleEvent(event: AgentEvent): Promise<void> {
     if (event.type === AgentEventType.PRODUCT_CREATED) {
       this.logger.log(`新商品已创建，可准备客服话术模板`);
     } else if (event.type === AgentEventType.ORDER_STATUS_CHANGED) {
       this.logger.log(`订单状态变更，可主动通知客户`);
     }
+    return Promise.resolve();
   }
 }

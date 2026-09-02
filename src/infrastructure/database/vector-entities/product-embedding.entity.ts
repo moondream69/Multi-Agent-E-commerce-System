@@ -13,10 +13,10 @@ export class ProductEmbedding {
   @Column()
   productId: string;
 
-  @Column({ type: 'vector', length: 1024 } as any)
+  @Column({ type: 'vector', length: 1024 })
   embedding: number[];
 
-  @Column('text')
+  @Column({ type: 'text' })
   content: string;
 
   @Column({ type: 'jsonb', nullable: true })

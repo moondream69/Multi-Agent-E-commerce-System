@@ -32,4 +32,4 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`Multi-Agent E-commerce System 运行在 http://localhost:${port}`);
 }
-bootstrap();
+void bootstrap();

@@ -22,7 +22,7 @@ export class CacheService implements OnModuleDestroy {
   async get<T>(key: string): Promise<T | null> {
     try {
       const v = await this.redis.get(key);
-      return v ? JSON.parse(v) : null;
+      return v ? (JSON.parse(v) as T) : null;
     } catch {
       return null;
     }
@@ -31,13 +31,17 @@ export class CacheService implements OnModuleDestroy {
   async set(key: string, value: unknown, ttlSeconds = 3600): Promise<void> {
     try {
       await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
-    } catch {}
+    } catch {
+      // Redis 故障时静默降级，不阻断主流程
+    }
   }
 
   async del(key: string): Promise<void> {
     try {
       await this.redis.del(key);
-    } catch {}
+    } catch {
+      // Redis 故障时静默降级，不阻断主流程
+    }
   }
 
   async onModuleDestroy(): Promise<void> {

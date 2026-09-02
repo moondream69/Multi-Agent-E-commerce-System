@@ -44,19 +44,17 @@ export class MockPlatformAdapter implements IPlatformAdapter {
     },
   ];
 
-  async fetchProducts(): Promise<PlatformProduct[]> {
+  fetchProducts(): Promise<PlatformProduct[]> {
     this.logger.log('Mock: 获取商品列表');
-    return this.products;
+    return Promise.resolve(this.products);
   }
 
-  async fetchOrders(): Promise<PlatformOrder[]> {
+  fetchOrders(): Promise<PlatformOrder[]> {
     this.logger.log('Mock: 获取订单列表');
-    return this.orders;
+    return Promise.resolve(this.orders);
   }
 
-  async createProduct(
-    data: Partial<PlatformProduct>,
-  ): Promise<PlatformProduct> {
+  createProduct(data: Partial<PlatformProduct>): Promise<PlatformProduct> {
     const product: PlatformProduct = {
       platformId: `mock-prod-${Date.now()}`,
       sku: data.sku ?? `SKU-${Date.now()}`,
@@ -69,14 +67,15 @@ export class MockPlatformAdapter implements IPlatformAdapter {
     };
     this.products.push(product);
     this.logger.log(`Mock: 创建商品 ${product.title}`);
-    return product;
+    return Promise.resolve(product);
   }
 
-  async updateOrderStatus(orderId: string, status: string): Promise<void> {
+  updateOrderStatus(orderId: string, status: string): Promise<void> {
     const order = this.orders.find((o) => o.platformId === orderId);
     if (order) {
       order.status = status;
       this.logger.log(`Mock: 更新订单 ${orderId} 状态为 ${status}`);
     }
+    return Promise.resolve();
   }
 }

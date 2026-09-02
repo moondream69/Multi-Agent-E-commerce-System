@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { CustomerServiceAgent } from './customer-service.agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
+import { TaskType } from '../../common/interfaces';
 import { TranslatorTool } from './tools/translator.tool';
 import { FaqRetrievalTool } from './tools/faq-retrieval.tool';
 import { SentimentAnalysisTool } from './tools/sentiment-analysis.tool';
@@ -61,7 +62,7 @@ describe('CustomerServiceAgent', () => {
   it('应该通过ReAct循环处理客服查询', async () => {
     const task = {
       id: 't1',
-      type: 'customer_service' as any,
+      type: TaskType.CUSTOMER_SERVICE,
       input: { action: 'handle_query', text: '如何退货？', locale: 'zh-CN' },
       createdAt: new Date(),
     };

@@ -21,17 +21,20 @@ class MockAgent implements IAgent {
     this.id = id;
     this.name = name;
   }
-  async handleTask(task: AgentTask): Promise<AgentResult> {
-    return {
+  handleTask(task: AgentTask): Promise<AgentResult> {
+    return Promise.resolve({
       taskId: task.id,
       agentId: this.id,
       status: TaskStatus.COMPLETED,
       output: { result: 'ok' },
       steps: [],
       completedAt: new Date(),
-    };
+    });
   }
-  async handleEvent(_event: AgentEvent): Promise<void> {}
+  handleEvent(event: AgentEvent): Promise<void> {
+    void event;
+    return Promise.resolve();
+  }
   getStatus(): AgentStatus {
     return AgentStatus.IDLE;
   }

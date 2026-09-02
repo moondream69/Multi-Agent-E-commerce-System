@@ -50,7 +50,7 @@ export class ScoringTool implements ITool {
     ],
   };
 
-  async execute(params: Record<string, unknown>): Promise<unknown> {
+  execute(params: Record<string, unknown>): Promise<unknown> {
     const input: ScoringInput = {
       searchVolume: params.searchVolume as number,
       competition: params.competition as number,
@@ -58,7 +58,7 @@ export class ScoringTool implements ITool {
       margin: params.margin as number,
       growthRate: params.growthRate as number,
     };
-    return this.calculate(input);
+    return Promise.resolve(this.calculate(input));
   }
 
   calculate(input: ScoringInput): {

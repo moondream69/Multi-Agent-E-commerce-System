@@ -46,6 +46,18 @@ export interface LlmResponse {
   toolCalls: ToolCall[];
 }
 
+interface OpenAiChatResponse {
+  choices: {
+    message: {
+      content: string | null;
+      tool_calls?: {
+        id: string;
+        function: { name: string; arguments: string };
+      }[];
+    };
+  }[];
+}
+
 export interface LlmCompletionOptions {
   temperature?: number;
   maxTokens?: number;
@@ -66,9 +78,12 @@ export class LlmService {
     options: LlmCompletionOptions = {},
   ): Promise<string> {
     const { temperature = 0.7, maxTokens = 2000, jsonMode = false } = options;
-    const apiKey = this.config.get('LLM_API_KEY');
-    const model = this.config.get('LLM_MODEL', 'gpt-4o-mini');
-    const apiUrl = this.config.get('LLM_API_URL', 'https://api.openai.com');
+    const apiKey = this.config.get<string>('LLM_API_KEY');
+    const model = this.config.get<string>('LLM_MODEL', 'gpt-4o-mini');
+    const apiUrl = this.config.get<string>(
+      'LLM_API_URL',
+      'https://api.openai.com',
+    );
 
     const cacheKey = `llm:${model}:${JSON.stringify(messages)}:${temperature}`;
     const cached = await this.cache.get<string>(cacheKey);
@@ -96,10 +111,10 @@ export class LlmService {
         );
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as OpenAiChatResponse;
       const content = data.choices[0].message.content;
-      await this.cache.set(cacheKey, content, 300);
-      return content;
+      await this.cache.set(cacheKey, content ?? '', 300);
+      return content ?? '';
     } catch (error) {
       this.logger.error(`LLM 调用失败: ${(error as Error).message}`);
       throw error;
@@ -112,9 +127,12 @@ export class LlmService {
     options?: LlmCompletionOptions,
   ): Promise<LlmResponse> {
     const { temperature = 0.7, maxTokens = 2000 } = options ?? {};
-    const apiKey = this.config.get('LLM_API_KEY');
-    const model = this.config.get('LLM_MODEL', 'gpt-4o-mini');
-    const apiUrl = this.config.get('LLM_API_URL', 'https://api.openai.com');
+    const apiKey = this.config.get<string>('LLM_API_KEY');
+    const model = this.config.get<string>('LLM_MODEL', 'gpt-4o-mini');
+    const apiUrl = this.config.get<string>(
+      'LLM_API_URL',
+      'https://api.openai.com',
+    );
 
     const llmTools = tools.map((td) => this.toolDefToLlmTool(td));
 
@@ -141,21 +159,18 @@ export class LlmService {
         );
       }
 
-      const data = await response.json();
-      const choice = data.choices[0];
-      const message = choice.message;
+      const data = (await response.json()) as OpenAiChatResponse;
+      const message = data.choices[0].message;
 
       if (message.tool_calls && message.tool_calls.length > 0) {
-        const toolCalls: ToolCall[] = message.tool_calls.map(
-          (tc: {
-            id: string;
-            function: { name: string; arguments: string };
-          }) => ({
-            id: tc.id,
-            name: tc.function.name,
-            arguments: JSON.parse(tc.function.arguments),
-          }),
-        );
+        const toolCalls: ToolCall[] = message.tool_calls.map((tc) => ({
+          id: tc.id,
+          name: tc.function.name,
+          arguments: JSON.parse(tc.function.arguments) as Record<
+            string,
+            unknown
+          >,
+        }));
         return { content: null, toolCalls };
       }
 

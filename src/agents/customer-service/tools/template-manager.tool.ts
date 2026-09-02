@@ -57,15 +57,17 @@ export class TemplateManagerTool implements ITool {
     ],
   };
 
-  async execute(params: Record<string, unknown>): Promise<unknown> {
+  execute(params: Record<string, unknown>): Promise<unknown> {
     const action = params.action as string;
+    let result: unknown;
     switch (action) {
       case 'find': {
         const tmpl = this.findTemplate(
           params.scenario as string,
           (params.locale as string) ?? 'zh-CN',
         );
-        return tmpl ?? null;
+        result = tmpl ?? null;
+        break;
       }
       case 'fill': {
         const tmpl = this.findTemplate(
@@ -73,17 +75,20 @@ export class TemplateManagerTool implements ITool {
           (params.locale as string) ?? 'zh-CN',
         );
         if (!tmpl) throw new Error('模板未找到');
-        return this.fillTemplate(
+        result = this.fillTemplate(
           tmpl,
           (params.variables as Record<string, string>) ?? {},
         );
+        break;
       }
       case 'add':
         this.addTemplate(params.template as ReplyTemplate);
-        return { success: true };
+        result = { success: true };
+        break;
       default:
         throw new Error(`未知 action: ${action}`);
     }
+    return Promise.resolve(result);
   }
   private templates: ReplyTemplate[] = [
     {

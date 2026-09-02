@@ -6,7 +6,6 @@ import { BaseAgent } from '../agent-base/base-agent';
 import { ReActLoopService } from '../agent-base/react-loop.service';
 import {
   AgentEvent,
-  AgentResult,
   AgentStatus,
   AgentTask,
   TaskStatus,
@@ -28,10 +27,13 @@ class TestResearchAgent extends BaseAgent {
   getTools(): ToolDefinition[] {
     return [];
   }
-  async executeTask(task: AgentTask): Promise<Record<string, unknown>> {
-    return { report: `分析完成: ${task.input.query}` };
+  executeTask(task: AgentTask): Promise<Record<string, unknown>> {
+    return Promise.resolve({ report: `分析完成: ${String(task.input.query)}` });
   }
-  async handleEvent(_event: AgentEvent): Promise<void> {}
+  handleEvent(event: AgentEvent): Promise<void> {
+    void event;
+    return Promise.resolve();
+  }
 }
 
 class TestOrderAgent extends BaseAgent {
@@ -43,11 +45,14 @@ class TestOrderAgent extends BaseAgent {
   getTools(): ToolDefinition[] {
     return [];
   }
-  async executeTask(task: AgentTask): Promise<Record<string, unknown>> {
-    return { order: `订单已处理: ${JSON.stringify(task.input)}` };
+  executeTask(task: AgentTask): Promise<Record<string, unknown>> {
+    return Promise.resolve({
+      order: `订单已处理: ${JSON.stringify(task.input)}`,
+    });
   }
-  async handleEvent(event: AgentEvent): Promise<void> {
+  handleEvent(event: AgentEvent): Promise<void> {
     this.logger.log(`收到事件: ${event.type}`);
+    return Promise.resolve();
   }
 }
 

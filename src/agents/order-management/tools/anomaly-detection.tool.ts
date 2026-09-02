@@ -18,8 +18,8 @@ export class AnomalyDetectionTool implements ITool {
     ],
   };
 
-  async execute(params: Record<string, unknown>): Promise<unknown> {
-    return this.detect(params.orderDescription as string);
+  execute(params: Record<string, unknown>): Promise<unknown> {
+    return Promise.resolve(this.detect(params.orderDescription as string));
   }
 
   detect(orderDescription: string): { anomaly: boolean; reason: string } {

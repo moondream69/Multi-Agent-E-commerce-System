@@ -16,13 +16,13 @@ export class FaqEmbedding {
   @Column('text')
   answer: string;
 
-  @Column({ type: 'vector', length: 1024 } as any)
+  @Column({ type: 'vector', length: 1024 })
   embedding: number[];
 
   @Column({ default: 'en' })
   locale: string;
 
-  @Column('text', { array: true, nullable: true })
+  @Column({ type: 'text', array: true, nullable: true })
   tags: string[];
 
   @CreateDateColumn()

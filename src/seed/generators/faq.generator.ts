@@ -5,6 +5,13 @@ import { LlmService } from '../../infrastructure/llm/llm.service';
 import { EmbeddingService } from '../../infrastructure/embedding/embedding.service';
 import { FaqEmbedding } from '../../infrastructure/database/vector-entities/faq-embedding.entity';
 
+interface SeedFaqItem {
+  question: string;
+  answer: string;
+  locale?: string;
+  tags?: string[];
+}
+
 const FAQ_TOPICS = [
   {
     topic: '物流与配送',
@@ -66,7 +73,7 @@ export class FaqGenerator {
           { temperature: 0.7, maxTokens: 8000, jsonMode: true },
         );
 
-        const items = JSON.parse(response);
+        const items = JSON.parse(response) as SeedFaqItem[];
         if (!Array.isArray(items)) continue;
 
         for (const item of items) {

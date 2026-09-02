@@ -49,9 +49,10 @@ export class OrderManagementAgent extends BaseAgent {
     return this.tools.map((t: ITool) => t.definition);
   }
 
-  async handleEvent(event: AgentEvent): Promise<void> {
+  handleEvent(event: AgentEvent): Promise<void> {
     if (event.type === AgentEventType.REPORT_GENERATED) {
       this.logger.log(`收到选品报告，可据此创建商品草稿`);
     }
+    return Promise.resolve();
   }
 }

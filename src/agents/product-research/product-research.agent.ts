@@ -2,12 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BaseAgent } from '../../core/agent-base/base-agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
-import {
-  AgentEvent,
-  AgentEventType,
-  ToolDefinition,
-  ITool,
-} from '../../common/interfaces';
+import { AgentEvent, ToolDefinition, ITool } from '../../common/interfaces';
 import { TrendQueryTool } from './tools/trend-query.tool';
 import { CompetitorAnalysisTool } from './tools/competitor-analysis.tool';
 import { ScoringTool } from './tools/scoring.tool';
@@ -56,7 +51,8 @@ export class ProductResearchAgent extends BaseAgent {
     return this.tools.map((t: ITool) => t.definition);
   }
 
-  async handleEvent(event: AgentEvent): Promise<void> {
+  handleEvent(event: AgentEvent): Promise<void> {
     this.logger.log(`收到事件: ${event.type} from ${event.source}`);
+    return Promise.resolve();
   }
 }

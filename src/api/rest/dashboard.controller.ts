@@ -1,5 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { OrchestratorService } from '../../core/orchestrator/orchestrator.service';
+import { AgentStatus } from '../../common/interfaces';
 
 @Controller('api/dashboard')
 export class DashboardController {
@@ -22,7 +23,9 @@ export class DashboardController {
     return {
       totalAgents: agents.length,
       onlineAgents: agents.filter(
-        (a) => a.getStatus() === 'idle' || a.getStatus() === 'busy',
+        (a) =>
+          a.getStatus() === AgentStatus.IDLE ||
+          a.getStatus() === AgentStatus.BUSY,
       ).length,
       timestamp: new Date().toISOString(),
     };

@@ -21,6 +21,16 @@ export interface VectorSearchResult {
   metadata?: Record<string, unknown>;
 }
 
+interface EmbeddingApiResponse {
+  data: { embedding: number[] }[];
+}
+
+interface RawEmbeddingRow {
+  e_id: string;
+  e_content: string;
+  score?: number;
+}
+
 @Injectable()
 export class EmbeddingService {
   private readonly logger = new Logger(EmbeddingService.name);
@@ -36,11 +46,13 @@ export class EmbeddingService {
   ) {}
 
   async embed(text: string): Promise<number[]> {
-    const apiUrl = this.config.get('EMBEDDING_API_URL', '');
-    const model = this.config.get('EMBEDDING_MODEL', 'bge-m3');
+    const apiUrl = this.config.get<string>('EMBEDDING_API_URL', '');
+    const model = this.config.get<string>('EMBEDDING_MODEL', 'bge-m3');
     // ConfigService 从 .env 读出的值是字符串，new Array('1024') 会得到 1 维数组，故强转
-    const dimension = Number(this.config.get('EMBEDDING_DIMENSION', 1024));
-    const apiKey = this.config.get('LLM_API_KEY', '');
+    const dimension = Number(
+      this.config.get<string>('EMBEDDING_DIMENSION', '1024'),
+    );
+    const apiKey = this.config.get<string>('LLM_API_KEY', '');
 
     // 优先使用本地 TEI 服务，否则用 OpenAI
     const baseUrl = apiUrl || 'https://api.openai.com';
@@ -64,13 +76,13 @@ export class EmbeddingService {
         );
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as EmbeddingApiResponse;
       return data.data[0].embedding;
     } catch (error) {
       this.logger.warn(
         `Embedding API 调用失败，使用零向量占位: ${(error as Error).message}`,
       );
-      return new Array(dimension).fill(0);
+      return new Array<number>(dimension).fill(0);
     }
   }
 
@@ -109,7 +121,14 @@ export class EmbeddingService {
       .getRawMany();
 
     return results
-      .filter((r: any) => !params.threshold || r.score >= params.threshold)
-      .map((r: any) => ({ id: r.e_id, content: r.e_content, score: r.score }));
+      .filter(
+        (r: RawEmbeddingRow) =>
+          !params.threshold || (r.score ?? 0) >= params.threshold,
+      )
+      .map((r: RawEmbeddingRow) => ({
+        id: r.e_id,
+        content: r.e_content,
+        score: r.score ?? 0,
+      }));
   }
 }

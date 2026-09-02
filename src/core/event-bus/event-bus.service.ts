@@ -28,7 +28,9 @@ export class EventBusService {
   }
 
   on(type: AgentEventType, handler: EventHandler): void {
-    this.eventEmitter.on(type, (event: AgentEvent) => handler(event));
+    this.eventEmitter.on(type, (event: AgentEvent) => {
+      void handler(event);
+    });
   }
 
   async broadcast(
