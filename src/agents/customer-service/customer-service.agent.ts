@@ -2,7 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { BaseAgent } from '../../core/agent-base/base-agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
-import { AgentEvent, AgentEventType, ToolDefinition, ITool } from '../../common/interfaces';
+import {
+  AgentEvent,
+  AgentEventType,
+  ToolDefinition,
+  ITool,
+} from '../../common/interfaces';
 import { TranslatorTool } from './tools/translator.tool';
 import { FaqRetrievalTool } from './tools/faq-retrieval.tool';
 import { SentimentAnalysisTool } from './tools/sentiment-analysis.tool';
@@ -38,13 +43,13 @@ export class CustomerServiceAgent extends BaseAgent {
 
   constructor(
     reactLoop: ReActLoopService,
-    private readonly eventBus: EventBusService,
+    eventBus: EventBusService,
     translator: TranslatorTool,
     faq: FaqRetrievalTool,
     sentiment: SentimentAnalysisTool,
     templates: TemplateManagerTool,
   ) {
-    super(reactLoop);
+    super(reactLoop, eventBus);
     this.tools = [translator, faq, sentiment, templates];
   }
 

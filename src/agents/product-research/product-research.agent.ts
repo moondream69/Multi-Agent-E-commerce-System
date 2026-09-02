@@ -2,7 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { BaseAgent } from '../../core/agent-base/base-agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
-import { AgentEvent, AgentEventType, ToolDefinition, ITool } from '../../common/interfaces';
+import {
+  AgentEvent,
+  AgentEventType,
+  ToolDefinition,
+  ITool,
+} from '../../common/interfaces';
 import { TrendQueryTool } from './tools/trend-query.tool';
 import { CompetitorAnalysisTool } from './tools/competitor-analysis.tool';
 import { ScoringTool } from './tools/scoring.tool';
@@ -12,7 +17,8 @@ import { ReportGeneratorTool } from './tools/report-generator.tool';
 export class ProductResearchAgent extends BaseAgent {
   readonly id = 'product-research';
   readonly name = '选品分析Agent';
-  readonly description = '负责跨境电商选品分析：趋势洞察、竞品对比、选品评分和报告生成';
+  readonly description =
+    '负责跨境电商选品分析：趋势洞察、竞品对比、选品评分和报告生成';
 
   readonly systemPrompt = `你是跨境电商选品分析专家。你的任务是根据用户需求进行选品分析。
 
@@ -36,13 +42,13 @@ export class ProductResearchAgent extends BaseAgent {
 
   constructor(
     reactLoop: ReActLoopService,
-    private readonly eventBus: EventBusService,
+    eventBus: EventBusService,
     trendQuery: TrendQueryTool,
     competitorAnalysis: CompetitorAnalysisTool,
     scoring: ScoringTool,
     reportGenerator: ReportGeneratorTool,
   ) {
-    super(reactLoop);
+    super(reactLoop, eventBus);
     this.tools = [trendQuery, competitorAnalysis, scoring, reportGenerator];
   }
 

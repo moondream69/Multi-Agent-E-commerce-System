@@ -1,10 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
+import {
+  AgentEvent, AgentEventType, AgentStatus, AgentStatusChangedPayload,
+} from '../types/events';
 
 export function useWebSocket() {
-  const [events, setEvents] = useState<any[]>([]);
+  const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [lastResponse, setLastResponse] = useState<any>(null);
+  const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
@@ -12,9 +16,19 @@ export function useWebSocket() {
     socketRef.current = socket;
 
     socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('agent:event', (event: any) => {
+    socket.on('disconnect', () => {
+      setConnected(false);
+      // 断线后 statuses 可能过期,清空后由重连快照恢复权威值
+      setStatuses({});
+    });
+    socket.on('agent:event', (event: AgentEvent) => {
       setEvents((prev) => [event, ...prev].slice(0, 50));
+      if (event.type === AgentEventType.AGENT_STATUS_CHANGED) {
+        const p = event.payload as AgentStatusChangedPayload | undefined;
+        if (p?.agentId && p.status) {
+          setStatuses((prev) => ({ ...prev, [p.agentId]: p.status }));
+        }
+      }
     });
     socket.on('chat:response', (response: any) => {
       setLastResponse(response);
@@ -28,5 +42,5 @@ export function useWebSocket() {
     socketRef.current?.emit('chat:message', { text });
   }, []);
 
-  return { events, sendMessage, connected, lastResponse };
+  return { events, sendMessage, connected, lastResponse, statuses };
 }

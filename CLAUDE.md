@@ -6,12 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # 基础设施
-docker compose up -d && docker start embedding_rerank_models-tei-embedding-1  # 启动全部服务
+docker compose up -d                                          # 启动 Postgres + Redis (compose 仅含这两项;embedding 由 Ollama 外部提供)
 
 # 后端
 npm run start:dev                                                 # NestJS 开发模式 (watch)
 npm run start:prod                                                # 生产模式
-npm run lint                                                      # ESLint
+npm run lint                                                      # ESLint (仅后端,自动 --fix)
+npm run format                                                    # Prettier (仅后端)
 
 # 测试
 npm test                                                          # 全部测试
@@ -21,13 +22,16 @@ npx jest --testPathPattern=<name>                                 # 按名称过
 # 前端 (另开终端)
 cd frontend && npm run dev                                        # Vite (5173)
 
+> ⚠️ `lint`/`format` **只覆盖后端** (`src/` + `test/`);`frontend/` 未接入任何 lint/format 配置。
+> ⚠️ `npm run lint` 内置 `--fix`,会**改写未格式化文件**——只检查、不想改代码时用 `npx eslint --no-fix <file>`。
+
 # 数据播种
-npm run seed                                                      # 灌入 540+ 行种子数据 (需先启动 Docker)
+npm run seed                                                      # 灌入 540+ 行种子数据 (需先启动 Docker;非幂等,重复执行会重复插入)
 ```
 
 ## 技术栈
 
-NestJS 11 + TypeScript 5 · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via TEI (Embedding, 1024维) · React + Vite + socket.io-client · npm
+NestJS 11 + TypeScript 5 · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via Ollama (Embedding, 1024维) · React + Vite + socket.io-client · npm
 
 ## 核心架构
 
@@ -82,6 +86,9 @@ CustomerServiceAgent: systemPrompt + [translator, faqSearch, sentimentAnalysis, 
 | `LLM_API_KEY` | API Key |
 | `LLM_API_URL` | API 端点 (如 `https://api.deepseek.com`) |
 | `LLM_MODEL` | 模型名 (如 `deepseek-v4-flash`) |
-| `EMBEDDING_API_URL` | TEI 端点 (`http://localhost:8888`)，留空则用 OpenAI |
+| `EMBEDDING_API_URL` | Ollama 端点 (`http://localhost:11434`)，留空则用 OpenAI |
 | `EMBEDDING_MODEL` | `bge-m3` (1024维) 或 `text-embedding-3-small` (1536维) |
 | `EMBEDDING_DIMENSION` | 向量维度 (1024 或 1536) |
+
+> ⚠️ Embedding 服务不可用时 `EmbeddingService` 会静默降级为零向量——搜索表现为"无结果且无报错"。
+> 根 tsconfig 排除了 `src/seed` 与 `frontend`,`tsc`/`build` 不检查这两处。

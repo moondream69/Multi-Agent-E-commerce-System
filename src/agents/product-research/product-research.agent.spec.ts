@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ProductResearchAgent } from './product-research.agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
+import { AgentEventType } from '../../common/interfaces';
 import { TrendQueryTool } from './tools/trend-query.tool';
 import { CompetitorAnalysisTool } from './tools/competitor-analysis.tool';
 import { ScoringTool } from './tools/scoring.tool';
@@ -10,18 +11,39 @@ import { ReportGeneratorTool } from './tools/report-generator.tool';
 describe('ProductResearchAgent', () => {
   let agent: ProductResearchAgent;
 
-  const mockReActLoop = { run: jest.fn().mockResolvedValue({ result: 'test output' }) };
+  const mockReActLoop = {
+    run: jest.fn().mockResolvedValue({ result: 'test output' }),
+  };
+  const mockEventBus = { emit: jest.fn() };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ProductResearchAgent,
         { provide: ReActLoopService, useValue: mockReActLoop },
-        { provide: EventBusService, useValue: { emit: jest.fn() } },
-        { provide: TrendQueryTool, useValue: { definition: { name: 'trend_query' }, execute: jest.fn() } },
-        { provide: CompetitorAnalysisTool, useValue: { definition: { name: 'competitor_analysis' }, execute: jest.fn() } },
-        { provide: ScoringTool, useValue: { definition: { name: 'scoring' }, execute: jest.fn() } },
-        { provide: ReportGeneratorTool, useValue: { definition: { name: 'generate_report' }, execute: jest.fn() } },
+        { provide: EventBusService, useValue: mockEventBus },
+        {
+          provide: TrendQueryTool,
+          useValue: { definition: { name: 'trend_query' }, execute: jest.fn() },
+        },
+        {
+          provide: CompetitorAnalysisTool,
+          useValue: {
+            definition: { name: 'competitor_analysis' },
+            execute: jest.fn(),
+          },
+        },
+        {
+          provide: ScoringTool,
+          useValue: { definition: { name: 'scoring' }, execute: jest.fn() },
+        },
+        {
+          provide: ReportGeneratorTool,
+          useValue: {
+            definition: { name: 'generate_report' },
+            execute: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -39,9 +61,35 @@ describe('ProductResearchAgent', () => {
   });
 
   it('应该通过ReAct循环处理任务', async () => {
-    const task = { id: 't1', type: 'product_research' as any, input: { query: 'test' }, createdAt: new Date() };
+    const task = {
+      id: 't1',
+      type: 'product_research' as any,
+      input: { query: 'test' },
+      createdAt: new Date(),
+    };
     const result = await agent.handleTask(task);
     expect(result.status).toBe('completed');
     expect(mockReActLoop.run).toHaveBeenCalled();
+
+    expect(mockEventBus.emit).toHaveBeenCalledWith(
+      AgentEventType.AGENT_STATUS_CHANGED,
+      expect.objectContaining({
+        agentId: 'product-research',
+        status: 'busy',
+        taskId: 't1',
+      }),
+      undefined,
+      'product-research',
+    );
+    expect(mockEventBus.emit).toHaveBeenCalledWith(
+      AgentEventType.AGENT_STATUS_CHANGED,
+      expect.objectContaining({
+        agentId: 'product-research',
+        status: 'idle',
+        taskId: 't1',
+      }),
+      undefined,
+      'product-research',
+    );
   });
 });

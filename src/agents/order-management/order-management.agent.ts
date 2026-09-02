@@ -2,7 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { BaseAgent } from '../../core/agent-base/base-agent';
 import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 import { EventBusService } from '../../core/event-bus/event-bus.service';
-import { AgentEvent, AgentEventType, ToolDefinition, ITool } from '../../common/interfaces';
+import {
+  AgentEvent,
+  AgentEventType,
+  ToolDefinition,
+  ITool,
+} from '../../common/interfaces';
 import { ProductCrudTool } from './tools/product-crud.tool';
 import { OrderWorkflowTool } from './tools/order-workflow.tool';
 import { InventoryAlertTool } from './tools/inventory-alert.tool';
@@ -30,13 +35,13 @@ export class OrderManagementAgent extends BaseAgent {
 
   constructor(
     reactLoop: ReActLoopService,
-    private readonly eventBus: EventBusService,
+    eventBus: EventBusService,
     productCrud: ProductCrudTool,
     orderWorkflow: OrderWorkflowTool,
     inventoryAlert: InventoryAlertTool,
     anomalyDetection: AnomalyDetectionTool,
   ) {
-    super(reactLoop);
+    super(reactLoop, eventBus);
     this.tools = [productCrud, orderWorkflow, inventoryAlert, anomalyDetection];
   }
 

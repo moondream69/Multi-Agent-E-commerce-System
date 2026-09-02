@@ -1,8 +1,9 @@
 import React from 'react';
+import { AgentEvent, AgentInfo } from '../types/events';
 
 interface Props {
-  agents: any[];
-  events: any[];
+  agents: AgentInfo[];
+  events: AgentEvent[];
 }
 
 export function Dashboard({ agents, events }: Props) {
@@ -34,8 +35,17 @@ export function Dashboard({ agents, events }: Props) {
         {events.length === 0 && <p style={{ color: '#999', fontSize: 13 }}>暂无事件</p>}
         {events.map((evt, i) => (
           <div key={i} style={{ padding: '4px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
-            <span style={{ color: '#2563eb', fontWeight: 500 }}>{evt.type ?? evt.eventType}</span>
+            <span style={{ color: '#2563eb', fontWeight: 500 }}>{evt.type}</span>
             <span style={{ color: '#999', marginLeft: 8 }}>{new Date(evt.timestamp).toLocaleTimeString()}</span>
+            {(() => {
+              if (!evt.payload || typeof evt.payload !== 'object') return null;
+              const p = evt.payload as Record<string, unknown>;
+              const summary = ['taskId', 'agentId', 'status']
+                .filter((k) => p[k] != null)
+                .map((k) => `${k}:${p[k]}`)
+                .join(' ');
+              return <span style={{ color: '#888', marginLeft: 8 }}>{summary}</span>;
+            })()}
           </div>
         ))}
       </div>
