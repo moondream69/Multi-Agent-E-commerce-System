@@ -8,3 +8,4 @@ coverage
 .idea/
 .screenshots/
 .playwright-cli/
+docs/session-handoff-*.md
