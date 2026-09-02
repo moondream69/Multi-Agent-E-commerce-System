@@ -6,3 +6,5 @@ coverage
 *.log
 .DS_Store
 .idea/
+.screenshots/
+.playwright-cli/
