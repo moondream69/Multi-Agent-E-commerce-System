@@ -4,14 +4,14 @@
 
 ## 技术栈
 
-NestJS 11 + TypeScript 5 · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via TEI (Embedding, 1024 维) · React + Vite + socket.io-client
+NestJS 11 + TypeScript 5 · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via Ollama (Embedding, 1024 维) · React + Vite + socket.io-client
 
 ## 快速开始
 
 ```bash
-cp .env.example .env                    # 编辑 .env 填入实际配置
+cp .env.example .env                    # 编辑 .env 填入实际配置 (EMBEDDING_API_URL 用 Ollama:11434)
 docker compose up -d                    # 启动 PostgreSQL + Redis
-docker start embedding_rerank_models-tei-embedding-1  # 启动 TEI 向量服务
+# Embedding 由本机 Ollama (http://localhost:11434, 模型 bge-m3) 提供——先 `ollama pull bge-m3` 确认模型已拉取
 npm install
 npm run seed                            # 灌入 540+ 行种子数据
 npm run start:dev                       # 启动后端 (NestJS watch 模式)
@@ -65,7 +65,7 @@ cd frontend && npm install && npm run dev  # Vite 开发服务器 (端口 5173)
 | `LLM_API_KEY` | API Key |
 | `LLM_API_URL` | API 端点 (如 `https://api.deepseek.com`) |
 | `LLM_MODEL` | 模型名 (如 `deepseek-v4-flash`) |
-| `EMBEDDING_API_URL` | TEI 端点 (`http://localhost:8888`)，留空则用 OpenAI |
+| `EMBEDDING_API_URL` | Ollama 端点 (`http://localhost:11434`)，留空则用 OpenAI |
 | `EMBEDDING_MODEL` | `bge-m3` (1024 维) 或 `text-embedding-3-small` (1536 维) |
 | `EMBEDDING_DIMENSION` | 向量维度 (1024 或 1536) |
 
@@ -74,7 +74,10 @@ cd frontend && npm install && npm run dev  # Vite 开发服务器 (端口 5173)
 ```bash
 npm run start:dev                # NestJS 开发模式 (watch)
 npm run start:prod               # 生产模式
-npm run lint                     # ESLint
+npm run lint                     # ESLint 检查 (后端+前端; 不自动改写)
+npm run lint:fix                 # ESLint 自动修复 (安全+格式)
+npm run format                   # Prettier 格式化
+npm run format:check             # Prettier 只检查
 
 # 测试
 npm test                         # 全部测试
