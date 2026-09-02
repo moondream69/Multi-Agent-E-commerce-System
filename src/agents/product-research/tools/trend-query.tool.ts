@@ -10,15 +10,28 @@ export class TrendQueryTool implements ITool {
     name: 'trend_query',
     description: '查询品类市场趋势数据，了解搜索量变化和热度趋势',
     parameters: [
-      { name: 'category', type: 'string', description: '品类名称', required: true },
-      { name: 'period', type: 'string', description: '时间范围，如 last_30_days', required: false },
+      {
+        name: 'category',
+        type: 'string',
+        description: '品类名称',
+        required: true,
+      },
+      {
+        name: 'period',
+        type: 'string',
+        description: '时间范围，如 last_30_days',
+        required: false,
+      },
     ],
   };
 
   constructor(private readonly embedding: EmbeddingService) {}
 
   async execute(params: Record<string, unknown>): Promise<string> {
-    return this.query(params.category as string, (params.period as string) ?? 'last_30_days');
+    return this.query(
+      params.category as string,
+      (params.period as string) ?? 'last_30_days',
+    );
   }
 
   async query(category: string, period: string): Promise<string> {

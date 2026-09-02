@@ -25,7 +25,11 @@ export class AgentTaskEntity {
   @Column()
   type: string;
 
-  @Column({ type: 'enum', enum: AgentTaskStatus, default: AgentTaskStatus.PENDING })
+  @Column({
+    type: 'enum',
+    enum: AgentTaskStatus,
+    default: AgentTaskStatus.PENDING,
+  })
   status: AgentTaskStatus;
 
   @Column({ type: 'jsonb', nullable: true })

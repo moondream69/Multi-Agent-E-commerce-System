@@ -17,10 +17,19 @@ export class ConversationService {
     return this.conversationRepo.save(conversation);
   }
 
-  async addMessage(conversationId: string, role: 'user' | 'assistant', content: string): Promise<void> {
-    const conversation = await this.conversationRepo.findOne({ where: { id: conversationId } });
+  async addMessage(
+    conversationId: string,
+    role: 'user' | 'assistant',
+    content: string,
+  ): Promise<void> {
+    const conversation = await this.conversationRepo.findOne({
+      where: { id: conversationId },
+    });
     if (!conversation) throw new Error('对话不存在');
-    conversation.messages = [...conversation.messages, { role, content, timestamp: new Date().toISOString() }];
+    conversation.messages = [
+      ...conversation.messages,
+      { role, content, timestamp: new Date().toISOString() },
+    ];
     await this.conversationRepo.save(conversation);
   }
 

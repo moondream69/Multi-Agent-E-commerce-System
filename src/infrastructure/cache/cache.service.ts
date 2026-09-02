@@ -20,17 +20,27 @@ export class CacheService implements OnModuleDestroy {
   }
 
   async get<T>(key: string): Promise<T | null> {
-    try { const v = await this.redis.get(key); return v ? JSON.parse(v) : null; }
-    catch { return null; }
+    try {
+      const v = await this.redis.get(key);
+      return v ? JSON.parse(v) : null;
+    } catch {
+      return null;
+    }
   }
 
   async set(key: string, value: unknown, ttlSeconds = 3600): Promise<void> {
-    try { await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds); } catch {}
+    try {
+      await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+    } catch {}
   }
 
   async del(key: string): Promise<void> {
-    try { await this.redis.del(key); } catch {}
+    try {
+      await this.redis.del(key);
+    } catch {}
   }
 
-  async onModuleDestroy(): Promise<void> { await this.redis.quit(); }
+  async onModuleDestroy(): Promise<void> {
+    await this.redis.quit();
+  }
 }

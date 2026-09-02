@@ -10,7 +10,9 @@ import { AnomalyDetectionTool } from './tools/anomaly-detection.tool';
 describe('OrderManagementAgent', () => {
   let agent: OrderManagementAgent;
 
-  const mockReActLoop = { run: jest.fn().mockResolvedValue({ result: 'test output' }) };
+  const mockReActLoop = {
+    run: jest.fn().mockResolvedValue({ result: 'test output' }),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -18,10 +20,34 @@ describe('OrderManagementAgent', () => {
         OrderManagementAgent,
         { provide: ReActLoopService, useValue: mockReActLoop },
         { provide: EventBusService, useValue: { emit: jest.fn() } },
-        { provide: ProductCrudTool, useValue: { definition: { name: 'product_crud' }, execute: jest.fn() } },
-        { provide: OrderWorkflowTool, useValue: { definition: { name: 'order_workflow' }, execute: jest.fn() } },
-        { provide: InventoryAlertTool, useValue: { definition: { name: 'check_inventory' }, execute: jest.fn() } },
-        { provide: AnomalyDetectionTool, useValue: { definition: { name: 'detect_anomalies' }, execute: jest.fn() } },
+        {
+          provide: ProductCrudTool,
+          useValue: {
+            definition: { name: 'product_crud' },
+            execute: jest.fn(),
+          },
+        },
+        {
+          provide: OrderWorkflowTool,
+          useValue: {
+            definition: { name: 'order_workflow' },
+            execute: jest.fn(),
+          },
+        },
+        {
+          provide: InventoryAlertTool,
+          useValue: {
+            definition: { name: 'check_inventory' },
+            execute: jest.fn(),
+          },
+        },
+        {
+          provide: AnomalyDetectionTool,
+          useValue: {
+            definition: { name: 'detect_anomalies' },
+            execute: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -39,7 +65,17 @@ describe('OrderManagementAgent', () => {
   });
 
   it('应该通过ReAct循环处理任务', async () => {
-    const task = { id: 't1', type: 'order_management' as any, input: { action: 'check_inventory', productName: '蓝牙耳机', currentStock: 20, threshold: 100 }, createdAt: new Date() };
+    const task = {
+      id: 't1',
+      type: 'order_management' as any,
+      input: {
+        action: 'check_inventory',
+        productName: '蓝牙耳机',
+        currentStock: 20,
+        threshold: 100,
+      },
+      createdAt: new Date(),
+    };
     const result = await agent.handleTask(task);
     expect(result.status).toBe('completed');
     expect(mockReActLoop.run).toHaveBeenCalled();

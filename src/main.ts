@@ -20,7 +20,13 @@ async function bootstrap() {
   orchestrator.registerAgent(orderManagementAgent, TaskType.ORDER_MANAGEMENT);
   orchestrator.registerAgent(customerServiceAgent, TaskType.CUSTOMER_SERVICE);
 
-  console.log('已注册 Agents:', orchestrator.getRegisteredAgents().map(a => a.name).join(', '));
+  console.log(
+    '已注册 Agents:',
+    orchestrator
+      .getRegisteredAgents()
+      .map((a) => a.name)
+      .join(', '),
+  );
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);

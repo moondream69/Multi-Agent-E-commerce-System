@@ -22,8 +22,10 @@ export class ProductGenerator {
   private readonly logger = new Logger(ProductGenerator.name);
 
   constructor(
-    @InjectRepository(Product) private readonly productRepo: Repository<Product>,
-    @InjectRepository(ProductEmbedding) private readonly embRepo: Repository<ProductEmbedding>,
+    @InjectRepository(Product)
+    private readonly productRepo: Repository<Product>,
+    @InjectRepository(ProductEmbedding)
+    private readonly embRepo: Repository<ProductEmbedding>,
     private readonly llm: LlmService,
     private readonly embedding: EmbeddingService,
   ) {}
@@ -34,14 +36,15 @@ export class ProductGenerator {
     for (const cat of CATEGORIES) {
       this.logger.log(`生成 ${cat.name} 商品 (${cat.count}个)...`);
       try {
-        const response = await this.llm.complete([
-          {
-            role: 'system',
-            content: `你是一个跨境电商商品数据生成器。生成逼真的商品数据，所有价格使用美元(USD)。`,
-          },
-          {
-            role: 'user',
-            content: `生成 ${cat.count} 个"${cat.name}"类目的商品JSON数组。每个商品严格包含以下字段:
+        const response = await this.llm.complete(
+          [
+            {
+              role: 'system',
+              content: `你是一个跨境电商商品数据生成器。生成逼真的商品数据，所有价格使用美元(USD)。`,
+            },
+            {
+              role: 'user',
+              content: `生成 ${cat.count} 个"${cat.name}"类目的商品JSON数组。每个商品严格包含以下字段:
 - sku: "${cat.prefix}-" 前缀加3位数字 (如 "${cat.prefix}-001")
 - title: 简短商品名 (英文, 最多80字符)
 - description: 1-2句商品描述 (中文, 强调卖点和规格)
@@ -52,8 +55,10 @@ export class ProductGenerator {
 - status: "active"
 
 只返回有效的JSON数组，不要其他文字。`,
-          },
-        ], { temperature: 0.7, maxTokens: 8000, jsonMode: true });
+            },
+          ],
+          { temperature: 0.7, maxTokens: 8000, jsonMode: true },
+        );
 
         const products = JSON.parse(response);
         if (!Array.isArray(products)) continue;
@@ -82,7 +87,11 @@ export class ProductGenerator {
               productId: saved.id,
               embedding: vector,
               content: embedText,
-              metadata: { price: item.price, category: item.category, platform: item.platform },
+              metadata: {
+                price: item.price,
+                category: item.category,
+                platform: item.platform,
+              },
             });
             await this.embRepo.save(emb);
             total++;

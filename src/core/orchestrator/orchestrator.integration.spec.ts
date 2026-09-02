@@ -126,11 +126,16 @@ describe('Framework Integration', () => {
     let resolveFirst: (value: unknown) => void = () => {};
     jest
       .spyOn(
-        researchAgent as unknown as { executeTask: (t: AgentTask) => Promise<unknown> },
+        researchAgent as unknown as {
+          executeTask: (t: AgentTask) => Promise<unknown>;
+        },
         'executeTask',
       )
       .mockImplementationOnce(
-        () => new Promise((resolve) => { resolveFirst = resolve; }),
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
       )
       .mockReturnValueOnce(Promise.resolve({ result: 'second' }));
 

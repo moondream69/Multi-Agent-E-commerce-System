@@ -47,7 +47,9 @@ export class EmbeddingService {
     const isOpenAI = !apiUrl;
 
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
       if (isOpenAI) headers['Authorization'] = `Bearer ${apiKey}`;
 
       const response = await fetch(`${baseUrl}/v1/embeddings`, {
@@ -57,13 +59,17 @@ export class EmbeddingService {
       });
 
       if (!response.ok) {
-        throw new Error(`Embedding API 错误: ${response.status} ${response.statusText}`);
+        throw new Error(
+          `Embedding API 错误: ${response.status} ${response.statusText}`,
+        );
       }
 
       const data = await response.json();
       return data.data[0].embedding;
     } catch (error) {
-      this.logger.warn(`Embedding API 调用失败，使用零向量占位: ${(error as Error).message}`);
+      this.logger.warn(
+        `Embedding API 调用失败，使用零向量占位: ${(error as Error).message}`,
+      );
       return new Array(dimension).fill(0);
     }
   }
@@ -81,9 +87,15 @@ export class EmbeddingService {
 
     let repo: Repository<ProductEmbedding | FaqEmbedding | MarketEmbedding>;
     switch (params.collection) {
-      case 'products': repo = this.productEmbeddingRepo; break;
-      case 'faq': repo = this.faqEmbeddingRepo; break;
-      case 'market': repo = this.marketEmbeddingRepo; break;
+      case 'products':
+        repo = this.productEmbeddingRepo;
+        break;
+      case 'faq':
+        repo = this.faqEmbeddingRepo;
+        break;
+      case 'market':
+        repo = this.marketEmbeddingRepo;
+        break;
     }
 
     const results = await repo

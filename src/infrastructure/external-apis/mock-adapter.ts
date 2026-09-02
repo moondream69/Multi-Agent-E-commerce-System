@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { IPlatformAdapter, PlatformProduct, PlatformOrder } from './platform-adapter.interface';
+import {
+  IPlatformAdapter,
+  PlatformProduct,
+  PlatformOrder,
+} from './platform-adapter.interface';
 
 @Injectable()
 export class MockPlatformAdapter implements IPlatformAdapter {
@@ -50,7 +54,9 @@ export class MockPlatformAdapter implements IPlatformAdapter {
     return this.orders;
   }
 
-  async createProduct(data: Partial<PlatformProduct>): Promise<PlatformProduct> {
+  async createProduct(
+    data: Partial<PlatformProduct>,
+  ): Promise<PlatformProduct> {
     const product: PlatformProduct = {
       platformId: `mock-prod-${Date.now()}`,
       sku: data.sku ?? `SKU-${Date.now()}`,

@@ -24,7 +24,10 @@ describe('EventBusService', () => {
 
   it('支持多个订阅者', (done) => {
     let count = 0;
-    const handler = () => { count++; if (count >= 2) done(); };
+    const handler = () => {
+      count++;
+      if (count >= 2) done();
+    };
     service.on(AgentEventType.PRODUCT_CREATED, handler);
     service.on(AgentEventType.PRODUCT_CREATED, handler);
     service.emit(AgentEventType.PRODUCT_CREATED, {});
@@ -32,10 +35,17 @@ describe('EventBusService', () => {
 
   it('broadcast应该通知所有指定handlers', async () => {
     const results: string[] = [];
-    const h1 = (e: any) => { results.push('h1:' + e.payload.data); };
-    const h2 = (e: any) => { results.push('h2:' + e.payload.data); };
+    const h1 = (e: any) => {
+      results.push('h1:' + e.payload.data);
+    };
+    const h2 = (e: any) => {
+      results.push('h2:' + e.payload.data);
+    };
 
-    await service.broadcast(AgentEventType.REPORT_GENERATED, { data: 'test' }, [h1, h2]);
+    await service.broadcast(AgentEventType.REPORT_GENERATED, { data: 'test' }, [
+      h1,
+      h2,
+    ]);
 
     expect(results).toContain('h1:test');
     expect(results).toContain('h2:test');

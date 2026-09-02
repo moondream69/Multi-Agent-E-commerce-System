@@ -17,8 +17,20 @@ import { CustomerGenerator } from './generators/customer.generator';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     InfrastructureModule,
-    TypeOrmModule.forFeature([Product, Customer, ProductEmbedding, MarketEmbedding, FaqEmbedding]),
+    TypeOrmModule.forFeature([
+      Product,
+      Customer,
+      ProductEmbedding,
+      MarketEmbedding,
+      FaqEmbedding,
+    ]),
   ],
-  providers: [SeedService, ProductGenerator, MarketGenerator, FaqGenerator, CustomerGenerator],
+  providers: [
+    SeedService,
+    ProductGenerator,
+    MarketGenerator,
+    FaqGenerator,
+    CustomerGenerator,
+  ],
 })
 export class SeedModule {}

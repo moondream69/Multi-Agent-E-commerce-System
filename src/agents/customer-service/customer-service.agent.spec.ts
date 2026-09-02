@@ -10,7 +10,9 @@ import { TemplateManagerTool } from './tools/template-manager.tool';
 describe('CustomerServiceAgent', () => {
   let agent: CustomerServiceAgent;
 
-  const mockReActLoop = { run: jest.fn().mockResolvedValue({ result: 'test output' }) };
+  const mockReActLoop = {
+    run: jest.fn().mockResolvedValue({ result: 'test output' }),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -18,10 +20,28 @@ describe('CustomerServiceAgent', () => {
         CustomerServiceAgent,
         { provide: ReActLoopService, useValue: mockReActLoop },
         { provide: EventBusService, useValue: { emit: jest.fn() } },
-        { provide: TranslatorTool, useValue: { definition: { name: 'translate' }, execute: jest.fn() } },
-        { provide: FaqRetrievalTool, useValue: { definition: { name: 'faq_search' }, execute: jest.fn() } },
-        { provide: SentimentAnalysisTool, useValue: { definition: { name: 'sentiment_analysis' }, execute: jest.fn() } },
-        { provide: TemplateManagerTool, useValue: { definition: { name: 'manage_template' }, execute: jest.fn() } },
+        {
+          provide: TranslatorTool,
+          useValue: { definition: { name: 'translate' }, execute: jest.fn() },
+        },
+        {
+          provide: FaqRetrievalTool,
+          useValue: { definition: { name: 'faq_search' }, execute: jest.fn() },
+        },
+        {
+          provide: SentimentAnalysisTool,
+          useValue: {
+            definition: { name: 'sentiment_analysis' },
+            execute: jest.fn(),
+          },
+        },
+        {
+          provide: TemplateManagerTool,
+          useValue: {
+            definition: { name: 'manage_template' },
+            execute: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
@@ -39,7 +59,12 @@ describe('CustomerServiceAgent', () => {
   });
 
   it('应该通过ReAct循环处理客服查询', async () => {
-    const task = { id: 't1', type: 'customer_service' as any, input: { action: 'handle_query', text: '如何退货？', locale: 'zh-CN' }, createdAt: new Date() };
+    const task = {
+      id: 't1',
+      type: 'customer_service' as any,
+      input: { action: 'handle_query', text: '如何退货？', locale: 'zh-CN' },
+      createdAt: new Date(),
+    };
     const result = await agent.handleTask(task);
     expect(result.status).toBe('completed');
     expect(mockReActLoop.run).toHaveBeenCalled();

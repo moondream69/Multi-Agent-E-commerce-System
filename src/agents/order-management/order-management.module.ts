@@ -12,7 +12,14 @@ import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Product, Order, Customer])],
-  providers: [OrderManagementAgent, ProductCrudTool, OrderWorkflowTool, InventoryAlertTool, AnomalyDetectionTool, ReActLoopService],
+  providers: [
+    OrderManagementAgent,
+    ProductCrudTool,
+    OrderWorkflowTool,
+    InventoryAlertTool,
+    AnomalyDetectionTool,
+    ReActLoopService,
+  ],
   exports: [OrderManagementAgent],
 })
 export class OrderManagementModule {}

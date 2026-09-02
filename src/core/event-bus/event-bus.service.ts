@@ -10,7 +10,12 @@ export class EventBusService {
 
   constructor(private readonly eventEmitter: EventEmitter2) {}
 
-  emit(type: AgentEventType, payload: unknown, correlationId?: string, source = 'system'): void {
+  emit(
+    type: AgentEventType,
+    payload: unknown,
+    correlationId?: string,
+    source = 'system',
+  ): void {
     const event: AgentEvent = {
       id: crypto.randomUUID(),
       type,
@@ -45,7 +50,10 @@ export class EventBusService {
       try {
         await handler(event);
       } catch (error) {
-        this.logger.error(`事件处理器失败: ${(error as Error).message}`, (error as Error).stack);
+        this.logger.error(
+          `事件处理器失败: ${(error as Error).message}`,
+          (error as Error).stack,
+        );
       }
     }
   }

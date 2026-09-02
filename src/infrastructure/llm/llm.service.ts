@@ -26,7 +26,10 @@ export interface LlmToolDefinition {
     description: string;
     parameters: {
       type: 'object';
-      properties: Record<string, { type: string; description?: string; enum?: string[] }>;
+      properties: Record<
+        string,
+        { type: string; description?: string; enum?: string[] }
+      >;
       required?: string[];
     };
   };
@@ -58,7 +61,10 @@ export class LlmService {
     private readonly cache: CacheService,
   ) {}
 
-  async complete(messages: LlmMessage[], options: LlmCompletionOptions = {}): Promise<string> {
+  async complete(
+    messages: LlmMessage[],
+    options: LlmCompletionOptions = {},
+  ): Promise<string> {
     const { temperature = 0.7, maxTokens = 2000, jsonMode = false } = options;
     const apiKey = this.config.get('LLM_API_KEY');
     const model = this.config.get('LLM_MODEL', 'gpt-4o-mini');
@@ -71,13 +77,23 @@ export class LlmService {
     try {
       const response = await fetch(`${apiUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens,
-          response_format: jsonMode ? { type: 'json_object' } : undefined }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature,
+          max_tokens: maxTokens,
+          response_format: jsonMode ? { type: 'json_object' } : undefined,
+        }),
       });
 
       if (!response.ok) {
-        throw new Error(`LLM API 错误: ${response.status} ${response.statusText}`);
+        throw new Error(
+          `LLM API 错误: ${response.status} ${response.statusText}`,
+        );
       }
 
       const data = await response.json();
@@ -105,7 +121,10 @@ export class LlmService {
     try {
       const response = await fetch(`${apiUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
         body: JSON.stringify({
           model,
           messages,
@@ -117,7 +136,9 @@ export class LlmService {
       });
 
       if (!response.ok) {
-        throw new Error(`LLM API 错误: ${response.status} ${response.statusText}`);
+        throw new Error(
+          `LLM API 错误: ${response.status} ${response.statusText}`,
+        );
       }
 
       const data = await response.json();
@@ -125,14 +146,16 @@ export class LlmService {
       const message = choice.message;
 
       if (message.tool_calls && message.tool_calls.length > 0) {
-        const toolCalls: ToolCall[] = message.tool_calls.map((tc: {
-          id: string;
-          function: { name: string; arguments: string };
-        }) => ({
-          id: tc.id,
-          name: tc.function.name,
-          arguments: JSON.parse(tc.function.arguments),
-        }));
+        const toolCalls: ToolCall[] = message.tool_calls.map(
+          (tc: {
+            id: string;
+            function: { name: string; arguments: string };
+          }) => ({
+            id: tc.id,
+            name: tc.function.name,
+            arguments: JSON.parse(tc.function.arguments),
+          }),
+        );
         return { content: null, toolCalls };
       }
 
@@ -144,7 +167,10 @@ export class LlmService {
   }
 
   private toolDefToLlmTool(td: ToolDefinition): LlmToolDefinition {
-    const properties: Record<string, { type: string; description?: string; enum?: string[] }> = {};
+    const properties: Record<
+      string,
+      { type: string; description?: string; enum?: string[] }
+    > = {};
     const required: string[] = [];
     for (const p of td.parameters) {
       properties[p.name] = {

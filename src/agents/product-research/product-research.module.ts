@@ -9,7 +9,14 @@ import { ReActLoopService } from '../../core/agent-base/react-loop.service';
 
 @Module({
   imports: [EmbeddingModule],
-  providers: [ProductResearchAgent, TrendQueryTool, CompetitorAnalysisTool, ScoringTool, ReportGeneratorTool, ReActLoopService],
+  providers: [
+    ProductResearchAgent,
+    TrendQueryTool,
+    CompetitorAnalysisTool,
+    ScoringTool,
+    ReportGeneratorTool,
+    ReActLoopService,
+  ],
   exports: [ProductResearchAgent],
 })
 export class ProductResearchModule {}

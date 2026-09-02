@@ -9,7 +9,12 @@ export class AnomalyDetectionTool implements ITool {
     name: 'detect_anomalies',
     description: '检测订单异常，识别退货、退款、投诉等问题关键词',
     parameters: [
-      { name: 'orderDescription', type: 'string', description: '订单描述文本', required: true },
+      {
+        name: 'orderDescription',
+        type: 'string',
+        description: '订单描述文本',
+        required: true,
+      },
     ],
   };
 
@@ -23,6 +28,12 @@ export class AnomalyDetectionTool implements ITool {
     if (matched.length > 0) {
       this.logger.warn(`检测到异常: ${orderDescription}`);
     }
-    return { anomaly: matched.length > 0, reason: matched.length > 0 ? `订单包含异常关键词: ${matched.join(', ')}` : '正常' };
+    return {
+      anomaly: matched.length > 0,
+      reason:
+        matched.length > 0
+          ? `订单包含异常关键词: ${matched.join(', ')}`
+          : '正常',
+    };
   }
 }

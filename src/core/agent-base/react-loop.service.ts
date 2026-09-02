@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { LlmService, LlmMessage, ToolCall } from '../../infrastructure/llm/llm.service';
+import {
+  LlmService,
+  LlmMessage,
+  ToolCall,
+} from '../../infrastructure/llm/llm.service';
 import { ITool } from '../../common/interfaces/tool.interface';
 import { AgentTask, TaskStatus } from '../../common/interfaces';
 
@@ -26,10 +30,16 @@ export class ReActLoopService {
     ];
 
     const toolDefs = tools.map((t) => t.definition);
-    const toolMap = new Map<string, ITool>(tools.map((t) => [t.definition.name, t]));
+    const toolMap = new Map<string, ITool>(
+      tools.map((t) => [t.definition.name, t]),
+    );
 
     for (let i = 0; i < maxIterations; i++) {
-      onStep(`reasoning_${i + 1}`, TaskStatus.IN_PROGRESS, `LLM 推理轮次 ${i + 1}/${maxIterations}`);
+      onStep(
+        `reasoning_${i + 1}`,
+        TaskStatus.IN_PROGRESS,
+        `LLM 推理轮次 ${i + 1}/${maxIterations}`,
+      );
 
       const response = await this.llm.completeWithTools(messages, toolDefs);
 
@@ -74,7 +84,10 @@ export class ReActLoopService {
             `执行 ${toolCall.name}(${JSON.stringify(toolCall.arguments).slice(0, 100)})`,
           );
           const result = await tool.execute(toolCall.arguments);
-          const resultStr = typeof result === 'object' ? JSON.stringify(result) : String(result);
+          const resultStr =
+            typeof result === 'object'
+              ? JSON.stringify(result)
+              : String(result);
           onStep(toolCall.name, TaskStatus.COMPLETED, resultStr.slice(0, 200));
 
           messages.push({

@@ -6,7 +6,9 @@ import { FaqEmbedding } from '../database/vector-entities/faq-embedding.entity';
 import { MarketEmbedding } from '../database/vector-entities/market-embedding.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([ProductEmbedding, FaqEmbedding, MarketEmbedding])],
+  imports: [
+    TypeOrmModule.forFeature([ProductEmbedding, FaqEmbedding, MarketEmbedding]),
+  ],
   providers: [EmbeddingService],
   exports: [EmbeddingService],
 })
