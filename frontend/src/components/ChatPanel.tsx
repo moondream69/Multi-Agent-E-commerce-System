@@ -1,10 +1,94 @@
 import React, { useState, useRef, useEffect } from 'react';
+import Markdown from 'react-markdown';
 import { ChatResponse } from '../types/events';
 
 interface Props {
   onSend: (text: string) => void;
   lastResponse: ChatResponse | null;
 }
+
+// Agent 消息的 markdown 渲染样式(内联风格,与气泡一致;不含原始 HTML 透传,XSS 安全)
+const markdownComponents: React.ComponentProps<typeof Markdown>['components'] =
+  {
+    p: ({ children }) => <p style={{ margin: '0 0 6px 0' }}>{children}</p>,
+    h1: ({ children }) => (
+      <h1 style={{ margin: '8px 0 4px', fontSize: 16, fontWeight: 600 }}>
+        {children}
+      </h1>
+    ),
+    h2: ({ children }) => (
+      <h2 style={{ margin: '8px 0 4px', fontSize: 15, fontWeight: 600 }}>
+        {children}
+      </h2>
+    ),
+    h3: ({ children }) => (
+      <h3 style={{ margin: '8px 0 4px', fontSize: 14, fontWeight: 600 }}>
+        {children}
+      </h3>
+    ),
+    h4: ({ children }) => (
+      <h4 style={{ margin: '8px 0 4px', fontSize: 13, fontWeight: 600 }}>
+        {children}
+      </h4>
+    ),
+    ul: ({ children }) => (
+      <ul style={{ paddingLeft: 18, margin: '0 0 6px' }}>{children}</ul>
+    ),
+    ol: ({ children }) => (
+      <ol style={{ paddingLeft: 18, margin: '0 0 6px' }}>{children}</ol>
+    ),
+    li: ({ children }) => <li style={{ margin: 0 }}>{children}</li>,
+    code: ({ children }) => (
+      <code
+        style={{
+          background: '#f1f5f9',
+          padding: '1px 4px',
+          borderRadius: 4,
+          fontFamily: 'monospace',
+          fontSize: 12,
+        }}
+      >
+        {children}
+      </code>
+    ),
+    pre: ({ children }) => (
+      <pre
+        style={{
+          background: '#f8fafc',
+          border: '1px solid #e2e8f0',
+          borderRadius: 6,
+          padding: 8,
+          overflowX: 'auto',
+          fontSize: 12,
+          margin: '0 0 6px',
+        }}
+      >
+        {children}
+      </pre>
+    ),
+    a: ({ href, children }) => (
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        style={{ color: '#2563eb', wordBreak: 'break-all' }}
+      >
+        {children}
+      </a>
+    ),
+    blockquote: ({ children }) => (
+      <blockquote
+        style={{
+          borderLeft: '3px solid #e2e8f0',
+          paddingLeft: 8,
+          color: '#666',
+          margin: '0 0 6px',
+        }}
+      >
+        {children}
+      </blockquote>
+    ),
+  };
 
 export function ChatPanel({ onSend, lastResponse }: Props) {
   const [input, setInput] = useState('');
@@ -140,7 +224,11 @@ export function ChatPanel({ onSend, lastResponse }: Props) {
             >
               {msg.role === 'user' ? '你' : 'Agent'}
             </div>
-            {msg.content}
+            {msg.role === 'user' ? (
+              msg.content
+            ) : (
+              <Markdown components={markdownComponents}>{msg.content}</Markdown>
+            )}
           </div>
         ))}
         <div ref={bottomRef} />
