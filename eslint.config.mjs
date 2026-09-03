@@ -15,24 +15,13 @@ export default tseslint.config(
   // prettier 选项单来源在 .prettierrc——此处不再内联任何选项。
   eslintPluginPrettierRecommended,
   eslintConfigPrettier,
-  // 一个共享的类型感知项目服务,按文件向上找最近的 tsconfig:
-  //   根 tsconfig.json -> src/**、test/**
-  //   src/seed/tsconfig.json -> src/seed/**
-  //   frontend/tsconfig.json -> frontend/src/**、frontend/vite.config.ts
+  // 类型感知项目服务,按文件向上找最近的 tsconfig:frontend/tsconfig.json -> frontend/src/**、frontend/vite.config.ts
   {
     languageOptions: {
       parserOptions: {
         projectService: true,
         tsconfigRootDir: import.meta.dirname,
       },
-    },
-  },
-  // 后端与测试:CommonJS + Node/Jest 环境
-  {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
-    languageOptions: {
-      globals: { ...globals.node, ...globals.jest },
-      sourceType: 'commonjs',
     },
   },
   // 前端:浏览器 ESM
