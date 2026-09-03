@@ -1,4 +1,4 @@
-// 与后端 src/common/interfaces/event.interface.ts / agent.interface.ts / task.interface.ts 手动同步
+// 契约真源:契约测试 python-backend/tests/test_contract.py 对照本文件断言
 export const AgentEventType = {
   REPORT_GENERATED: 'report.generated',
   PRODUCT_CREATED: 'product.created',
@@ -40,7 +40,7 @@ export interface AgentInfo {
   tools: { name: string; description: string; parameters: unknown[] }[];
 }
 
-// 与后端 src/api/websocket/agent.gateway.ts 的 chat:response 三种形状手动同步
+// chat:response 三种形状手动同步(契约测试覆盖)
 export interface TaskCreatedResponse {
   type: 'task_created';
   taskId: string;
