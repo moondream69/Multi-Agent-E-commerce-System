@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import enum
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 
-class TaskType(str, enum.Enum):
+class TaskType(StrEnum):
     PRODUCT_RESEARCH = "product_research"
     ORDER_MANAGEMENT = "order_management"
     CUSTOMER_SERVICE = "customer_service"
 
 
-class TaskStatus(str, enum.Enum):
+class TaskStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -36,21 +36,12 @@ class AgentTask:
 
 
 @dataclass
-class TaskStep:
-    name: str
-    status: TaskStatus
-    detail: str
-    started_at: datetime
-    completed_at: datetime | None = None
-
-
-@dataclass
 class AgentResult:
     task_id: str
     agent_id: str
     status: TaskStatus
     output: dict[str, Any]
-    steps: list[TaskStep]
+    steps: list[dict[str, Any]]
     completed_at: datetime
 
 

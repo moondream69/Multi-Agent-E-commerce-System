@@ -56,7 +56,12 @@ def test_dashboard_agents_shape():
             tool = agent["tools"][0]
             assert set(tool.keys()) == {"name", "description", "parameters"}
             if tool["parameters"]:
-                assert set(tool["parameters"][0].keys()) == {"name", "type", "description", "required"}
+                assert set(tool["parameters"][0].keys()) == {
+                    "name",
+                    "type",
+                    "description",
+                    "required",
+                }
 
 
 def test_dashboard_status_shape():
@@ -90,8 +95,8 @@ def test_get_agent_by_id_and_not_found():
 
 
 def test_event_json_shape_matches_events_ts():
-    from python_backend.core.event_bus import new_event
     from python_backend.api.serializers import event_payload
+    from python_backend.core.event_bus import new_event
     from python_backend.domain.events import AgentEventType
 
     event = new_event(AgentEventType.REPORT_GENERATED, {"reportId": "r-1"}, correlation_id="corr-1")

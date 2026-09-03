@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from python_backend.core.event_bus import EventBus
 from python_backend.core.graph import AgentState, build_react_graph
 from python_backend.domain.agents import AgentStatus
 from python_backend.domain.events import AgentEvent, AgentEventType
-from python_backend.domain.tasks import AgentResult, AgentTask, TaskStatus, ToolDefinition
+from python_backend.domain.tasks import (
+    AgentResult,
+    AgentTask,
+    TaskStatus,
+    ToolDefinition,
+)
 from python_backend.domain.tools import ToolProtocol
 from python_backend.infrastructure.llm import LlmService
 
@@ -24,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class BaseAgent:
@@ -104,8 +109,8 @@ class BaseAgent:
                 "name": name,
                 "status": status.value,
                 "detail": detail,
-                "startedAt": datetime.now(timezone.utc),
-                "completedAt": datetime.now(timezone.utc) if status == TaskStatus.COMPLETED else None,
+                "startedAt": datetime.now(UTC),
+                "completedAt": datetime.now(UTC) if status == TaskStatus.COMPLETED else None,
             }
         )
 

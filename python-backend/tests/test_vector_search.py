@@ -1,9 +1,10 @@
 """向量检索单测:排序正确 + 阈值过滤(不依赖 Ollama,直接构造查询向量)。"""
 
 import uuid
+from typing import cast
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Table, text
 from sqlalchemy.orm import Session
 
 from python_backend.db.base import Base
@@ -51,7 +52,6 @@ def test_search_sorts_by_similarity_and_filters_by_threshold(prepared_db):
             permissive = semantic_search(session, FaqEmbedding, _one_hot(0), top_k=5, threshold=0.0, where=own_rows)
             assert [r["answer"] for r in permissive] == ["退货说明", "物流说明"]
         finally:
-            session.execute(
-                FaqEmbedding.__table__.delete().where(FaqEmbedding.__table__.c.id.in_([row_a.id, row_b.id]))
-            )
+            table = cast(Table, FaqEmbedding.__table__)
+            session.execute(table.delete().where(table.c.id.in_([row_a.id, row_b.id])))
             session.commit()

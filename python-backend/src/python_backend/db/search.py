@@ -5,12 +5,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from python_backend.db.base import Base
 from python_backend.db.rows import row_to_dict
 
 
 def semantic_search(
     session: Session,
-    model: type,
+    model: type[Base],
     query_vector: list[float],
     *,
     top_k: int = 5,

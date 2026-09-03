@@ -7,11 +7,26 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from python_backend.agents.customer_service.agent import CustomerServiceAgent
-from python_backend.agents.customer_service.tools import FaqRetrievalTool, SentimentAnalysisTool, TemplateManagerTool, TranslatorTool
+from python_backend.agents.customer_service.tools import (
+    FaqRetrievalTool,
+    SentimentAnalysisTool,
+    TemplateManagerTool,
+    TranslatorTool,
+)
 from python_backend.agents.order_management.agent import OrderManagementAgent
-from python_backend.agents.order_management.tools import AnomalyDetectionTool, InventoryAlertTool, OrderWorkflowTool, ProductCrudTool
+from python_backend.agents.order_management.tools import (
+    AnomalyDetectionTool,
+    InventoryAlertTool,
+    OrderWorkflowTool,
+    ProductCrudTool,
+)
 from python_backend.agents.product_research.agent import ProductResearchAgent
-from python_backend.agents.product_research.tools import CompetitorAnalysisTool, ReportGeneratorTool, ScoringTool, TrendQueryTool
+from python_backend.agents.product_research.tools import (
+    CompetitorAnalysisTool,
+    ReportGeneratorTool,
+    ScoringTool,
+    TrendQueryTool,
+)
 from python_backend.api.rest import build_router
 from python_backend.api.ws import bridge_all_events, register_ws_handlers
 from python_backend.core.event_bus import EventBus

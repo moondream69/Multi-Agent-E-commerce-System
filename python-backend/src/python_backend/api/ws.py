@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
@@ -16,13 +16,13 @@ from python_backend.core.orchestrator import Orchestrator
 from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import AgentTask
 
-__all__ = ["register_ws_handlers", "bridge_all_events"]
+__all__ = ["bridge_all_events", "register_ws_handlers"]
 
 logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def register_ws_handlers(

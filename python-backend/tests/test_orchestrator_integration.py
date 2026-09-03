@@ -11,7 +11,11 @@ from python_backend.core.event_bus import EventBus
 from python_backend.core.orchestrator import Orchestrator
 from python_backend.domain.agents import AgentStatus
 from python_backend.domain.events import AgentEvent, AgentEventType
-from python_backend.domain.tasks import AgentResult, AgentTask, TaskStatus, TaskType, ToolDefinition
+from python_backend.domain.tasks import (
+    AgentTask,
+    TaskStatus,
+    TaskType,
+)
 from python_backend.infrastructure.llm import LlmService
 
 LLM = LlmService()
@@ -131,8 +135,14 @@ async def test_concurrent_tasks_stay_busy_until_last_finishes(orchestrator, even
     await first
     assert agent.get_status() == AgentStatus.IDLE
 
-    assert (status_events[0]["status"], status_events[0]["taskId"]) == (AgentStatus.BUSY.value, "c1")
-    assert (status_events[-1]["status"], status_events[-1]["taskId"]) == (AgentStatus.IDLE.value, "c1")
+    assert (status_events[0]["status"], status_events[0]["taskId"]) == (
+        AgentStatus.BUSY.value,
+        "c1",
+    )
+    assert (status_events[-1]["status"], status_events[-1]["taskId"]) == (
+        AgentStatus.IDLE.value,
+        "c1",
+    )
 
 
 async def test_cross_agent_collaboration(orchestrator):
@@ -143,13 +153,31 @@ async def test_cross_agent_collaboration(orchestrator):
     orchestrator.register_agent(order, TaskType.ORDER_MANAGEMENT)
     orchestrator.register_agent(service, TaskType.CUSTOMER_SERVICE)
 
-    report = await orchestrator.route_task(AgentTask(id="collab-1", type=TaskType.PRODUCT_RESEARCH, input={"query": "蓝牙耳机"}))
+    report = await orchestrator.route_task(
+        AgentTask(id="collab-1", type=TaskType.PRODUCT_RESEARCH, input={"query": "蓝牙耳机"})
+    )
     assert report.status == TaskStatus.COMPLETED
 
     order_result = await orchestrator.route_task(
-        AgentTask(id="collab-2", type=TaskType.ORDER_MANAGEMENT, input={"action": "create_product", "sku": "BT-001", "title": "蓝牙耳机", "price": 99, "category": "电子"})
+        AgentTask(
+            id="collab-2",
+            type=TaskType.ORDER_MANAGEMENT,
+            input={
+                "action": "create_product",
+                "sku": "BT-001",
+                "title": "蓝牙耳机",
+                "price": 99,
+                "category": "电子",
+            },
+        )
     )
     assert order_result.status == TaskStatus.COMPLETED
 
-    service_result = await orchestrator.route_task(AgentTask(id="collab-3", type=TaskType.CUSTOMER_SERVICE, input={"action": "handle_query", "text": "你好"}))
+    service_result = await orchestrator.route_task(
+        AgentTask(
+            id="collab-3",
+            type=TaskType.CUSTOMER_SERVICE,
+            input={"action": "handle_query", "text": "你好"},
+        )
+    )
     assert service_result.status == TaskStatus.COMPLETED

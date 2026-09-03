@@ -10,19 +10,26 @@ import json
 import logging
 import random
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 
-from python_backend.db.models import Customer, FaqEmbedding, MarketEmbedding, Product, ProductEmbedding
+from python_backend.db.models import (
+    Customer,
+    FaqEmbedding,
+    MarketEmbedding,
+    Product,
+    ProductEmbedding,
+)
 from python_backend.db.session import SessionLocal
 from python_backend.infrastructure.embedding import EmbeddingService
 from python_backend.infrastructure.llm import LlmService
 
 logger = logging.getLogger(__name__)
 
-CATEGORIES = [
+CATEGORIES: list[dict[str, Any]] = [
     {"name": "消费电子", "prefix": "ELEC", "count": 25},
     {"name": "服装配饰", "prefix": "CLTH", "count": 25},
     {"name": "家居厨房", "prefix": "HOME", "count": 20},
@@ -43,34 +50,138 @@ FAQ_TOPICS = [
     {"topic": "售后保修", "count": 10, "tags": ["warranty", "repairs", "support"]},
 ]
 
-MARKET_TOPICS = [
+MARKET_TOPICS: list[dict[str, Any]] = [
     {"type": "趋势分析", "categories": ["消费电子", "服装", "家居", "运动", "美妆"], "count": 25},
     {"type": "竞品分析", "categories": ["消费电子", "服装", "家居", "运动", "美妆"], "count": 25},
     {"type": "季节性规律", "categories": ["服装", "运动", "家居", "玩具", "美妆"], "count": 25},
-    {"type": "行业洞察", "categories": ["跨境电商", "拉美市场", "东南亚", "欧洲", "北美"], "count": 25},
+    {
+        "type": "行业洞察",
+        "categories": ["跨境电商", "拉美市场", "东南亚", "欧洲", "北美"],
+        "count": 25,
+    },
 ]
 
 CUSTOMERS = [
-    {"name": "张伟", "email": "zhangwei@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"}},
-    {"name": "Li Na", "email": "lina@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "USD", "notificationChannel": "sms"}},
-    {"name": "James Chen", "email": "james.chen@example.com", "locale": "en-US", "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"}},
-    {"name": "Emily Wang", "email": "emily.w@example.com", "locale": "en-US", "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"}},
-    {"name": "王芳", "email": "wangfang@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "CNY", "notificationChannel": "wechat"}},
-    {"name": "刘洋", "email": "liuyang@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"}},
-    {"name": "田中太郎", "email": "tanaka@example.jp", "locale": "ja-JP", "preferences": {"preferredCurrency": "JPY", "notificationChannel": "email"}},
-    {"name": "Sakura Yamamoto", "email": "sakura@example.jp", "locale": "ja-JP", "preferences": {"preferredCurrency": "JPY", "notificationChannel": "sms"}},
-    {"name": "Michael Smith", "email": "michael.s@example.com", "locale": "en-US", "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"}},
-    {"name": "Sarah Johnson", "email": "sarah.j@example.com", "locale": "en-US", "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"}},
-    {"name": "Hans Mueller", "email": "hans.m@example.de", "locale": "de-DE", "preferences": {"preferredCurrency": "EUR", "notificationChannel": "email"}},
-    {"name": "Anna Schmidt", "email": "anna.s@example.de", "locale": "de-DE", "preferences": {"preferredCurrency": "EUR", "notificationChannel": "sms"}},
-    {"name": "陈明", "email": "chenming@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "CNY", "notificationChannel": "wechat"}},
-    {"name": "赵丽", "email": "zhaoli@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"}},
-    {"name": "Pierre Dupont", "email": "pierre.d@example.fr", "locale": "fr-FR", "preferences": {"preferredCurrency": "EUR", "notificationChannel": "email"}},
-    {"name": "Marie Laurent", "email": "marie.l@example.fr", "locale": "fr-FR", "preferences": {"preferredCurrency": "EUR", "notificationChannel": "sms"}},
-    {"name": "David Lee", "email": "david.lee@example.com", "locale": "en-US", "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"}},
-    {"name": "佐藤健", "email": "sato@example.jp", "locale": "ja-JP", "preferences": {"preferredCurrency": "JPY", "notificationChannel": "email"}},
-    {"name": "黄晓明", "email": "huangxm@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "CNY", "notificationChannel": "sms"}},
-    {"name": "周杰", "email": "zhoujie@example.com", "locale": "zh-CN", "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"}},
+    {
+        "name": "张伟",
+        "email": "zhangwei@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"},
+    },
+    {
+        "name": "Li Na",
+        "email": "lina@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "USD", "notificationChannel": "sms"},
+    },
+    {
+        "name": "James Chen",
+        "email": "james.chen@example.com",
+        "locale": "en-US",
+        "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"},
+    },
+    {
+        "name": "Emily Wang",
+        "email": "emily.w@example.com",
+        "locale": "en-US",
+        "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"},
+    },
+    {
+        "name": "王芳",
+        "email": "wangfang@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "CNY", "notificationChannel": "wechat"},
+    },
+    {
+        "name": "刘洋",
+        "email": "liuyang@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"},
+    },
+    {
+        "name": "田中太郎",
+        "email": "tanaka@example.jp",
+        "locale": "ja-JP",
+        "preferences": {"preferredCurrency": "JPY", "notificationChannel": "email"},
+    },
+    {
+        "name": "Sakura Yamamoto",
+        "email": "sakura@example.jp",
+        "locale": "ja-JP",
+        "preferences": {"preferredCurrency": "JPY", "notificationChannel": "sms"},
+    },
+    {
+        "name": "Michael Smith",
+        "email": "michael.s@example.com",
+        "locale": "en-US",
+        "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"},
+    },
+    {
+        "name": "Sarah Johnson",
+        "email": "sarah.j@example.com",
+        "locale": "en-US",
+        "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"},
+    },
+    {
+        "name": "Hans Mueller",
+        "email": "hans.m@example.de",
+        "locale": "de-DE",
+        "preferences": {"preferredCurrency": "EUR", "notificationChannel": "email"},
+    },
+    {
+        "name": "Anna Schmidt",
+        "email": "anna.s@example.de",
+        "locale": "de-DE",
+        "preferences": {"preferredCurrency": "EUR", "notificationChannel": "sms"},
+    },
+    {
+        "name": "陈明",
+        "email": "chenming@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "CNY", "notificationChannel": "wechat"},
+    },
+    {
+        "name": "赵丽",
+        "email": "zhaoli@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"},
+    },
+    {
+        "name": "Pierre Dupont",
+        "email": "pierre.d@example.fr",
+        "locale": "fr-FR",
+        "preferences": {"preferredCurrency": "EUR", "notificationChannel": "email"},
+    },
+    {
+        "name": "Marie Laurent",
+        "email": "marie.l@example.fr",
+        "locale": "fr-FR",
+        "preferences": {"preferredCurrency": "EUR", "notificationChannel": "sms"},
+    },
+    {
+        "name": "David Lee",
+        "email": "david.lee@example.com",
+        "locale": "en-US",
+        "preferences": {"preferredCurrency": "USD", "notificationChannel": "email"},
+    },
+    {
+        "name": "佐藤健",
+        "email": "sato@example.jp",
+        "locale": "ja-JP",
+        "preferences": {"preferredCurrency": "JPY", "notificationChannel": "email"},
+    },
+    {
+        "name": "黄晓明",
+        "email": "huangxm@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "CNY", "notificationChannel": "sms"},
+    },
+    {
+        "name": "周杰",
+        "email": "zhoujie@example.com",
+        "locale": "zh-CN",
+        "preferences": {"preferredCurrency": "CNY", "notificationChannel": "email"},
+    },
 ]
 
 LLM = LlmService()
@@ -91,16 +202,19 @@ def seed_products() -> int:
         print(f"生成 {cat['name']} 商品 ({cat['count']}个)...", flush=True)
         raw = LLM.complete(
             [
-                {"role": "system", "content": "你是一个跨境电商商品数据生成器。生成逼真的商品数据,所有价格使用美元(USD)。"},
+                {
+                    "role": "system",
+                    "content": "你是一个跨境电商商品数据生成器。生成逼真的商品数据,所有价格使用美元(USD)。",
+                },
                 {
                     "role": "user",
                     "content": (
-                        f"生成 {cat['count']} 个\"{cat['name']}\"类目的商品JSON数组。每个商品严格包含以下字段:\n"
-                        f"- sku: \"{cat['prefix']}-\" 前缀加3位数字 (如 \"{cat['prefix']}-001\")\n"
+                        f'生成 {cat["count"]} 个"{cat["name"]}"类目的商品JSON数组。每个商品严格包含以下字段:\n'
+                        f'- sku: "{cat["prefix"]}-" 前缀加3位数字 (如 "{cat["prefix"]}-001")\n'
                         "- title: 简短商品名 (英文, 最多80字符)\n"
                         "- description: 1-2句商品描述 (中文, 强调卖点和规格)\n"
                         "- price: 美元价格 (数字, 合理范围)\n"
-                        f"- category: \"{cat['name']}\"\n"
+                        f'- category: "{cat["name"]}"\n'
                         '- currency: "USD"\n'
                         '- platform: 随机选择 "Amazon" / "eBay" / "Shopify"\n'
                         '- status: "active"\n\n只返回有效的JSON数组,不要其他文字。'
@@ -155,15 +269,18 @@ def seed_market() -> int:
         print(f"生成市场情报: {topic['type']}...", flush=True)
         raw = LLM.complete(
             [
-                {"role": "system", "content": "你是跨境电商市场分析专家。生成简洁、数据驱动的市场情报条目。"},
+                {
+                    "role": "system",
+                    "content": "你是跨境电商市场分析专家。生成简洁、数据驱动的市场情报条目。",
+                },
                 {
                     "role": "user",
                     "content": (
-                        f"生成 {topic['count']} 条\"{topic['type']}\"类市场情报JSON数组,覆盖类目: {', '.join(topic['categories'])}。\n\n"
+                        f'生成 {topic["count"]} 条"{topic["type"]}"类市场情报JSON数组,覆盖类目: {", ".join(map(str, topic["categories"]))}。\n\n'  # noqa: E501
                         "每条包含:\n"
                         "- content: 情报内容 (中文, 100-200字, 含具体数字和数据)\n"
                         "- category: 所属类目\n"
-                        '- source: 数据来源 (如 "Google Trends" / "Jungle Scout" / "海关数据" / "行业报告")\n\n只返回有效JSON数组。'
+                        '- source: 数据来源 (如 "Google Trends" / "Jungle Scout" / "海关数据" / "行业报告")\n\n只返回有效JSON数组。'  # noqa: E501
                     ),
                 },
             ],
@@ -183,7 +300,7 @@ def seed_market() -> int:
                             content=item["content"],
                             embedding=vector,
                             category=item.get("category") or "综合",
-                            collectedAt=date.today() - timedelta(days=random.randint(0, 365)),
+                            collectedAt=datetime.now(UTC).date() - timedelta(days=random.randint(0, 365)),
                         )
                     )
                     session.commit()
@@ -203,7 +320,7 @@ def seed_faq() -> int:
                 {
                     "role": "user",
                     "content": (
-                        f"生成 {topic['count']} 对关于\"{topic['topic']}\"的FAQ JSON数组。\n\n"
+                        f'生成 {topic["count"]} 对关于"{topic["topic"]}"的FAQ JSON数组。\n\n'
                         "每条严格包含:\n"
                         "- question: 客户常问问题 (中文或英文, 自然语言, 10-40字)\n"
                         "- answer: 客服标准回答 (中文, 50-150字, 专业友好)\n"
@@ -221,7 +338,8 @@ def seed_faq() -> int:
                 with SessionLocal() as session:
                     if session.scalar(
                         select(FaqEmbedding.id).where(
-                            FaqEmbedding.question == item["question"], FaqEmbedding.locale == (item.get("locale") or "zh-CN")
+                            FaqEmbedding.question == item["question"],
+                            FaqEmbedding.locale == (item.get("locale") or "zh-CN"),
                         )
                     ):
                         continue

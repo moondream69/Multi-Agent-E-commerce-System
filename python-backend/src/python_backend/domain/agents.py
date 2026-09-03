@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import enum
+from enum import StrEnum
 from typing import Protocol
 
 from python_backend.domain.events import AgentEvent
 from python_backend.domain.tasks import AgentResult, AgentTask, ToolDefinition
 
 
-class AgentStatus(str, enum.Enum):
+class AgentStatus(StrEnum):
     IDLE = "idle"
     BUSY = "busy"
     ERROR = "error"

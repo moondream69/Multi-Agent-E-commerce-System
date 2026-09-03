@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import enum
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 
-class AgentEventType(str, enum.Enum):
+class AgentEventType(StrEnum):
     REPORT_GENERATED = "report.generated"
     PRODUCT_CREATED = "product.created"
     PRODUCT_UPDATED = "product.updated"

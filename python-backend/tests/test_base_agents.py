@@ -8,11 +8,26 @@ from __future__ import annotations
 import pytest
 
 from python_backend.agents.customer_service.agent import CustomerServiceAgent
-from python_backend.agents.customer_service.tools import FaqRetrievalTool, SentimentAnalysisTool, TemplateManagerTool, TranslatorTool
+from python_backend.agents.customer_service.tools import (
+    FaqRetrievalTool,
+    SentimentAnalysisTool,
+    TemplateManagerTool,
+    TranslatorTool,
+)
 from python_backend.agents.order_management.agent import OrderManagementAgent
-from python_backend.agents.order_management.tools import AnomalyDetectionTool, InventoryAlertTool, OrderWorkflowTool, ProductCrudTool
+from python_backend.agents.order_management.tools import (
+    AnomalyDetectionTool,
+    InventoryAlertTool,
+    OrderWorkflowTool,
+    ProductCrudTool,
+)
 from python_backend.agents.product_research.agent import ProductResearchAgent
-from python_backend.agents.product_research.tools import CompetitorAnalysisTool, ReportGeneratorTool, ScoringTool, TrendQueryTool
+from python_backend.agents.product_research.tools import (
+    CompetitorAnalysisTool,
+    ReportGeneratorTool,
+    ScoringTool,
+    TrendQueryTool,
+)
 from python_backend.core.event_bus import EventBus
 from python_backend.domain.agents import AgentStatus
 from python_backend.domain.events import AgentEventType
@@ -44,7 +59,9 @@ async def _patch_execute(agent, output: dict):
 
 
 async def test_product_research_agent_basics():
-    agent = ProductResearchAgent(BUS, LLM, TrendQueryTool(), CompetitorAnalysisTool(), ScoringTool(), ReportGeneratorTool())
+    agent = ProductResearchAgent(
+        BUS, LLM, TrendQueryTool(), CompetitorAnalysisTool(), ScoringTool(), ReportGeneratorTool()
+    )
     assert agent.id == "product-research"
     assert agent.name == "选品分析Agent"
     assert agent.system_prompt
@@ -52,7 +69,9 @@ async def test_product_research_agent_basics():
 
 
 async def test_product_research_handle_task_and_status_events():
-    agent = ProductResearchAgent(BUS, LLM, TrendQueryTool(), CompetitorAnalysisTool(), ScoringTool(), ReportGeneratorTool())
+    agent = ProductResearchAgent(
+        BUS, LLM, TrendQueryTool(), CompetitorAnalysisTool(), ScoringTool(), ReportGeneratorTool()
+    )
     await _patch_execute(agent, {"result": "test output"})
     result = await agent.handle_task(_task(TaskType.PRODUCT_RESEARCH, {"query": "test"}))
     assert result.status == TaskStatus.COMPLETED
@@ -61,7 +80,14 @@ async def test_product_research_handle_task_and_status_events():
 
 
 async def test_order_management_agent_basics():
-    agent = OrderManagementAgent(BUS, LLM, ProductCrudTool(), OrderWorkflowTool(), InventoryAlertTool(), AnomalyDetectionTool())
+    agent = OrderManagementAgent(
+        BUS,
+        LLM,
+        ProductCrudTool(),
+        OrderWorkflowTool(),
+        InventoryAlertTool(),
+        AnomalyDetectionTool(),
+    )
     assert agent.id == "order-management"
     assert agent.name == "订单处理Agent"
     assert agent.system_prompt
@@ -69,16 +95,38 @@ async def test_order_management_agent_basics():
 
 
 async def test_order_management_handle_task():
-    agent = OrderManagementAgent(BUS, LLM, ProductCrudTool(), OrderWorkflowTool(), InventoryAlertTool(), AnomalyDetectionTool())
+    agent = OrderManagementAgent(
+        BUS,
+        LLM,
+        ProductCrudTool(),
+        OrderWorkflowTool(),
+        InventoryAlertTool(),
+        AnomalyDetectionTool(),
+    )
     await _patch_execute(agent, {"result": "test output"})
     result = await agent.handle_task(
-        _task(TaskType.ORDER_MANAGEMENT, {"action": "check_inventory", "productName": "蓝牙耳机", "currentStock": 20, "threshold": 100})
+        _task(
+            TaskType.ORDER_MANAGEMENT,
+            {
+                "action": "check_inventory",
+                "productName": "蓝牙耳机",
+                "currentStock": 20,
+                "threshold": 100,
+            },
+        )
     )
     assert result.status == TaskStatus.COMPLETED
 
 
 async def test_customer_service_agent_basics():
-    agent = CustomerServiceAgent(BUS, LLM, TranslatorTool(LLM), FaqRetrievalTool(), SentimentAnalysisTool(LLM), TemplateManagerTool())
+    agent = CustomerServiceAgent(
+        BUS,
+        LLM,
+        TranslatorTool(LLM),
+        FaqRetrievalTool(),
+        SentimentAnalysisTool(LLM),
+        TemplateManagerTool(),
+    )
     assert agent.id == "customer-service"
     assert agent.name == "客服Agent"
     assert agent.system_prompt
@@ -86,7 +134,14 @@ async def test_customer_service_agent_basics():
 
 
 async def test_customer_service_handle_task():
-    agent = CustomerServiceAgent(BUS, LLM, TranslatorTool(LLM), FaqRetrievalTool(), SentimentAnalysisTool(LLM), TemplateManagerTool())
+    agent = CustomerServiceAgent(
+        BUS,
+        LLM,
+        TranslatorTool(LLM),
+        FaqRetrievalTool(),
+        SentimentAnalysisTool(LLM),
+        TemplateManagerTool(),
+    )
     await _patch_execute(agent, {"result": "test output"})
     result = await agent.handle_task(_task(TaskType.CUSTOMER_SERVICE, {"action": "handle_query", "text": "如何退货?"}))
     assert result.status == TaskStatus.COMPLETED

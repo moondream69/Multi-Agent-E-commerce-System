@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 
@@ -51,7 +51,7 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
         return {
             "totalAgents": len(agents),
             "onlineAgents": online_agents,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     return router

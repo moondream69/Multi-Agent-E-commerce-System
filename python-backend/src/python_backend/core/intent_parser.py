@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from python_backend.domain.tasks import TaskType
 
@@ -15,7 +15,7 @@ class ParseResult:
 
 
 class IntentParser:
-    _PATTERNS: list[tuple[TaskType, str, list[str]]] = [
+    _PATTERNS: ClassVar[list[tuple[TaskType, str, list[str]]]] = [
         (
             TaskType.PRODUCT_RESEARCH,
             "analyze",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 from python_backend.db.models import Order, OrderStatus, Product
 from python_backend.db.rows import row_to_dict
@@ -24,7 +24,12 @@ class ProductCrudTool:
         name="product_crud",
         description="商品增删改查,支持创建、查询、更新状态等操作",
         parameters=[
-            ToolParameter("action", "string", "操作类型: create|listByCategory|findBySku|updateStatus", required=True),
+            ToolParameter(
+                "action",
+                "string",
+                "操作类型: create|listByCategory|findBySku|updateStatus",
+                required=True,
+            ),
             ToolParameter("sku", "string", "商品 SKU (create/findBySku 时使用)", required=False),
             ToolParameter("title", "string", "商品标题 (create 时使用)", required=False),
             ToolParameter("price", "number", "商品价格 (create 时使用)", required=False),
@@ -71,7 +76,11 @@ class ProductCrudTool:
         action = params["action"]
         if action == "create":
             return self.create(
-                params["sku"], params["title"], float(params["price"]), params["category"], params.get("description")
+                params["sku"],
+                params["title"],
+                float(params["price"]),
+                params["category"],
+                params.get("description"),
             )
         if action == "listByCategory":
             return self.list_by_category(params["category"])
@@ -98,7 +107,7 @@ class OrderWorkflowTool:
         ],
     )
 
-    VALID_TRANSITIONS: dict[OrderStatus, list[OrderStatus]] = {
+    VALID_TRANSITIONS: ClassVar[dict[OrderStatus, list[OrderStatus]]] = {
         OrderStatus.PENDING: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
         OrderStatus.CONFIRMED: [OrderStatus.PROCESSING, OrderStatus.CANCELLED],
         OrderStatus.PROCESSING: [OrderStatus.SHIPPED],

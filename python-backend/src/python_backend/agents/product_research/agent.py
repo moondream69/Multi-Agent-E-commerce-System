@@ -9,7 +9,12 @@ from python_backend.core.event_bus import EventBus
 from python_backend.domain.events import AgentEvent
 from python_backend.infrastructure.llm import LlmService
 
-from .tools import CompetitorAnalysisTool, ReportGeneratorTool, ScoringTool, TrendQueryTool
+from .tools import (
+    CompetitorAnalysisTool,
+    ReportGeneratorTool,
+    ScoringTool,
+    TrendQueryTool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +23,8 @@ SYSTEM_PROMPT = """你是跨境电商选品分析专家。你的任务是根据�
 ## 可用工具
 - trend_query: 查询品类市场趋势数据,参数 category(品类名称), period(时间范围,如 last_30_days)
 - competitor_analysis: 竞品对比分析,参数 category(品类名称), keywords(关键词数组)
-- scoring: 选品评分,参数 searchVolume(搜索量), competition(竞争度0-100), avgPrice(均价), margin(利润率%), growthRate(增长率%)
+- scoring: 选品评分,参数 searchVolume(搜索量), competition(竞争度0-100), avgPrice(均价),
+  margin(利润率%), growthRate(增长率%)
 - generate_report: 生成最终的选品分析报告,参数 title(报告标题), sections(章节数组,每项含title和content)
 
 ## 工作流程

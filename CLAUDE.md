@@ -14,20 +14,20 @@ uv run uvicorn python_backend.main:app --port 3000   # 启动(端口 3000,前端
 uv run pytest                                        # 全部测试(阶段 5 起含 WS e2e,需 Ollama/DeepSeek 在线)
 uv run python -m python_backend.seed                 # 数据播种(幂等:按自然键跳过已存在记录)
 uv run alembic upgrade head                          # 数据库迁移(9 表,含 pgvector 扩展)
-
-# 代码检查与构建 (仓库根)
-npm run lint                                                      # ESLint 检查 (前端,无 --fix)
-npm run lint:fix                                                  # ESLint 自动修复 (安全+格式)
-npm run format                                                    # Prettier 格式化 (前端)
-npm run format:check                                              # Prettier 只检查
-cd frontend && npm run build                                      # 前端构建 (tsc + vite)
+uv run ruff check .                                  # Lint (无 --fix,自动修复用 `ruff check . --fix`)
+uv run ruff format .                                 # 格式化
+uv run ty check .                                    # 类型检查 (Alembic 迁移已排除)
 
 # 前端 (另开终端)
-cd frontend && npm run dev                                        # Vite (5173)
+cd frontend && npm run dev                           # Vite (5173)
+cd frontend && npm run lint / lint:fix               # ESLint 检查/自动修复 (前端,无 --fix 不改写)
+cd frontend && npm run format / format:check         # Prettier 格式化/只检查
+cd frontend && npm run build                         # 前端构建 (tsc + vite)
 ```
 
 > ⚠️ `npm run lint` 只检查、不自动改写——需要自动修复时用 `npm run lint:fix`。
-> lint/format 覆盖前端 (`frontend/src/`、`vite.config.ts`);prettier 选项唯一来源 `.prettierrc`。
+> lint/format 已移入前端:所有 npm 命令须在 `frontend/` 下执行(仓库根已无 package.json)。
+> Python 侧规范工具为 ruff(lint+format)与 ty(type check),配置在 `python-backend/pyproject.toml`。
 > uv 不在 PATH:使用 `E:\Miniconda3\envs\uvProject\Scripts\uv.exe`(绝对路径)。PyPI 直连不畅时:
 > `HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。迁移后 launch 命令以 python-backend/README 为准。
 

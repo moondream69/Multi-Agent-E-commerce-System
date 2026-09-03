@@ -1,5 +1,6 @@
 """Redis 缓存。只用于 LLM 补全结果缓存;连接失败时静默降级(缓存不影响主流程)。"""
 
+import contextlib
 import json
 from typing import Any
 
@@ -26,10 +27,8 @@ class RedisCache:
             return None
 
     def set_json(self, key: str, value: Any, ttl: int) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._client.set(key, json.dumps(value, ensure_ascii=False), ex=ttl)
-        except Exception:
-            pass
 
 
 redis_cache = RedisCache()

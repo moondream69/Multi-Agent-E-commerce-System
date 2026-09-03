@@ -58,7 +58,10 @@ async def test_tool_flow_then_final_answer():
     names = [s["name"] for s in trace["steps"]]
     assert "reasoning_1" in names and "final_answer" in names
     # 工具步骤:IN_PROGRESS 与 COMPLETED 两条、以及 reasoning 保持 in_progress
-    assert [s["status"] for s in trace["steps"] if s["name"] == "do_a"] == ["in_progress", "completed"]
+    assert [s["status"] for s in trace["steps"] if s["name"] == "do_a"] == [
+        "in_progress",
+        "completed",
+    ]
     assert trace["steps"][0]["status"] == "in_progress"  # reasoning_1 永不标完成
 
 
@@ -101,5 +104,10 @@ async def test_max_iterations_raises():
     graph = build_react_graph("sys", [tool], llm, max_iterations=3)
     with pytest.raises(RuntimeError, match="ReAct 循环超出最大迭代次数"):
         await graph.ainvoke(
-            {"messages": [{"role": "user", "content": "hi"}], "steps": [], "round": 0, "result": None}
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "steps": [],
+                "round": 0,
+                "result": None,
+            }
         )

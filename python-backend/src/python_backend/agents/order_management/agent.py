@@ -9,7 +9,12 @@ from python_backend.core.event_bus import EventBus
 from python_backend.domain.events import AgentEvent, AgentEventType
 from python_backend.infrastructure.llm import LlmService
 
-from .tools import AnomalyDetectionTool, InventoryAlertTool, OrderWorkflowTool, ProductCrudTool
+from .tools import (
+    AnomalyDetectionTool,
+    InventoryAlertTool,
+    OrderWorkflowTool,
+    ProductCrudTool,
+)
 
 logger = logging.getLogger(__name__)
 

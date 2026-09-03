@@ -13,14 +13,19 @@ START → agent ──有 tool_calls─→ tools ──(round >= max)→ exhaust
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Any, TypedDict
+from datetime import UTC, datetime
+from typing import Any, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from python_backend.domain.tasks import TaskStatus, ToolDefinition
 from python_backend.domain.tools import ToolProtocol
-from python_backend.infrastructure.llm import LlmService
+
+
+class LlmLike(Protocol):
+    """build_react_graph 只依赖 complete_with_tools,测试用 FakeLlm 替换真实服务。"""
+
+    def complete_with_tools(self, messages: list[dict], tools: list[ToolDefinition]) -> Any: ...
 
 
 class AgentState(TypedDict):
@@ -31,7 +36,7 @@ class AgentState(TypedDict):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _add_step(state: AgentState, name: str, status: TaskStatus, detail: str) -> None:
@@ -63,21 +68,28 @@ def parse_final(text: str) -> dict[str, Any]:
 def build_react_graph(
     system_prompt: str,
     tools: list[ToolProtocol],
-    llm: LlmService,
+    llm: LlmLike,
     max_iterations: int = 10,
 ):
     tool_defs: list[ToolDefinition] = [t.definition for t in tools]
     tool_map: dict[str, ToolProtocol] = {t.definition.name: t for t in tools}
 
     async def agent_node(state: AgentState) -> dict[str, Any]:
-        _add_step(state, f"reasoning_{state['round'] + 1}", TaskStatus.IN_PROGRESS, f"LLM 推理轮次 {state['round'] + 1}/{max_iterations}")
+        _add_step(
+            state,
+            f"reasoning_{state['round'] + 1}",
+            TaskStatus.IN_PROGRESS,
+            f"LLM 推理轮次 {state['round'] + 1}/{max_iterations}",
+        )
         # LlmService.complete_with_tools 为同步调用(LangChain invoke),无网络阻塞点之外的协程收益
         response = llm.complete_with_tools(state["messages"], tool_defs)
         state["round"] += 1
 
         if not response.tool_calls:
             text = response.content or ""
-            _add_step(state, "final_answer", TaskStatus.COMPLETED, str(text)[:200])
+            if not isinstance(text, str):
+                text = json.dumps(text, ensure_ascii=False, default=str)
+            _add_step(state, "final_answer", TaskStatus.COMPLETED, text[:200])
             state["result"] = parse_final(text)
         else:
             state["messages"].append(
@@ -88,13 +100,21 @@ def build_react_graph(
                         {
                             "id": tc["id"],
                             "type": "function",
-                            "function": {"name": tc["name"], "arguments": json.dumps(tc["args"], ensure_ascii=False)},
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc["args"], ensure_ascii=False),
+                            },
                         }
                         for tc in response.tool_calls
                     ],
                 }
             )
-        return {"round": state["round"], "messages": state["messages"], "steps": state["steps"], "result": state["result"]}
+        return {
+            "round": state["round"],
+            "messages": state["messages"],
+            "steps": state["steps"],
+            "result": state["result"],
+        }
 
     async def tools_node(state: AgentState) -> dict[str, Any]:
         tool_calls = state["messages"][-1]["tool_calls"]
@@ -102,13 +122,18 @@ def build_react_graph(
             name = tc["function"]["name"]
             tool = tool_map.get(name)
             if tool is None:
-                err_msg = f"工具 \"{name}\" 未找到"
+                err_msg = f'工具 "{name}" 未找到'
                 _add_step(state, name, TaskStatus.FAILED, err_msg)
                 state["messages"].append({"role": "tool", "content": f"Error: {err_msg}", "tool_call_id": tc["id"]})
                 continue
             try:
                 args = json.loads(tc["function"]["arguments"] or "{}")
-                _add_step(state, name, TaskStatus.IN_PROGRESS, f"执行 {name}({json.dumps(args, ensure_ascii=False)[:100]})")
+                _add_step(
+                    state,
+                    name,
+                    TaskStatus.IN_PROGRESS,
+                    f"执行 {name}({json.dumps(args, ensure_ascii=False)[:100]})",
+                )
                 result_str = _show(await tool.execute(args))
                 _add_step(state, name, TaskStatus.COMPLETED, result_str[:200])
                 state["messages"].append({"role": "tool", "content": result_str, "tool_call_id": tc["id"]})
@@ -131,7 +156,8 @@ def build_react_graph(
     def route_tools(state: AgentState) -> str:
         return "exhausted" if state["round"] >= max_iterations else "agent"
 
-    g = StateGraph(AgentState)
+    # ty 尚不能把 TypedDict 类识别为 langgraph 的 StateLike 协议成员,运行时没问题
+    g = StateGraph[AgentState](AgentState)  # ty: ignore[invalid-type-arguments]
     g.add_node("agent", agent_node)
     g.add_node("tools", tools_node)
     g.add_node("answer", answer_node)

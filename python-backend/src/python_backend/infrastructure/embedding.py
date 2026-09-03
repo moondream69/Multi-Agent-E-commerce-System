@@ -9,6 +9,7 @@ from typing import Any
 from langchain_ollama import OllamaEmbeddings
 from sqlalchemy.orm import Session
 
+from python_backend.db.base import Base
 from python_backend.db.search import semantic_search
 from python_backend.settings import settings
 
@@ -23,9 +24,7 @@ class EmbeddingService:
     def embed(self, text: str) -> list[float]:
         vector = self._client.embed_query(text)
         if len(vector) != settings.embedding_dimension:
-            raise ValueError(
-                f"Embedding 维度不符: 期望 {settings.embedding_dimension} 维, 实际 {len(vector)} 维"
-            )
+            raise ValueError(f"Embedding 维度不符: 期望 {settings.embedding_dimension} 维, 实际 {len(vector)} 维")
         return vector
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
@@ -34,7 +33,7 @@ class EmbeddingService:
     def search(
         self,
         session: Session,
-        model: type,
+        model: type[Base],
         query: str,
         *,
         top_k: int = 5,

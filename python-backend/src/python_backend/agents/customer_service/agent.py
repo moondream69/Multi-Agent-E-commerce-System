@@ -9,7 +9,12 @@ from python_backend.core.event_bus import EventBus
 from python_backend.domain.events import AgentEvent, AgentEventType
 from python_backend.infrastructure.llm import LlmService
 
-from .tools import FaqRetrievalTool, SentimentAnalysisTool, TemplateManagerTool, TranslatorTool
+from .tools import (
+    FaqRetrievalTool,
+    SentimentAnalysisTool,
+    TemplateManagerTool,
+    TranslatorTool,
+)
 
 logger = logging.getLogger(__name__)
 

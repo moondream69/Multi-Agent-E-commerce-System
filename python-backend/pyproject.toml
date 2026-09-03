@@ -31,8 +31,25 @@ dev = [
     "aiohttp>=3.14.3",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.14.0",
+    "ty>=0.0.78",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+exclude = [".venv"]
+
+[tool.ruff.lint]
+# 默认 E4/E7/E9/F 之上,追加常见静态规则。BLE001(盲捕获)与 S110(try-except-pass)
+# 是 BaseAgent/EventBus 的错误兜底设计(失败仅告警不中断、缓存静默降级),全局放行。
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RUF", "DTZ", "BLE"]
+ignore = ["BLE001", "S110"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+exclude = ["alembic/versions/**"]

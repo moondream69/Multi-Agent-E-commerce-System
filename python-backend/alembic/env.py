@@ -2,10 +2,10 @@
 
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 import python_backend.db.models  # noqa: F401  注册全部模型
+from alembic import context
 from python_backend.db.base import Base
 from python_backend.db.session import DATABASE_URL
 

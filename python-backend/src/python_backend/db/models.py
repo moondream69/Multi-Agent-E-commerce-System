@@ -6,13 +6,24 @@
 
 from __future__ import annotations
 
-import enum
 from datetime import date, datetime
 from decimal import Decimal
+from enum import StrEnum
 from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,7 +31,7 @@ from python_backend.db.base import Base
 from python_backend.settings import settings
 
 
-class OrderStatus(str, enum.Enum):
+class OrderStatus(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     PROCESSING = "processing"
@@ -30,7 +41,7 @@ class OrderStatus(str, enum.Enum):
     RETURNED = "returned"
 
 
-class AgentTaskStatus(str, enum.Enum):
+class AgentTaskStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -109,7 +120,11 @@ class AgentTask(Base):
     agentId: Mapped[str] = mapped_column(String(255))
     type: Mapped[str] = mapped_column(String(255))
     status: Mapped[AgentTaskStatus] = mapped_column(
-        Enum(AgentTaskStatus, name="agent_tasks_status_enum", values_callable=lambda e: [m.value for m in e]),
+        Enum(
+            AgentTaskStatus,
+            name="agent_tasks_status_enum",
+            values_callable=lambda e: [m.value for m in e],
+        ),
         default=AgentTaskStatus.PENDING,
     )
     input: Mapped[dict | None] = mapped_column(JSONB)

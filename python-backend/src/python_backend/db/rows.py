@@ -26,7 +26,4 @@ def plain(value: Any) -> Any:
 
 
 def row_to_dict(obj: Any) -> dict[str, Any]:
-    return {
-        attr.columns[0].name: plain(getattr(obj, attr.key))
-        for attr in obj.__mapper__.column_attrs
-    }
+    return {attr.columns[0].name: plain(getattr(obj, attr.key)) for attr in obj.__mapper__.column_attrs}

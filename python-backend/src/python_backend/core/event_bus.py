@@ -12,13 +12,13 @@ import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from python_backend.domain.events import AgentEvent, AgentEventType
 
 logger = logging.getLogger(__name__)
 
-EventHandler = Callable[[AgentEvent], None | Awaitable[None]]
+EventHandler = Callable[[AgentEvent], Awaitable[None] | None]
 
 
 def new_event(
@@ -31,7 +31,7 @@ def new_event(
         id=str(uuid.uuid4()),
         type=type_,
         source=source,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         payload=payload,
         correlation_id=correlation_id,
     )
@@ -40,6 +40,7 @@ def new_event(
 class EventBus:
     def __init__(self) -> None:
         self._handlers: dict[str, list[EventHandler]] = defaultdict(list)
+        self._pending_tasks: set[asyncio.Task] = set()
 
     def on(self, type_: AgentEventType, handler: EventHandler) -> None:
         self._handlers[type_.value].append(handler)
@@ -55,7 +56,9 @@ class EventBus:
         for handler in list(self._handlers[type_.value]):
             result = handler(event)
             if inspect.isawaitable(result):
-                asyncio.create_task(result)
+                task = asyncio.ensure_future(result)
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
     async def broadcast(
         self,
@@ -68,6 +71,8 @@ class EventBus:
         event = new_event(type_, payload, correlation_id, source)
         for handler in handlers:
             try:
-                await handler(event)
+                result = handler(event)
+                if inspect.isawaitable(result):
+                    await result
             except Exception as error:
                 logger.warning("事件处理器失败: %s", error)

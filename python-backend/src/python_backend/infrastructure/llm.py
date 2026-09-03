@@ -37,7 +37,11 @@ def _openai_tools(tool_defs: list[ToolDefinition]) -> list[dict]:
         tools.append(
             {
                 "type": "function",
-                "function": {"name": d.name, "description": d.description, "parameters": parameters},
+                "function": {
+                    "name": d.name,
+                    "description": d.description,
+                    "parameters": parameters,
+                },
             }
         )
     return tools

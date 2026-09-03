@@ -24,10 +24,20 @@ BASE_URL = f"http://127.0.0.1:{PORT}"
 
 @pytest.fixture(scope="module")
 def server():
-    log_file = tempfile.NamedTemporaryFile(delete=False, suffix=".log")
+    # fixture 生命周期内需保持文件打开供子进程写入,teardown 才关闭,不能用 context manager
+    log_file = tempfile.NamedTemporaryFile(delete=False, suffix=".log")  # noqa: SIM115
     # 直接用 .venv 的 python(uv run 会产生包装进程,terminate 不杀 uvicorn 子进程导致端口残留)
     proc = subprocess.Popen(
-        [str(PYTHON), "-m", "uvicorn", "python_backend.main:app", "--host", "127.0.0.1", "--port", str(PORT)],
+        [
+            str(PYTHON),
+            "-m",
+            "uvicorn",
+            "python_backend.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(PORT),
+        ],
         cwd=str(PYTHON_BACKEND),
         stdout=log_file,
         stderr=subprocess.STDOUT,
@@ -81,7 +91,7 @@ async def test_chat_message_full_flow(server):
     # agent:event 桥接由事件总线异步分派,允许其在 task_result 之后片刻到达
     try:
         await asyncio.wait_for(assigned_event.wait(), timeout=5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail(f"未收到 task.assigned 桥接事件,已收 agent:event: {[e['type'] for e in agent_events]}")
     await client.disconnect()
 
@@ -93,7 +103,15 @@ async def test_chat_message_full_flow(server):
     assert set(created[0].keys()) == {"type", "taskId", "taskType", "text", "timestamp"}
 
     # task_result 形状(对照 frontend/src/types/events.ts)
-    assert set(result.keys()) == {"type", "taskId", "agentId", "status", "output", "steps", "timestamp"}
+    assert set(result.keys()) == {
+        "type",
+        "taskId",
+        "agentId",
+        "status",
+        "output",
+        "steps",
+        "timestamp",
+    }
     assert result["agentId"] == "product-research"
     assert result["status"] == "completed"
 

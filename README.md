@@ -78,16 +78,15 @@ cd frontend && npm install && npm run dev  # Vite 开发服务器 (端口 5173)
 uv run pytest                          # 全部测试 (含 WS e2e,需 Ollama/DeepSeek 在线)
 uv run alembic upgrade head            # 数据库迁移
 uv run python -m python_backend.seed   # 数据播种 (幂等)
+uv run ruff check .                    # Lint
+uv run ruff format .                   # 格式化
+uv run ty check .                      # 类型检查
 
-# 前端与代码检查 (仓库根)
-npm run lint                           # ESLint 检查 (前端; 不自动改写)
-npm run lint:fix                       # ESLint 自动修复 (安全+格式)
-npm run format                         # Prettier 格式化
-npm run format:check                   # Prettier 只检查
-cd frontend && npm run build           # 前端构建 (tsc + vite)
-
-# 前端开发 (另开终端)
-cd frontend && npm run dev             # Vite (5173)
+# 前端 (cd frontend; 仓库根已无 package.json,npm 命令须在 frontend 下执行)
+npm run lint / lint:fix                # ESLint 检查 / 自动修复
+npm run format / format:check          # Prettier 格式化 / 只检查
+npm run build                          # 前端构建 (tsc + vite)
+npm run dev                            # Vite (5173)
 ```
 
 > uv 不在 PATH：使用 `E:\Miniconda3\envs\uvProject\Scripts\uv.exe`(绝对路径)。PyPI 直连不畅时：`HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。

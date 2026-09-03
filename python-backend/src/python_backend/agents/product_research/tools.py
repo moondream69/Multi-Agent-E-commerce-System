@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from python_backend.db.models import MarketEmbedding, ProductEmbedding
@@ -60,10 +60,7 @@ class CompetitorAnalysisTool:
             results = self._embedding.search(session, ProductEmbedding, query, top_k=10, threshold=0.4)
         if not results:
             return f"未找到 {category} 相关竞品数据。"
-        lines = [
-            f"{i + 1}. {r['content']} (相似度: {(r['score'] * 100):.1f}%)"
-            for i, r in enumerate(results)
-        ]
+        lines = [f"{i + 1}. {r['content']} (相似度: {(r['score'] * 100):.1f}%)" for i, r in enumerate(results)]
         return f"## {category} 竞品分析\n\n找到 {len(results)} 个相关竞品:\n\n" + "\n".join(lines)
 
     async def execute(self, params: dict[str, Any]) -> str:
@@ -134,12 +131,9 @@ class ReportGeneratorTool:
     )
 
     def generate(self, title: str, sections: list[dict[str, str]]) -> str:
-        header = (
-            f"# 📊 选品分析报告: {title}\n\n"
-            f"> 生成时间: {datetime.now(timezone.utc).isoformat()}\n\n---\n\n"
-        )
+        header = f"# 📊 选品分析报告: {title}\n\n> 生成时间: {datetime.now(UTC).isoformat()}\n\n---\n\n"
         body = "".join(f"## {s['title']}\n\n{s['content']}\n\n" for s in sections)
-        footer = f"---\n\n*本报告由选品分析 Agent 自动生成*"
+        footer = "---\n\n*本报告由选品分析 Agent 自动生成*"
         return header + body + footer
 
     async def execute(self, params: dict[str, Any]) -> str:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from python_backend.db.models import FaqEmbedding
 from python_backend.db.session import SessionLocal
@@ -25,7 +25,14 @@ class TranslatorTool:
         ],
     )
 
-    LOCALE_NAMES = {"en": "英语", "es": "西班牙语", "fr": "法语", "de": "德语", "ja": "日语", "ko": "韩语"}
+    LOCALE_NAMES: ClassVar[dict[str, str]] = {
+        "en": "英语",
+        "es": "西班牙语",
+        "fr": "法语",
+        "de": "德语",
+        "ja": "日语",
+        "ko": "韩语",
+    }
 
     def __init__(self, llm: LlmService) -> None:
         self._llm = llm
@@ -35,7 +42,10 @@ class TranslatorTool:
             return text
         system = f"你是一个专业的{self.LOCALE_NAMES.get(target_locale, target_locale)}翻译。请准确翻译,保持语气自然。"
         return self._llm.complete(
-            [{"role": "system", "content": system}, {"role": "user", "content": f"翻译为{target_locale}: {text}"}],
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"翻译为{target_locale}: {text}"},
+            ],
             temperature=0.3,
             max_tokens=500,
         )
@@ -83,7 +93,10 @@ class SentimentAnalysisTool:
     def analyze(self, text: str) -> dict[str, Any]:
         response = self._llm.complete(
             [
-                {"role": "system", "content": '分析以下文本的情感,返回 JSON: { "sentiment": "positive|neutral|negative", "score": 0-1, "keywords": [] }'},
+                {
+                    "role": "system",
+                    "content": '分析以下文本的情感,返回 JSON: { "sentiment": "positive|neutral|negative", "score": 0-1, "keywords": [] }',  # noqa: E501
+                },
                 {"role": "user", "content": text},
             ],
             temperature=0,
@@ -109,11 +122,16 @@ class TemplateManagerTool:
             ToolParameter("locale", "string", "语言代码 (find 时使用)", required=False),
             ToolParameter("templateId", "string", "模板 ID (fill 时使用,与 scenario 二选一)", required=False),
             ToolParameter("variables", "object", "模板变量键值对 (fill 时使用)", required=False),
-            ToolParameter("template", "object", "新模板对象,需包含 id, scenario, template, locale, variables 字段 (add 时使用)", required=False),
+            ToolParameter(
+                "template",
+                "object",
+                "新模板对象,需包含 id, scenario, template, locale, variables 字段 (add 时使用)",
+                required=False,
+            ),
         ],
     )
 
-    TEMPLATES: list[dict[str, Any]] = [
+    TEMPLATES: ClassVar[list[dict[str, Any]]] = [
         {
             "id": "greeting",
             "scenario": "问候",
@@ -159,9 +177,9 @@ class TemplateManagerTool:
     async def execute(self, params: dict[str, Any]) -> Any:
         action = params["action"]
         if action == "find":
-            return self.find_template(params.get("scenario"), params.get("locale") or "zh-CN")
+            return self.find_template(params.get("scenario") or "", params.get("locale") or "zh-CN")
         if action == "fill":
-            tmpl = self.find_template(params.get("scenario"), params.get("locale") or "zh-CN")
+            tmpl = self.find_template(params.get("scenario") or "", params.get("locale") or "zh-CN")
             if tmpl is None:
                 raise ValueError("模板未找到")
             return self.fill_template(tmpl, params.get("variables") or {})
