@@ -67,6 +67,4 @@ export interface TaskErrorResponse {
 }
 
 export type ChatResponse =
-  | TaskCreatedResponse
-  | TaskResultResponse
-  | TaskErrorResponse;
+  TaskCreatedResponse | TaskResultResponse | TaskErrorResponse;
