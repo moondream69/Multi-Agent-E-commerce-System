@@ -13,7 +13,7 @@ cd python-backend
 uv run uvicorn python_backend.main:app --port 3000   # 启动(端口 3000,前端契约不变)
 uv run pytest                                        # 全部测试(阶段 5 起含 WS e2e,需 Ollama/DeepSeek 在线)
 uv run python -m python_backend.seed                 # 数据播种(幂等:按自然键跳过已存在记录)
-uv run alembic upgrade head                          # 数据库迁移(9 表,含 pgvector 扩展)
+uv run alembic upgrade head                          # 数据库迁移(10 表,含 pgvector 扩展)
 uv run ruff check .                                  # Lint (无 --fix,自动修复用 `ruff check . --fix`)
 uv run ruff format .                                 # 格式化
 uv run ty check .                                    # 类型检查 (Alembic 迁移已排除)

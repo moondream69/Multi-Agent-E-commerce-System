@@ -1,7 +1,9 @@
-"""9 张表模型:列名、索引、唯一约束与 NestJS 版(TypeORM)一一对应。
+"""10 张表模型:列名、索引、唯一约束与 NestJS 版(TypeORM)一一对应。
 
 注意:TypeORM 未配置命名策略,列名是驼峰风格(如 createdAt、customerId、totalAmount),
 数据库层面的列名必须保持原样——seed 数据与前端契约都依赖它。
+
+第 10 张表 reply_templates(回复模板持久化)为迁移后新增,无 TypeORM 对应模型。
 """
 
 from __future__ import annotations
@@ -181,3 +183,19 @@ class MarketEmbedding(Base):
     category: Mapped[str] = mapped_column(String(255))
     collectedAt: Mapped[date | None] = mapped_column("collectedAt")
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReplyTemplate(Base):
+    """第 10 张表:客服回复话术模板。id 为自然 slug(如 greeting),即工具契约中的 templateId;
+    自然键 (scenario, locale) 唯一,seed 按此幂等跳过。"""
+
+    __tablename__ = "reply_templates"
+    __table_args__ = (UniqueConstraint("scenario", "locale", name="uq_reply_templates_scenario_locale"),)
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    scenario: Mapped[str] = mapped_column(String(255))
+    template: Mapped[str] = mapped_column(Text)
+    locale: Mapped[str] = mapped_column(String(255), default="zh-CN")
+    variables: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -20,6 +20,10 @@ _Avoid_: 请求(避免与 HTTP 请求混淆)
 三类——选品分析、订单管理、客户服务;决定路由到哪个 Agent。
 _Avoid_: 意图、模块
 
+**回复模板**(ReplyTemplate):
+客服话术的标准文本,含变量占位(如 {order_id}),按 场景(scenario)+语言(locale) 唯一;持久化于 reply_templates 表,由客服 Agent 经 manage_template 工具查找/填充/新增。
+_Avoid_: 话术库、快捷回复、标准回复
+
 ## 编排
 
 **意图解析**(IntentParser):

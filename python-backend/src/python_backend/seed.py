@@ -22,6 +22,7 @@ from python_backend.db.models import (
     MarketEmbedding,
     Product,
     ProductEmbedding,
+    ReplyTemplate,
 )
 from python_backend.db.session import SessionLocal
 from python_backend.infrastructure.embedding import EmbeddingService
@@ -58,6 +59,37 @@ MARKET_TOPICS: list[dict[str, Any]] = [
         "type": "行业洞察",
         "categories": ["跨境电商", "拉美市场", "东南亚", "欧洲", "北美"],
         "count": 25,
+    },
+]
+
+REPLY_TEMPLATES = [
+    {
+        "id": "greeting",
+        "scenario": "问候",
+        "template": "您好!感谢您联系客服团队,我是您的专属客服助手。请问有什么可以帮助您的?",
+        "locale": "zh-CN",
+        "variables": [],
+    },
+    {
+        "id": "order_status",
+        "scenario": "订单查询",
+        "template": "您的订单 #{order_id} 当前状态为: {order_status}。预计{delivery_date}送达。",
+        "locale": "zh-CN",
+        "variables": ["order_id", "order_status", "delivery_date"],
+    },
+    {
+        "id": "return_policy",
+        "scenario": "退换货",
+        "template": "我们支持30天无理由退换货。请确保商品完好,申请后3个工作日内处理。",
+        "locale": "zh-CN",
+        "variables": [],
+    },
+    {
+        "id": "escalation",
+        "scenario": "升级工单",
+        "template": "您的问题已转接至高级客服专员,将在24小时内通过邮件与您联系。",
+        "locale": "zh-CN",
+        "variables": [],
     },
 ]
 
@@ -374,15 +406,35 @@ def seed_customers() -> int:
     return added
 
 
+def seed_templates() -> int:
+    """回复模板播种(离线,无 LLM):按自然键 (scenario, locale) 幂等。"""
+    print(f"生成 {len(REPLY_TEMPLATES)} 条回复模板...", flush=True)
+    added = 0
+    for item in REPLY_TEMPLATES:
+        with SessionLocal() as session:
+            if session.scalar(
+                select(ReplyTemplate.id).where(
+                    ReplyTemplate.scenario == item["scenario"],
+                    ReplyTemplate.locale == item["locale"],
+                )
+            ):
+                continue
+            session.add(ReplyTemplate(**item))
+            session.commit()
+            added += 1
+    return added
+
+
 def main() -> None:
     start = time.time()
     product_count = seed_products()
     market_count = seed_market()
     faq_count = seed_faq()
     customer_count = seed_customers()
+    template_count = seed_templates()
 
     elapsed = f"{time.time() - start:.1f}"
-    total = product_count + market_count + faq_count + customer_count
+    total = product_count + market_count + faq_count + customer_count + template_count
     print("\n========================================")
     print(f"  播种完成 ({elapsed}s)")
     print("========================================")
@@ -390,6 +442,7 @@ def main() -> None:
     print(f"  市场情报 + 向量: {market_count}")
     print(f"  FAQ + 向量     : {faq_count}")
     print(f"  客户           : {customer_count}")
+    print(f"  回复模板       : {template_count}")
     print("  -------------------------------------")
     print(f"  总计           : {total}")
     print("========================================")

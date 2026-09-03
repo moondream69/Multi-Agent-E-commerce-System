@@ -6,7 +6,9 @@ import json
 import logging
 from typing import Any, ClassVar
 
-from python_backend.db.models import FaqEmbedding
+from sqlalchemy import select
+
+from python_backend.db.models import FaqEmbedding, ReplyTemplate
 from python_backend.db.session import SessionLocal
 from python_backend.domain.tasks import ToolDefinition, ToolParameter
 from python_backend.infrastructure.embedding import EmbeddingService
@@ -131,39 +133,26 @@ class TemplateManagerTool:
         ],
     )
 
-    TEMPLATES: ClassVar[list[dict[str, Any]]] = [
-        {
-            "id": "greeting",
-            "scenario": "问候",
-            "template": "您好!感谢您联系客服团队,我是您的专属客服助手。请问有什么可以帮助您的?",
-            "locale": "zh-CN",
-            "variables": [],
-        },
-        {
-            "id": "order_status",
-            "scenario": "订单查询",
-            "template": "您的订单 #{order_id} 当前状态为: {order_status}。预计{delivery_date}送达。",
-            "locale": "zh-CN",
-            "variables": ["order_id", "order_status", "delivery_date"],
-        },
-        {
-            "id": "return_policy",
-            "scenario": "退换货",
-            "template": "我们支持30天无理由退换货。请确保商品完好,申请后3个工作日内处理。",
-            "locale": "zh-CN",
-            "variables": [],
-        },
-        {
-            "id": "escalation",
-            "scenario": "升级工单",
-            "template": "您的问题已转接至高级客服专员,将在24小时内通过邮件与您联系。",
-            "locale": "zh-CN",
-            "variables": [],
-        },
-    ]
+    @staticmethod
+    def _to_contract(row: ReplyTemplate) -> dict[str, Any]:
+        """ORM 行 → 工具契约形状(5 键,与 LLM 定义一致,不含 createdAt/updatedAt)。"""
+        return {
+            "id": row.id,
+            "scenario": row.scenario,
+            "template": row.template,
+            "locale": row.locale,
+            "variables": list(row.variables or []),
+        }
 
     def find_template(self, scenario: str, locale: str = "zh-CN") -> dict[str, Any] | None:
-        return next((t for t in self.TEMPLATES if t["scenario"] == scenario and t["locale"] == locale), None)
+        with SessionLocal() as session:
+            row = session.scalar(
+                select(ReplyTemplate).where(
+                    ReplyTemplate.scenario == scenario,
+                    ReplyTemplate.locale == locale,
+                )
+            )
+            return self._to_contract(row) if row else None
 
     def fill_template(self, template: dict[str, Any], variables: dict[str, str]) -> str:
         result = template["template"]
@@ -171,8 +160,29 @@ class TemplateManagerTool:
             result = result.replace("{" + key + "}", value)
         return result
 
-    def add_template(self, template: dict[str, Any]) -> None:
-        self.TEMPLATES.append(template)
+    def add_template(self, template: dict[str, Any]) -> bool:
+        """持久化新增:自然键 (scenario, locale) 已存在则跳过(幂等,与 seed 约定一致)。"""
+        locale = template.get("locale") or "zh-CN"
+        with SessionLocal() as session:
+            exists = session.scalar(
+                select(ReplyTemplate.id).where(
+                    ReplyTemplate.scenario == template["scenario"],
+                    ReplyTemplate.locale == locale,
+                )
+            )
+            if exists:
+                return False
+            session.add(
+                ReplyTemplate(
+                    id=template["id"],
+                    scenario=template["scenario"],
+                    template=template["template"],
+                    locale=locale,
+                    variables=template.get("variables") or [],
+                )
+            )
+            session.commit()
+            return True
 
     async def execute(self, params: dict[str, Any]) -> Any:
         action = params["action"]
