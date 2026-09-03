@@ -42,11 +42,20 @@ export class IntentParserService {
         action: 'handle_query',
       },
     ];
+    // 命中关键词数最多者优先,平局保持配置顺序。
+    // 修复多类关键词同时出现时的误路由(如"客户抱怨物流太慢帮我写回复"曾被"物流"压过"客户/回复"),
+    // 与 python-backend 版行为保持一致。
+    let best: { hits: number; type: TaskType; action: string } | null = null;
     for (const { keywords, type, action } of patterns) {
-      if (keywords.some((k) => text.includes(k))) {
-        return { taskType: type, extractedInput: { action, query: text } };
+      const hits = keywords.filter((k) => text.includes(k)).length;
+      if (hits > 0 && (best === null || hits > best.hits)) {
+        best = { hits, type, action };
       }
     }
-    return null;
+    if (!best) return null;
+    return {
+      taskType: best.type,
+      extractedInput: { action: best.action, query: text },
+    };
   }
 }
