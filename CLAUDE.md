@@ -31,6 +31,19 @@ cd frontend && npm run dev                                        # Vite (5173)
 npm run seed                                                      # 灌入 540+ 行种子数据 (需先启动 Docker;非幂等,重复执行会重复插入)
 ```
 
+### Python 版后端 (python-backend/,迁移分支 feat/python-langgraph-migration)
+
+```bash
+cd python-backend
+uv run uvicorn python_backend.main:app --port 3000   # 启动(端口与 NestJS 版相同,前端零改动)
+uv run pytest                                        # 全部测试(阶段 5 起含 WS e2e,需 Ollama/DeepSeek 在线)
+uv run python -m python_backend.seed                 # 数据播种(幂等:按自然键跳过已存在记录)
+uv run alembic upgrade head                          # 数据库迁移(9 表,含 pgvector 扩展)
+```
+
+> uv 不在 PATH:使用 `E:\Miniconda3\envs\uvProject\Scripts\uv.exe`(绝对路径)。PyPI 直连不畅时:
+> `HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。迁移后 launch 命令请以 python-backend/README 为准。
+
 ## 技术栈
 
 NestJS 11 + TypeScript 5 · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via Ollama (Embedding, 1024维) · React + Vite + socket.io-client · npm
