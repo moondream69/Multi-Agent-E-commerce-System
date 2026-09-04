@@ -6,6 +6,7 @@ import logging
 
 from python_backend.core.base_agent import BaseAgent
 from python_backend.core.event_bus import EventBus
+from python_backend.core.workflow import Workflow, WorkflowPhase
 from python_backend.domain.events import AgentEvent, AgentEventType
 from python_backend.infrastructure.llm import LlmService
 
@@ -41,11 +42,26 @@ SYSTEM_PROMPT = """你是跨境电商智能客服。为客户提供多语言支�
 - 遇到无法解决的问题,建议升级到人工客服"""
 
 
+# 图级工作流声明:阶段1 必调 sentiment_analysis + faq_search(顺序不限),完成前禁止直接回答;
+# 阶段2 解锁全部工具并可自由回答。manage_template/translate 为条件性,不强制(交 LLM 判断)。
+CUSTOMER_SERVICE_WORKFLOW = Workflow(
+    phases=(
+        WorkflowPhase(
+            required_tools=frozenset({"sentiment_analysis", "faq_search"}),
+            allowed_tools=frozenset({"sentiment_analysis", "faq_search"}),
+            can_answer=False,
+        ),
+        WorkflowPhase(required_tools=frozenset(), allowed_tools=None, can_answer=True),
+    )
+)
+
+
 class CustomerServiceAgent(BaseAgent):
     id = "customer-service"
     name = "客服Agent"
     description = "多语言客服,FAQ 检索,情感分析,话术生成,异常升级"
     system_prompt = SYSTEM_PROMPT
+    workflow = CUSTOMER_SERVICE_WORKFLOW
 
     def __init__(
         self,
