@@ -145,3 +145,33 @@ async def test_customer_service_handle_task():
     await _patch_execute(agent, {"result": "test output"})
     result = await agent.handle_task(_task(TaskType.CUSTOMER_SERVICE, {"action": "handle_query", "text": "如何退货?"}))
     assert result.status == TaskStatus.COMPLETED
+
+
+async def test_customer_service_agent_declares_workflow():
+    agent = CustomerServiceAgent(
+        BUS,
+        LLM,
+        TranslatorTool(LLM),
+        FaqRetrievalTool(),
+        SentimentAnalysisTool(LLM),
+        TemplateManagerTool(),
+    )
+    assert agent.workflow is not None
+    assert agent.workflow.phases[0].required_tools == {"sentiment_analysis", "faq_search"}
+    assert agent.workflow.phases[1].can_answer is True
+
+
+async def test_other_agents_have_no_workflow():
+    research = ProductResearchAgent(
+        BUS, LLM, TrendQueryTool(), CompetitorAnalysisTool(), ScoringTool(), ReportGeneratorTool()
+    )
+    order = OrderManagementAgent(
+        BUS,
+        LLM,
+        ProductCrudTool(),
+        OrderWorkflowTool(),
+        InventoryAlertTool(),
+        AnomalyDetectionTool(),
+    )
+    assert research.workflow is None
+    assert order.workflow is None

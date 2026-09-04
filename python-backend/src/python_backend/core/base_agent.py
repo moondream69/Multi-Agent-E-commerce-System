@@ -14,6 +14,7 @@ from typing import Any
 
 from python_backend.core.event_bus import EventBus
 from python_backend.core.graph import AgentState, build_react_graph
+from python_backend.core.workflow import Workflow
 from python_backend.domain.agents import AgentStatus
 from python_backend.domain.events import AgentEvent, AgentEventType
 from python_backend.domain.tasks import (
@@ -37,6 +38,7 @@ class BaseAgent:
     name: str = ""
     description: str = ""
     system_prompt: str = ""
+    workflow: Workflow | None = None
 
     def __init__(self, event_bus: EventBus, llm: LlmService) -> None:
         self._event_bus = event_bus
@@ -116,7 +118,7 @@ class BaseAgent:
 
     async def execute_task(self, task: AgentTask) -> dict[str, Any]:
         if self._graph is None:
-            self._graph = build_react_graph(self.system_prompt, self.tools, self._llm)
+            self._graph = build_react_graph(self.system_prompt, self.tools, self._llm, workflow=self.workflow)
         state: AgentState = {
             "messages": [
                 {"role": "system", "content": self.system_prompt},
