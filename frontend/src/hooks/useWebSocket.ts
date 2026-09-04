@@ -6,6 +6,7 @@ import {
   AgentStatus,
   AgentStatusChangedPayload,
   ChatResponse,
+  NotificationMessage,
 } from '../types/events';
 
 export function useWebSocket() {
@@ -13,6 +14,7 @@ export function useWebSocket() {
   const [connected, setConnected] = useState(false);
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
+  const [notifications, setNotifications] = useState<NotificationMessage[]>([]);
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
@@ -37,6 +39,9 @@ export function useWebSocket() {
     socket.on('chat:response', (response: ChatResponse) => {
       setLastResponse(response);
     });
+    socket.on('chat:notification', (message: NotificationMessage) => {
+      setNotifications((prev) => [...prev, message]);
+    });
 
     return () => {
       socket.disconnect();
@@ -48,5 +53,12 @@ export function useWebSocket() {
     socketRef.current?.emit('chat:message', { text });
   }, []);
 
-  return { events, sendMessage, connected, lastResponse, statuses };
+  return {
+    events,
+    sendMessage,
+    connected,
+    lastResponse,
+    statuses,
+    notifications,
+  };
 }

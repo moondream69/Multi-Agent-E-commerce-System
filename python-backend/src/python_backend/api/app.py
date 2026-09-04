@@ -8,7 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from python_backend.agents.customer_service.agent import CustomerServiceAgent
 from python_backend.agents.customer_service.tools import (
+    EscalateTicketTool,
     FaqRetrievalTool,
+    OrderLookupTool,
     SentimentAnalysisTool,
     TemplateManagerTool,
     TranslatorTool,
@@ -28,33 +30,41 @@ from python_backend.agents.product_research.tools import (
     TrendQueryTool,
 )
 from python_backend.api.rest import build_router
-from python_backend.api.ws import bridge_all_events, register_ws_handlers
+from python_backend.api.store import build_store_router
+from python_backend.api.ws import (
+    bridge_all_events,
+    bridge_notifications,
+    register_ws_handlers,
+)
 from python_backend.core.event_bus import EventBus
 from python_backend.core.intent_parser import IntentParser
 from python_backend.core.orchestrator import Orchestrator
+from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import TaskType
 from python_backend.infrastructure.llm import LlmService
 
 
-def build_real_tools(llm: LlmService) -> dict:
+def build_real_tools(llm: LlmService, event_bus: EventBus | None = None) -> dict:
     return {
         "research": (
             TrendQueryTool(),
             CompetitorAnalysisTool(),
             ScoringTool(),
-            ReportGeneratorTool(),
+            ReportGeneratorTool(event_bus),
         ),
         "order": (
-            ProductCrudTool(),
-            OrderWorkflowTool(),
-            InventoryAlertTool(),
+            ProductCrudTool(event_bus),
+            OrderWorkflowTool(event_bus),
+            InventoryAlertTool(event_bus),
             AnomalyDetectionTool(),
         ),
         "service": (
             TranslatorTool(llm),
             FaqRetrievalTool(),
             SentimentAnalysisTool(llm),
-            TemplateManagerTool(),
+            TemplateManagerTool(event_bus),
+            OrderLookupTool(),
+            EscalateTicketTool(event_bus),
         ),
     }
 
@@ -72,7 +82,7 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
     if orchestrator is None:
         event_bus = EventBus()
         llm = LlmService()
-        real_tools = build_real_tools(llm)
+        real_tools = build_real_tools(llm, event_bus)
 
         research_agent = ProductResearchAgent(event_bus, llm, *real_tools["research"])
         order_agent = OrderManagementAgent(event_bus, llm, *real_tools["order"])
@@ -82,12 +92,20 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
         orchestrator.register_agent(research_agent, TaskType.PRODUCT_RESEARCH)
         orchestrator.register_agent(order_agent, TaskType.ORDER_MANAGEMENT)
         orchestrator.register_agent(service_agent, TaskType.CUSTOMER_SERVICE)
+
+        # 跨 Agent 事件订阅(后台数据流):选品报告 → 订单 Agent 自动建草稿;
+        # 订单状态/库存告警 → 客服 Agent 生成主动通知
+        event_bus.on(AgentEventType.REPORT_GENERATED, order_agent.handle_event)
+        event_bus.on(AgentEventType.ORDER_STATUS_CHANGED, service_agent.handle_event)
+        event_bus.on(AgentEventType.INVENTORY_ALERT, service_agent.handle_event)
     else:
         event_bus = orchestrator._event_bus
 
     register_ws_handlers(sio, orchestrator, IntentParser())
     bridge_all_events(sio, event_bus)
+    bridge_notifications(sio, event_bus)
     http_app.include_router(build_router(orchestrator))
+    http_app.include_router(build_store_router(event_bus))
 
     @http_app.get("/")
     def root() -> dict:

@@ -16,6 +16,11 @@ import pytest
 import requests
 import socketio
 
+pytestmark = pytest.mark.e2e
+
+
+
+
 PYTHON_BACKEND = Path(__file__).resolve().parents[1]
 PYTHON = PYTHON_BACKEND / ".venv" / "Scripts" / "python.exe"
 PORT = 3000

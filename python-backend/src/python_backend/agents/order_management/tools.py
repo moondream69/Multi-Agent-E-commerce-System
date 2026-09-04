@@ -7,9 +7,11 @@ import uuid
 from decimal import Decimal
 from typing import Any, ClassVar
 
+from python_backend.core.event_bus import EventBus
 from python_backend.db.models import Order, OrderStatus, Product
 from python_backend.db.rows import row_to_dict
 from python_backend.db.session import SessionLocal
+from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import ToolDefinition, ToolParameter
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,9 @@ class ProductCrudTool:
         ],
     )
 
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._event_bus = event_bus
+
     def create(self, sku: str, title: str, price: float, category: str, description: str | None = None) -> dict:
         with SessionLocal() as session:
             product = Product(
@@ -52,7 +57,10 @@ class ProductCrudTool:
             session.add(product)
             session.commit()
             session.refresh(product)
-            return row_to_dict(product)
+            result = row_to_dict(product)
+        if self._event_bus is not None:
+            self._event_bus.emit(AgentEventType.PRODUCT_CREATED, {"product": result}, source="order-management")
+        return result
 
     def find_by_sku(self, sku: str) -> dict | None:
         with SessionLocal() as session:
@@ -71,6 +79,12 @@ class ProductCrudTool:
                 raise ValueError(f"商品 {product_id} 未找到")
             product.status = status
             session.commit()
+        if self._event_bus is not None:
+            self._event_bus.emit(
+                AgentEventType.PRODUCT_UPDATED,
+                {"productId": product_id, "status": status},
+                source="order-management",
+            )
 
     async def execute(self, params: dict[str, Any]) -> Any:
         action = params["action"]
@@ -117,18 +131,51 @@ class OrderWorkflowTool:
         OrderStatus.RETURNED: [],
     }
 
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._event_bus = event_bus
+
+    def _emit_status_changed(
+        self,
+        order_id: str,
+        from_status: str | None,
+        to_status: str,
+        product_id: str,
+        total_amount: float,
+    ) -> None:
+        if self._event_bus is None:
+            return
+        self._event_bus.emit(
+            AgentEventType.ORDER_STATUS_CHANGED,
+            {
+                "orderId": order_id,
+                "from": from_status,
+                "to": to_status,
+                "productId": product_id,
+                "totalAmount": total_amount,
+            },
+            source="order-management",
+        )
+
     def create(self, product_id: str, total_amount: float, customer_id: str | None = None) -> dict:
         with SessionLocal() as session:
             order = Order(
                 product_id=_uuid(product_id),
                 customer_id=_uuid(customer_id) if customer_id else None,
-                total_amount=Decimal(str(total_amount)),
+                totalAmount=Decimal(str(total_amount)),
                 status=OrderStatus.PENDING,
             )
             session.add(order)
             session.commit()
             session.refresh(order)
-            return row_to_dict(order)
+            result = row_to_dict(order)
+        self._emit_status_changed(
+            result["id"],
+            None,
+            OrderStatus.PENDING.value,
+            result["product_id"],
+            float(result["totalAmount"]),
+        )
+        return result
 
     def transition(self, order_id: str, new_status: str) -> dict:
         new = OrderStatus(new_status)
@@ -139,10 +186,19 @@ class OrderWorkflowTool:
             allowed = self.VALID_TRANSITIONS[order.status]
             if new not in allowed:
                 raise ValueError(f"订单状态不可从 {order.status.value} 变更为 {new.value}")
+            old_value = order.status.value
             order.status = new
             session.commit()
             session.refresh(order)
-            return row_to_dict(order)
+            result = row_to_dict(order)
+        self._emit_status_changed(
+            order_id,
+            old_value,
+            new.value,
+            result["product_id"],
+            float(result["totalAmount"]),
+        )
+        return result
 
     def list_by_status(self, status: str) -> list[dict]:
         with SessionLocal() as session:
@@ -176,6 +232,9 @@ class InventoryAlertTool:
         ],
     )
 
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._event_bus = event_bus
+
     def check(self, product_name: str, current_stock: float, threshold: float) -> dict[str, Any]:
         ratio = current_stock / threshold
         alert = ratio < 1
@@ -192,7 +251,19 @@ class InventoryAlertTool:
         return {"alert": alert, "message": message}
 
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.check(params["productName"], float(params["currentStock"]), float(params["threshold"]))
+        result = self.check(params["productName"], float(params["currentStock"]), float(params["threshold"]))
+        if result["alert"] and self._event_bus is not None:
+            self._event_bus.emit(
+                AgentEventType.INVENTORY_ALERT,
+                {
+                    "productName": params["productName"],
+                    "currentStock": float(params["currentStock"]),
+                    "threshold": float(params["threshold"]),
+                    "message": result["message"],
+                },
+                source="order-management",
+            )
+        return result
 
 
 class AnomalyDetectionTool:

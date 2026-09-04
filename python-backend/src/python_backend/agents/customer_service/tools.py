@@ -1,15 +1,19 @@
-"""客服 Agent 的 4 个工具(镜像 src/agents/customer-service/tools/*.tool.ts)。"""
+"""客服 Agent 的工具(镜像 src/agents/customer-service/tools/*.tool.ts)。"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import uuid
 from typing import Any, ClassVar
 
 from sqlalchemy import select
 
-from python_backend.db.models import FaqEmbedding, ReplyTemplate
+from python_backend.core.event_bus import EventBus
+from python_backend.db.models import FaqEmbedding, Order, ReplyTemplate
 from python_backend.db.session import SessionLocal
+from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import ToolDefinition, ToolParameter
 from python_backend.infrastructure.embedding import EmbeddingService
 from python_backend.infrastructure.llm import LlmService
@@ -53,7 +57,8 @@ class TranslatorTool:
         )
 
     async def execute(self, params: dict[str, Any]) -> str:
-        return self.translate(params["text"], params["targetLocale"])
+        # LLM 同步调用卸载出事件循环(与 ReAct 图 agent_node 一致)
+        return await asyncio.to_thread(self.translate, params["text"], params["targetLocale"])
 
 
 class FaqRetrievalTool:
@@ -77,7 +82,8 @@ class FaqRetrievalTool:
         return "\n\n".join(f"{i + 1}. Q: {r['question']}\nA: {r['answer']}" for i, r in enumerate(results))
 
     async def execute(self, params: dict[str, Any]) -> str:
-        return self.search(params["question"])
+        # Embedding 检索(HTTP + DB)同步段卸载出事件循环
+        return await asyncio.to_thread(self.search, params["question"])
 
 
 class SentimentAnalysisTool:
@@ -111,7 +117,7 @@ class SentimentAnalysisTool:
             return {"sentiment": "neutral", "score": 0.5, "keywords": []}
 
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.analyze(params["text"])
+        return await asyncio.to_thread(self.analyze, params["text"])
 
 
 class TemplateManagerTool:
@@ -132,6 +138,9 @@ class TemplateManagerTool:
             ),
         ],
     )
+
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._event_bus = event_bus
 
     @staticmethod
     def _to_contract(row: ReplyTemplate) -> dict[str, Any]:
@@ -192,8 +201,65 @@ class TemplateManagerTool:
             tmpl = self.find_template(params.get("scenario") or "", params.get("locale") or "zh-CN")
             if tmpl is None:
                 raise ValueError("模板未找到")
-            return self.fill_template(tmpl, params.get("variables") or {})
+            result = self.fill_template(tmpl, params.get("variables") or {})
+            if self._event_bus is not None:
+                self._event_bus.emit(
+                    AgentEventType.REPLY_GENERATED,
+                    {"scenario": tmpl["scenario"], "templateId": tmpl["id"]},
+                    source="customer-service",
+                )
+            return result
         if action == "add":
             self.add_template(params["template"])
             return {"success": True}
         raise ValueError(f"未知 action: {action}")
+
+
+class OrderLookupTool:
+    definition = ToolDefinition(
+        name="order_lookup",
+        description="查询订单当前状态与商品信息,用于售后沟通",
+        parameters=[
+            ToolParameter("orderId", "string", "订单 ID", required=True),
+        ],
+    )
+
+    def lookup(self, order_id: str) -> dict[str, Any]:
+        with SessionLocal() as session:
+            order = session.get(Order, uuid.UUID(order_id))
+            if order is None:
+                raise ValueError(f"订单 {order_id} 未找到")
+            return {
+                "orderId": str(order.id),
+                "status": order.status.value,
+                "productTitle": order.product.title if order.product else None,
+                "totalAmount": float(order.totalAmount),
+                "currency": order.currency,
+                "updatedAt": order.updatedAt.isoformat(),
+            }
+
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.lookup(params["orderId"])
+
+
+class EscalateTicketTool:
+    definition = ToolDefinition(
+        name="escalate_ticket",
+        description="将客户问题升级到人工客服处理",
+        parameters=[
+            ToolParameter("orderId", "string", "关联订单 ID (可选)", required=False),
+            ToolParameter("reason", "string", "升级原因", required=True),
+        ],
+    )
+
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._event_bus = event_bus
+
+    async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self._event_bus is not None:
+            self._event_bus.emit(
+                AgentEventType.ESCALATION_TRIGGERED,
+                {"orderId": params.get("orderId"), "reason": params["reason"]},
+                source="customer-service",
+            )
+        return {"success": True, "message": "已将问题升级至人工客服,我们会尽快处理。"}

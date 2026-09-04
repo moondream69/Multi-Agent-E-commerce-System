@@ -17,8 +17,11 @@ uv run uvicorn python_backend.main:app --port 3000   # 依赖:docker compose up 
 
 ```bash
 uv run pytest                    # 全部测试(WS e2e 需要 Ollama/DeepSeek 在线)
-uv run alembic upgrade head      # 数据库迁移(9 表 + pgvector 扩展)
+uv run pytest -m "not e2e and not integration"   # CI 同款快速套件
+uv run alembic upgrade head      # 数据库迁移(10 表 + pgvector 扩展)
 uv run python -m python_backend.seed   # 数据播种(幂等:按自然键跳过已存在记录)
+uv run ruff check .              # Lint
+uv run ty check .                # 类型检查
 ```
 
 ## 结构
@@ -36,8 +39,8 @@ src/python_backend/
 │  └─ base_agent.py  模板方法:状态机(idle/busy/error/offline)+ 步骤记录
 ├─ agents/           3 个 Agent(systemPrompt + 12 个工具)
 ├─ infrastructure/   llm(ChatOpenAI→DeepSeek + Redis 缓存)、embedding(Ollama,失败显式报错)
-├─ api/              REST 路由、socketio 网关、Pydantic 校验、契约序列化
-├─ db/               SQLAlchemy 模型 / session / pgvector 检索
+├─ api/              REST 路由(agents/dashboard/store)、socketio 网关、Pydantic 校验、契约序列化
+├─ db/               SQLAlchemy 模型 / session / pgvector 检索 / conversation+agent_task 持久化
 ├─ seed.py           幂等数据播种
 └─ alembic/          Alembic 迁移(初始迁移 + pgvector 扩展)
 ```

@@ -38,6 +38,10 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "e2e: 端到端测试,需真实 Postgres/Redis/Ollama/DeepSeek 在线",
+    "integration: 依赖 docker dev Postgres 的集成测试",
+]
 
 [tool.ruff]
 line-length = 120

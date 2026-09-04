@@ -15,6 +15,8 @@ class AgentEventType(StrEnum):
     ORDER_STATUS_CHANGED = "order.status_changed"
     REPLY_GENERATED = "reply.generated"
     ESCALATION_TRIGGERED = "escalation.triggered"
+    INVENTORY_ALERT = "inventory.alert"
+    CUSTOMER_NOTIFICATION = "customer.notification"
     TASK_ASSIGNED = "task.assigned"
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"

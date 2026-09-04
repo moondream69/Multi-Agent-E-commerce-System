@@ -13,6 +13,11 @@ from python_backend.db.models import ReplyTemplate
 from python_backend.db.session import engine
 from python_backend.seed import seed_templates
 
+pytestmark = pytest.mark.integration
+
+
+
+
 
 @pytest.fixture()
 def prepared_db():

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import uuid
+from typing import Any
 
 from python_backend.core.base_agent import BaseAgent
 from python_backend.core.event_bus import EventBus
@@ -50,7 +54,60 @@ class OrderManagementAgent(BaseAgent):
     ) -> None:
         super().__init__(event_bus, llm)
         self.tools = [product_crud, order_workflow, inventory_alert, anomaly_detection]
+        self._product_crud = product_crud
 
     async def handle_event(self, event: AgentEvent) -> None:
         if event.type == AgentEventType.REPORT_GENERATED:
-            logger.info("收到选品报告,可据此创建商品草稿")
+            await self._create_draft_from_report(event.payload or {})
+
+    async def _create_draft_from_report(self, payload: dict[str, Any]) -> None:
+        """选品报告完成 → LLM 提炼商品信息 → product_crud 创建草稿;提炼失败降级为报告标题 + 默认价。"""
+        try:
+            product = await asyncio.to_thread(self._extract_product, payload)
+            created = self._product_crud.create(
+                product["sku"],
+                product["title"],
+                product["price"],
+                product["category"],
+                product.get("description"),
+            )
+            logger.info("由选品报告生成商品草稿: %s (%s)", created["id"], created["title"])
+        except Exception as error:
+            logger.warning("自动生成商品草稿失败: %s", error)
+
+    def _extract_product(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """同步 LLM 提炼(调用方用 to_thread 卸载);失败降级不抛异常。"""
+        title = payload.get("title") or "自动导入商品"
+        try:
+            raw = self._llm.complete(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "从选品报告中提炼一个可上架的商品,返回 JSON:"
+                            '{"sku": string, "title": string, "price": number,'
+                            ' "category": string, "description": string}'
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)[:3000]},
+                ],
+                temperature=0,
+                max_tokens=300,
+                json_mode=True,
+            )
+            data = json.loads(raw)
+            return {
+                "sku": data["sku"],
+                "title": data["title"],
+                "price": float(data["price"]),
+                "category": data.get("category") or "自动导入",
+                "description": data.get("description"),
+            }
+        except Exception:
+            return {
+                "sku": f"auto-{uuid.uuid4().hex[:8]}",
+                "title": title,
+                "price": 59.9,
+                "category": "自动导入",
+                "description": None,
+            }

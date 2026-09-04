@@ -15,3 +15,10 @@ class CreateTaskDto(BaseModel):
 
 class ChatMessagePayload(BaseModel):
     text: str = Field(min_length=1)
+
+
+class CreateOrderDto(BaseModel):
+    """买家前台下单入参(store 路由)。totalAmount 缺省取商品价格。"""
+
+    productId: str = Field(min_length=1)
+    totalAmount: float | None = None

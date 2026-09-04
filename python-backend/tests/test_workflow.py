@@ -18,7 +18,9 @@ from langchain_core.messages import AIMessage
 
 from python_backend.agents.customer_service.agent import CustomerServiceAgent
 from python_backend.agents.customer_service.tools import (
+    EscalateTicketTool,
     FaqRetrievalTool,
+    OrderLookupTool,
     SentimentAnalysisTool,
     TemplateManagerTool,
     TranslatorTool,
@@ -195,6 +197,8 @@ async def test_customer_service_execute_task_enforces_workflow():
         FaqRetrievalTool(),
         SentimentAnalysisTool(LlmService()),
         TemplateManagerTool(),
+        OrderLookupTool(),
+        EscalateTicketTool(),
     )
     agent.tools = [FakeTool(_tool("sentiment_analysis")), FakeTool(_tool("faq_search"))]
     llm = FakeLlm(

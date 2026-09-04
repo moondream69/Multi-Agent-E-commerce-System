@@ -9,7 +9,9 @@ import pytest
 
 from python_backend.agents.customer_service.agent import CustomerServiceAgent
 from python_backend.agents.customer_service.tools import (
+    EscalateTicketTool,
     FaqRetrievalTool,
+    OrderLookupTool,
     SentimentAnalysisTool,
     TemplateManagerTool,
     TranslatorTool,
@@ -126,11 +128,13 @@ async def test_customer_service_agent_basics():
         FaqRetrievalTool(),
         SentimentAnalysisTool(LLM),
         TemplateManagerTool(),
+        OrderLookupTool(),
+        EscalateTicketTool(),
     )
     assert agent.id == "customer-service"
     assert agent.name == "客服Agent"
     assert agent.system_prompt
-    assert len(agent.get_tools()) == 4
+    assert len(agent.get_tools()) == 6
 
 
 async def test_customer_service_handle_task():
@@ -141,6 +145,8 @@ async def test_customer_service_handle_task():
         FaqRetrievalTool(),
         SentimentAnalysisTool(LLM),
         TemplateManagerTool(),
+        OrderLookupTool(),
+        EscalateTicketTool(),
     )
     await _patch_execute(agent, {"result": "test output"})
     result = await agent.handle_task(_task(TaskType.CUSTOMER_SERVICE, {"action": "handle_query", "text": "如何退货?"}))
@@ -155,6 +161,8 @@ async def test_customer_service_agent_declares_workflow():
         FaqRetrievalTool(),
         SentimentAnalysisTool(LLM),
         TemplateManagerTool(),
+        OrderLookupTool(),
+        EscalateTicketTool(),
     )
     assert agent.workflow is not None
     assert agent.workflow.phases[0].required_tools == {"sentiment_analysis", "faq_search"}

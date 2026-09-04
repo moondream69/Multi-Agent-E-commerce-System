@@ -17,6 +17,7 @@ workflow 激活时(Agent 声明了图级约束)增加两条边:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -142,8 +143,8 @@ def build_react_graph(
                 visible_tools = tool_defs
         else:
             visible_tools = tool_defs
-        # LlmService.complete_with_tools 为同步调用(LangChain invoke),无网络阻塞点之外的协程收益
-        response = llm.complete_with_tools(state["messages"], visible_tools)
+        # LLM 调用(LangChain 同步 invoke)卸载到线程池,避免阻塞事件循环(最长 60s)
+        response = await asyncio.to_thread(llm.complete_with_tools, state["messages"], visible_tools)
         state["round"] += 1
 
         if not response.tool_calls:

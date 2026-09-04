@@ -6,8 +6,10 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from python_backend.core.event_bus import EventBus
 from python_backend.db.models import MarketEmbedding, ProductEmbedding
 from python_backend.db.session import SessionLocal
+from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import ToolDefinition, ToolParameter
 from python_backend.infrastructure.embedding import EmbeddingService
 
@@ -130,6 +132,9 @@ class ReportGeneratorTool:
         ],
     )
 
+    def __init__(self, event_bus: EventBus | None = None) -> None:
+        self._event_bus = event_bus
+
     def generate(self, title: str, sections: list[dict[str, str]]) -> str:
         header = f"# 📊 选品分析报告: {title}\n\n> 生成时间: {datetime.now(UTC).isoformat()}\n\n---\n\n"
         body = "".join(f"## {s['title']}\n\n{s['content']}\n\n" for s in sections)
@@ -137,4 +142,11 @@ class ReportGeneratorTool:
         return header + body + footer
 
     async def execute(self, params: dict[str, Any]) -> str:
-        return self.generate(params["title"], params["sections"])
+        report = self.generate(params["title"], params["sections"])
+        if self._event_bus is not None:
+            self._event_bus.emit(
+                AgentEventType.REPORT_GENERATED,
+                {"title": params["title"], "report": report},
+                source="product-research",
+            )
+        return report

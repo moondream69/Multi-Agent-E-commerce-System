@@ -1,10 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Markdown from 'react-markdown';
-import { ChatResponse } from '../types/events';
+import { ChatResponse, NotificationMessage } from '../types/events';
+import { StepsTimeline, StepEntry } from './StepsTimeline';
 
 interface Props {
   onSend: (text: string) => void;
   lastResponse: ChatResponse | null;
+  notifications?: NotificationMessage[];
+  title?: string;
+  placeholder?: string;
 }
 
 // Agent 消息的 markdown 渲染样式(内联风格,与气泡一致;不含原始 HTML 透传,XSS 安全)
@@ -90,13 +94,35 @@ const markdownComponents: React.ComponentProps<typeof Markdown>['components'] =
     ),
   };
 
-export function ChatPanel({ onSend, lastResponse }: Props) {
+export function ChatPanel({
+  onSend,
+  lastResponse,
+  notifications = [],
+  title = '与 Agent 团队对话',
+  placeholder = '输入任务，如：分析蓝牙耳机市场趋势...',
+}: Props) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<
-    Array<{ role: string; content: string; ts: string }>
+    Array<{ role: string; content: string; ts: string; steps?: StepEntry[] }>
   >([]);
   const processingRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const seenNotificationsRef = useRef(0);
+
+  // 客服主动通知(chat:notification)追加为系统气泡;切换视图后历史通知会重放
+  useEffect(() => {
+    const fresh = notifications.slice(seenNotificationsRef.current);
+    if (fresh.length === 0) return;
+    seenNotificationsRef.current = notifications.length;
+    setMessages((prev) => [
+      ...prev,
+      ...fresh.map((n) => ({
+        role: 'system',
+        content: n.message,
+        ts: n.timestamp,
+      })),
+    ]);
+  }, [notifications]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -127,22 +153,22 @@ export function ChatPanel({ onSend, lastResponse }: Props) {
 
       setMessages((prev) => {
         const updated = [...prev];
+        const entry = {
+          role: 'assistant',
+          content,
+          ts: new Date().toISOString(),
+          steps: Array.isArray(lastResponse.steps)
+            ? (lastResponse.steps as StepEntry[])
+            : undefined,
+        };
         if (
           processingRef.current &&
           updated.length > 0 &&
           updated[updated.length - 1].role === 'assistant'
         ) {
-          updated[updated.length - 1] = {
-            role: 'assistant',
-            content,
-            ts: new Date().toISOString(),
-          };
+          updated[updated.length - 1] = entry;
         } else {
-          updated.push({
-            role: 'assistant',
-            content,
-            ts: new Date().toISOString(),
-          });
+          updated.push(entry);
         }
         return updated;
       });
@@ -191,7 +217,7 @@ export function ChatPanel({ onSend, lastResponse }: Props) {
           fontSize: 14,
         }}
       >
-        与 Agent 团队对话
+        {title}
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
         {messages.map((msg, i) => (
@@ -205,9 +231,12 @@ export function ChatPanel({ onSend, lastResponse }: Props) {
               background:
                 msg.role === 'user'
                   ? '#eff6ff'
-                  : msg.content.startsWith('错误')
-                    ? '#fef2f2'
-                    : '#f3f4f6',
+                  : msg.role === 'system'
+                    ? '#fefce8'
+                    : msg.content.startsWith('错误')
+                      ? '#fef2f2'
+                      : '#f3f4f6',
+              border: msg.role === 'system' ? '1px solid #fde68a' : 'none',
               alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
               fontSize: 13,
               lineHeight: 1.5,
@@ -222,12 +251,23 @@ export function ChatPanel({ onSend, lastResponse }: Props) {
                 marginBottom: 2,
               }}
             >
-              {msg.role === 'user' ? '你' : 'Agent'}
+              {msg.role === 'user'
+                ? '你'
+                : msg.role === 'system'
+                  ? '客服 Agent 主动通知'
+                  : 'Agent'}
             </div>
             {msg.role === 'user' ? (
               msg.content
             ) : (
-              <Markdown components={markdownComponents}>{msg.content}</Markdown>
+              <>
+                <Markdown components={markdownComponents}>
+                  {msg.content}
+                </Markdown>
+                {msg.steps && msg.steps.length > 0 && (
+                  <StepsTimeline steps={msg.steps} />
+                )}
+              </>
             )}
           </div>
         ))}
@@ -247,7 +287,7 @@ export function ChatPanel({ onSend, lastResponse }: Props) {
           onKeyDown={(e) => {
             if (e.key === 'Enter') handleSend();
           }}
-          placeholder="输入任务，如：分析蓝牙耳机市场趋势..."
+          placeholder={placeholder}
           style={{
             flex: 1,
             padding: '8px 12px',

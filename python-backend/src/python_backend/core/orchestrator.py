@@ -6,6 +6,8 @@ import asyncio
 import logging
 
 from python_backend.core.event_bus import EventBus, new_event
+from python_backend.db.agent_task_repo import record_task_end, record_task_start
+from python_backend.db.models import AgentTaskStatus
 from python_backend.domain.agents import AgentProtocol
 from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import AgentResult, AgentTask, TaskStatus, TaskType
@@ -40,6 +42,10 @@ class Orchestrator:
             raise ValueError(f"Agent {target_agent_id} 未注册")
 
         logger.info("路由任务 %s → %s", task.id, agent.name)
+        try:
+            record_task_start(task.id, agent.id, task.type.value, task.input, task.correlation_id)
+        except Exception as error:
+            logger.warning("任务审计写入失败(start): %s", error)
         self._event_bus.emit(
             AgentEventType.TASK_ASSIGNED,
             {"taskId": task.id, "agentId": agent.id},
@@ -51,6 +57,11 @@ class Orchestrator:
             AgentEventType.TASK_COMPLETED if result.status == TaskStatus.COMPLETED else AgentEventType.TASK_FAILED
         )
         self._event_bus.emit(event_type, result, task.correlation_id, agent.id)
+        try:
+            end_status = AgentTaskStatus.COMPLETED if result.status == TaskStatus.COMPLETED else AgentTaskStatus.FAILED
+            record_task_end(task.id, end_status, result.output)
+        except Exception as error:
+            logger.warning("任务审计写入失败(end): %s", error)
         return result
 
     async def broadcast_event(

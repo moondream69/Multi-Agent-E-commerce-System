@@ -12,6 +12,11 @@ from python_backend.db.models import FaqEmbedding
 from python_backend.db.search import semantic_search
 from python_backend.db.session import engine
 
+pytestmark = pytest.mark.integration
+
+
+
+
 DIM = 1024
 
 

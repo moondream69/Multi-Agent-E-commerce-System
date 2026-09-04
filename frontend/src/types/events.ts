@@ -6,6 +6,8 @@ export const AgentEventType = {
   ORDER_STATUS_CHANGED: 'order.status_changed',
   REPLY_GENERATED: 'reply.generated',
   ESCALATION_TRIGGERED: 'escalation.triggered',
+  INVENTORY_ALERT: 'inventory.alert',
+  CUSTOMER_NOTIFICATION: 'customer.notification',
   TASK_ASSIGNED: 'task.assigned',
   TASK_COMPLETED: 'task.completed',
   TASK_FAILED: 'task.failed',
@@ -68,3 +70,99 @@ export interface TaskErrorResponse {
 
 export type ChatResponse =
   TaskCreatedResponse | TaskResultResponse | TaskErrorResponse;
+
+// —— 买家前台(REST store 路由 + 订单事件)——
+
+export type OrderStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'processing'
+  | 'shipped'
+  | 'delivered'
+  | 'cancelled'
+  | 'returned';
+
+export interface Product {
+  id: string;
+  sku: string;
+  title: string;
+  description: string | null;
+  price: number;
+  category: string;
+  currency: string;
+  platform: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Order {
+  id: string;
+  productId: string;
+  customerId: string | null;
+  status: OrderStatus;
+  totalAmount: number;
+  currency: string;
+  platform: string | null;
+  metadata: unknown;
+  createdAt: string;
+  updatedAt: string;
+  product: Product | null;
+}
+
+export interface OrderStatusChangedPayload {
+  orderId: string;
+  from?: string | null;
+  to: string;
+  productId?: string;
+  totalAmount?: number;
+}
+
+// —— 业务事件 payload(工具 emit,经 agent:event 下发)——
+
+export interface ReportGeneratedPayload {
+  title?: string;
+  report?: string;
+}
+
+export interface ProductCreatedPayload {
+  product?: Product;
+}
+
+export interface ProductUpdatedPayload {
+  productId?: string;
+  status?: string;
+}
+
+export interface ReplyGeneratedPayload {
+  scenario?: string;
+  templateId?: string;
+}
+
+export interface EscalationTriggeredPayload {
+  orderId?: string;
+  reason?: string;
+}
+
+export interface InventoryAlertPayload {
+  productName?: string;
+  currentStock?: number;
+  threshold?: number;
+  message?: string;
+}
+
+export interface CustomerNotificationPayload {
+  message?: string;
+  agentId?: string;
+  orderId?: string;
+}
+
+// 客服主动通知(chat:notification,独立于 chat:response 三形状)
+export interface NotificationMessage {
+  type: 'chat:notification';
+  notificationId: string;
+  message: string;
+  agentId: string;
+  orderId?: string | null;
+  timestamp: string;
+}
