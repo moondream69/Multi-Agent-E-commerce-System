@@ -18,6 +18,7 @@ import socketio
 import socketio.exceptions
 
 from python_backend.api.auth import create_access_token
+from python_backend.core.output_text import extract_output_text
 
 pytestmark = pytest.mark.e2e
 
@@ -126,6 +127,18 @@ async def test_chat_message_full_flow(server):
 
     # agent:event 桥接(至少收到 task.assigned)
     assert any(e["type"] == "task.assigned" for e in agent_events)
+
+    # 落库检查:助手消息应以提取后的可读文本落库,而非 json.dumps 字面量
+    # (server 为 module 级 fixture、会话跨轮累积,必须按 taskId 精确匹配本轮消息)
+    resp = requests.get(
+        f"{BASE_URL}/api/conversations",
+        headers={"Authorization": f"Bearer {create_access_token('e2e-test')}"},
+        timeout=15,
+    )
+    assert resp.ok, resp.text
+    history = resp.json()["messages"]
+    saved = next(m for m in history if m.get("taskId") == result["taskId"] and m["role"] == "assistant")
+    assert saved["content"] == extract_output_text(result["output"])[:2000]
 
 
 async def test_invalid_message_gets_task_error(server):

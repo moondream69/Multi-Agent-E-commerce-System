@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -15,6 +14,7 @@ from python_backend.api.serializers import event_payload, to_json
 from python_backend.core.event_bus import EventBus
 from python_backend.core.intent_parser import IntentParser
 from python_backend.core.orchestrator import Orchestrator
+from python_backend.core.output_text import extract_output_text
 from python_backend.db.conversation_repo import append_message
 from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import AgentTask
@@ -105,7 +105,7 @@ def register_ws_handlers(
                 append_message(
                     username,
                     "assistant",
-                    json.dumps(result.output, ensure_ascii=False),
+                    extract_output_text(result.output),
                     agent_id=result.agent_id,
                     task_id=task.id,
                 )

@@ -13,6 +13,7 @@ import {
 } from './services/api';
 import { AgentEventType, AgentInfo } from './types/events';
 import { theme } from './theme';
+import { contentToDisplay, outputToContent } from './utils/output';
 
 type View = 'cockpit' | 'support' | 'approvals';
 
@@ -91,7 +92,8 @@ function MainApp({
         setChatMessages(
           history.map((m) => ({
             role: m.role as ChatMessage['role'],
-            content: m.content,
+            content:
+              m.role === 'assistant' ? contentToDisplay(m.content) : m.content,
             ts: m.timestamp,
           })),
         ),
@@ -122,27 +124,9 @@ function MainApp({
     consumedResponseRef.current = key;
 
     if (lastResponse.type === 'task_result') {
-      const output = lastResponse.output;
-      let content = '';
-      if (typeof output.report === 'string' && output.report) {
-        content = output.report;
-      } else if (typeof output.result === 'string' && output.result) {
-        content = output.result;
-      } else if (typeof output.reply === 'string' && output.reply) {
-        content = output.reply;
-      } else if (output.alert !== undefined) {
-        content =
-          typeof output.message === 'string'
-            ? output.message
-            : JSON.stringify(output, null, 2);
-      } else if (typeof output.message === 'string' && output.message) {
-        content = output.message;
-      } else {
-        content = JSON.stringify(output, null, 2);
-      }
       const entry: ChatMessage = {
         role: 'assistant',
-        content,
+        content: outputToContent(lastResponse.output),
         ts: new Date().toISOString(),
         steps: Array.isArray(lastResponse.steps)
           ? (lastResponse.steps as ChatMessage['steps'])
