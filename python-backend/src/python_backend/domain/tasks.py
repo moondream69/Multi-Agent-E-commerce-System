@@ -32,6 +32,7 @@ class AgentTask:
     input: dict[str, Any]
     target_agent_id: str | None = None
     correlation_id: str | None = None
+    requested_by: str | None = None
     created_at: datetime = field(default_factory=_now)
 
 
