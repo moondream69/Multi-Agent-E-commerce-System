@@ -24,7 +24,9 @@ services:
     restart: unless-stopped
 
   app:
-    build: ./python-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: mae_app
     env_file: .env
     ports:
@@ -36,7 +38,9 @@ services:
     # 单 worker 是硬约束:EventBus 进程内 + 审批等待协程 + WS sid→user 映射都依赖单进程
 
   simulator:
-    build: ./python-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: mae_simulator
     profiles: ["sim"]
     env_file: .env

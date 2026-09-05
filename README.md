@@ -2,7 +2,7 @@
 
 多 AI Agent 协作的跨境电商系统，面向中国出海电商场景。三个 Agent（选品分析 / 订单处理 / 智能客服）各自携带专用工具，由 LLM 驱动的 ReAct 推理自主决策工具调用顺序；Agent 间通过**事件总线**松耦合协作——选品报告自动生成商品草稿、订单状态变化触发客服主动通知，形成从「选品」到「售后」的完整业务闭环。
 
-前端提供双重视角：**驾驶舱**（Agent 状态 + 实时事件流）与**买家前台**（商品商店 → 下单 → 订单 → 售后客服）。
+前端提供三个工作视图：**驾驶舱**（Agent 状态 + 实时事件流 + 聊天指挥）、**客服工作台**（售后对话）、**审批中心**（高危操作人工审批）。买家前台视图已移除——store REST API 保留为模拟流量入口。
 
 ## 技术栈
 
@@ -12,11 +12,11 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 
 ```bash
 cp .env.example .env                    # 编辑 .env 填入实际配置 (EMBEDDING_API_URL 用 Ollama:11434)
-docker compose up -d                    # 启动 PostgreSQL + Redis
-# Embedding 由本机 Ollama (http://localhost:11434, 模型 bge-m3) 提供——先 `ollama pull bge-m3` 确认模型已拉取
+docker compose up -d                    # 启动 PostgreSQL + Redis + 应用 (首次先 docker compose build)
+# Embedding 由 Ollama (http://localhost:11434, 模型 bge-m3) 提供——compose 内 `docker compose --profile embed up -d ollama` 或本机启动,先 `ollama pull bge-m3` 确认模型已拉取
 
 cd python-backend
-uv run alembic upgrade head             # 数据库迁移 (10 表,含 pgvector 扩展)
+uv run alembic upgrade head             # 数据库迁移 (12 表,含 pgvector 扩展)
 uv run python -m python_backend.seed    # 数据播种 (幂等,按自然键跳过已存在记录)
 uv run uvicorn python_backend.main:app --port 3000   # 启动后端 (端口 3000,前端契约不变)
 
@@ -47,7 +47,7 @@ cd frontend && npm install && npm run dev  # Vite 开发服务器 (端口 5173)
 客服回复 reply.generated / 升级 escalation.triggered ──→ 事件流展示
 ```
 
-演示买家「张伟」(seed 客户,email `zhangwei@example.com`)在商店页直接下单,REST 创建 pending 订单;订单状态流转由订单 Agent 在聊天中指挥完成,状态变化即触发客服主动通知。
+演示买家「张伟」(seed 客户,email `zhangwei@example.com`)经 store REST API 下单(模拟流量入口,前端买家视图已移除),创建 pending 订单;订单状态流转由订单 Agent 在聊天中指挥完成,状态变化即触发客服主动通知。
 
 ### 关键组件
 
@@ -69,24 +69,25 @@ cd frontend && npm install && npm run dev  # Vite 开发服务器 (端口 5173)
 | Agent | 工具 |
 |-------|------|
 | **ProductResearchAgent** | `trend_query`, `competitor_analysis`, `scoring`, `generate_report` |
-| **OrderManagementAgent** | `product_crud`, `order_workflow`, `check_inventory`, `detect_anomalies` |
+| **OrderManagementAgent** | `product_crud`, `order_workflow`, `check_inventory`, `detect_anomalies`, `list_orders`, `list_approvals` |
 | **CustomerServiceAgent** | `translate`, `faq_search`, `sentiment_analysis`, `manage_template`, `order_lookup`, `escalate_ticket` |
 
 客服 Agent 声明两阶段 Workflow:先必调 `sentiment_analysis` + `faq_search`,完成后解锁全部工具可自由回答(图级白名单裁剪,未声明 Agent 行为不变)。
 
-## 事件类型(12 类)
+## 事件类型(14 类)
 
 | 事件 | 触发方 | 消费方 |
 |------|--------|--------|
 | `report.generated` | 选品 `generate_report` | 订单 Agent → 自动创建商品草稿 |
-| `product.created` / `product.updated` | 订单 `product_crud` | 前端商店实时刷新 |
-| `order.status_changed` | 订单 `order_workflow` / 商店下单 | 客服 Agent → 主动通知;前端订单实时刷新 |
+| `product.created` / `product.updated` | 订单 `product_crud` | 事件流展示 |
+| `order.status_changed` | 订单 `order_workflow` / 商店下单 | 客服 Agent → 主动通知;事件流展示 |
 | `reply.generated` | 客服 `manage_template.fill` | 事件流展示 |
 | `escalation.triggered` | 客服 `escalate_ticket` | 事件流展示 |
 | `inventory.alert` | 订单 `check_inventory` (告警时) | 客服 Agent → 转发通知 |
 | `customer.notification` | 客服 Agent | WS 桥接 `chat:notification` → 聊天面板 |
 | `task.assigned` / `task.completed` / `task.failed` | Orchestrator | 事件流展示 |
 | `agent.status_changed` | BaseAgent 状态机 | 驾驶舱 Agent 状态徽标 |
+| `approval.requested` / `approval.decided` | 审批护栏 (execute_guarded) | 审批中心徽标刷新 |
 
 ## REST 端点
 
@@ -156,10 +157,10 @@ npm run build                          # 前端构建 (tsc + vite)
 npm run dev                            # Vite (5173)
 ```
 
-> uv 不在 PATH：使用 `E:\Miniconda3\envs\uvProject\Scripts\uv.exe`(绝对路径)。PyPI 直连不畅时：`HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。
+> uv 在 PATH(`E:\Python\Scripts\uv.exe`)。PyPI 直连不畅时:`HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。
 > CI (`.github/workflows/ci.yml`)：push/PR 自动跑后端 ruff+ty+快速测试与前端 lint+build。
 
-完整演示流程见 [docs/demo-script.md](docs/demo-script.md)；架构决策见 [docs/adr/](docs/adr/)。
+架构决策见 [docs/adr/](docs/adr/)。
 
 ## 新增 Agent
 

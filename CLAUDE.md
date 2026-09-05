@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # 基础设施
-docker compose up -d                                          # 启动 Postgres + Redis (compose 仅含这两项;embedding 由 Ollama 外部提供)
+docker compose up -d                                          # 启动 Postgres + Redis + app(模拟流量 --profile sim、Ollama --profile embed 按需;首次需 docker compose build)
 
 # 后端 (python-backend/,Python 版为唯一后端)
 cd python-backend
 uv run uvicorn python_backend.main:app --port 3000   # 启动(端口 3000,前端契约不变)
 uv run pytest                                        # 全部测试(阶段 5 起含 WS e2e,需 Ollama/DeepSeek 在线)
 uv run python -m python_backend.seed                 # 数据播种(幂等:按自然键跳过已存在记录)
-uv run alembic upgrade head                          # 数据库迁移(10 表,含 pgvector 扩展)
+uv run alembic upgrade head                          # 数据库迁移(12 表,含 pgvector 扩展)
 uv run ruff check .                                  # Lint (无 --fix,自动修复用 `ruff check . --fix`)
 uv run ruff format .                                 # 格式化
 uv run ty check .                                    # 类型检查 (Alembic 迁移已排除)
@@ -28,7 +28,7 @@ cd frontend && npm run build                         # 前端构建 (tsc + vite)
 > ⚠️ `npm run lint` 只检查、不自动改写——需要自动修复时用 `npm run lint:fix`。
 > lint/format 已移入前端:所有 npm 命令须在 `frontend/` 下执行(仓库根已无 package.json)。
 > Python 侧规范工具为 ruff(lint+format)与 ty(type check),配置在 `python-backend/pyproject.toml`。
-> uv 不在 PATH:使用 `E:\Miniconda3\envs\uvProject\Scripts\uv.exe`(绝对路径)。PyPI 直连不畅时:
+> uv 在 PATH(`E:\Python\Scripts\uv.exe`)。PyPI 直连不畅时:
 > `HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。迁移后 launch 命令以 python-backend/README 为准。
 
 ## 技术栈
@@ -57,7 +57,7 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 | `EventBus` | `core/event_bus.py` | Agent 间松耦合事件通信，`emit()` / `on()` / `broadcast()` |
 | `LlmService` | `infrastructure/llm.py` | `complete()` (纯文本) + `completeWithTools()` (function calling)，通过 `LLM_API_URL` 配置端点 |
 | `EmbeddingService` | `infrastructure/embedding.py` | `embed()`(→1024维向量) + `search()`(pgvector 余弦相似度) |
-| `ITool` | `domain/tools.py` | `{ definition: ToolDefinition; execute(params): Promise<unknown> }` — 所有工具的标准化接口 |
+| `ITool` | `domain/tools.py` | `{ definition: ToolDefinition; execute(params): Any }` — 所有工具的标准化接口 |
 
 ### Agent 模式
 
@@ -65,15 +65,15 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 
 ```
 ProductResearchAgent: systemPrompt + [trendQuery, competitorAnalysis, scoring, reportGenerator]
-OrderManagementAgent: systemPrompt + [productCrud, orderWorkflow, inventoryAlert, anomalyDetection]
-CustomerServiceAgent: systemPrompt + [translator, faqSearch, sentimentAnalysis, templateManager]
+OrderManagementAgent: systemPrompt + [productCrud, orderWorkflow, inventoryAlert, anomalyDetection, orderList, approvalList]
+CustomerServiceAgent: systemPrompt + [translator, faqSearch, sentimentAnalysis, templateManager, orderLookup, escalateTicket]
 ```
 
 ### 如何新增 Agent
 
 1. 在 `python-backend/src/python_backend/agents/<name>/` 下创建 `tools.py`，实现 `ITool` 接口（含 `definition` + `execute()`）
 2. 创建 `<name>/agent.py` 继承 `BaseAgent`，声明 `systemPrompt` + 工具清单
-3. 在 `main.py` 中注册：`orchestrator.register_agent(agent, TaskType.XXX)`
+3. 在 `api/app.py` 的 `create_app()` 中注册：`orchestrator.register_agent(agent, TaskType.XXX)`
 
 ## 环境配置
 
@@ -87,6 +87,13 @@ CustomerServiceAgent: systemPrompt + [translator, faqSearch, sentimentAnalysis, 
 | `EMBEDDING_API_URL` | Ollama 端点 (`http://localhost:11434`)，留空则用 OpenAI |
 | `EMBEDDING_MODEL` | `bge-m3` (1024维) 或 `text-embedding-3-small` (1536维) |
 | `EMBEDDING_DIMENSION` | 向量维度 (1024 或 1536) |
+| `LLM_MAX_CONCURRENCY` | LLM 并发上限 (默认 2,DeepSeek 账号级限流防护) |
+| `AUTH_JWT_SECRET` | JWT 签名密钥 (生产必改:`openssl rand -hex 32` 生成) |
+| `AUTH_TOKEN_TTL_HOURS` | JWT 有效期 (默认 24) |
+| `CORS_ORIGINS` | 允许的跨域来源列表 |
+| `AUTH_ADMIN_USERNAME` / `AUTH_ADMIN_PASSWORD` | seed 创建的初始管理员凭据 |
+| `SHADOW_MODE` | 影子模式开关:高危写操作只记录不执行 (默认 false) |
+| `APPROVAL_TTL_HOURS` | 审批请求存活时长 (默认 4 小时,超时置 expired) |
 
 > ⚠️ Embedding 服务不可用时 `EmbeddingService` 显式报错(不静默降级为零向量)。
 > 前端类型是 API 契约唯一真源:`frontend/src/types/events.ts`(对应契约测试 `python-backend/tests/test_contract.py`)。
