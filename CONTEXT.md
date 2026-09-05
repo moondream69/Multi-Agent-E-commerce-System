@@ -43,7 +43,7 @@ Agent 可选声明的图级执行约束:按阶段推进,每阶段定义必调工
 _Avoid_: 流程编排、SOP、任务流
 
 **事件**(Event):
-Agent 间松耦合通知,经事件总线发布,供页面实时展示。当前为进程内总线。十二类:报告生成、产品创建/更新、订单状态变更、回复生成、升级触发、库存告警、客服主动通知、任务分配/完成/失败、Agent 状态变更。
+Agent 间松耦合通知,经事件总线发布,供页面实时展示。当前为进程内总线。十四类:报告生成、产品创建/更新、订单状态变更、回复生成、升级触发、库存告警、客服主动通知、任务分配/完成/失败、Agent 状态变更、审批请求、审批决定。
 _Avoid_: 消息(与聊天消息混淆)、回调
 
 **演示买家**:
@@ -57,6 +57,14 @@ _Avoid_: 门店、商城、用户旅程
 **商品草稿**:
 订单 Agent 收到选品报告(`report.generated`)后自动创建的商品(draft 状态,未上架)。由 LLM 从报告提炼字段(sku/title/price/category/description),提炼失败降级为报告标题 + 默认价。上架 = 商品状态流转为 active。
 _Avoid_: 自动上架(草稿≠上架,主动作是更新状态)
+
+**审批请求**(ApprovalRequest):
+高危写操作(订单状态流转、商品上架)触发的护栏记录:先落表再等待卖家决定,Agent 侧由只读工具 list_approvals 查询。六状态 pending/approved/rejected/expired/shadow/executed;mode=approval 阻塞等待人工决定,mode=shadow 只记录待一键补执行。持久化于 approval_requests 表。
+_Avoid_: 审批单、工单
+
+**影子模式**:
+AI 高危建议只记录不执行(审批请求以 shadow 状态落表),卖家在审批中心一键补执行;由设置开关 shadow_mode 控制。用于给 LLM 写操作"预演"而不产生真实副作用。
+_Avoid_: 静默模式
 
 **主动通知**:
 客服 Agent 订阅订单状态变更 / 库存告警后,主动发给买家的通知(买家未说话,客服先来消息)。经 `customer.notification` 事件 → WS `chat:notification` 推送到聊天面板(淡黄系统气泡);同时保留 `agent:event` 全量桥接(后台视角)。

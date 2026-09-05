@@ -21,7 +21,9 @@ from python_backend.agents.customer_service.tools import (
 from python_backend.agents.order_management.agent import OrderManagementAgent
 from python_backend.agents.order_management.tools import (
     AnomalyDetectionTool,
+    ApprovalListTool,
     InventoryAlertTool,
+    OrderListTool,
     OrderWorkflowTool,
     ProductCrudTool,
 )
@@ -192,6 +194,8 @@ def _order_agent(bus: EventBus, llm: object) -> OrderManagementAgent:
         OrderWorkflowTool(),
         InventoryAlertTool(),
         AnomalyDetectionTool(),
+        OrderListTool(),
+        ApprovalListTool(),
     )
 
 
@@ -201,8 +205,7 @@ async def test_order_agent_creates_draft_from_report(clean_rows):
     bus, captured = _make_bus()
     _capture(bus, captured, AgentEventType.PRODUCT_CREATED)
     llm = FakeLlm(
-        '{"sku": "auto-coffee", "title": "便携咖啡机", "price": 59.9,'
-        ' "category": "咖啡机", "description": "自动提炼"}'
+        '{"sku": "auto-coffee", "title": "便携咖啡机", "price": 59.9, "category": "咖啡机", "description": "自动提炼"}'
     )
     agent = _order_agent(bus, llm)
 

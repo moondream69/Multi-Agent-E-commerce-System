@@ -15,7 +15,9 @@ from python_backend.infrastructure.llm import LlmService
 
 from .tools import (
     AnomalyDetectionTool,
+    ApprovalListTool,
     InventoryAlertTool,
+    OrderListTool,
     OrderWorkflowTool,
     ProductCrudTool,
 )
@@ -27,6 +29,10 @@ SYSTEM_PROMPT = """你是跨境电商订单处理助手。根据用户需求执�
 ## 可用工具
 - product_crud: 商品管理,参数 action(create/listByCategory/findBySku/updateStatus) + 对应字段
 - order_workflow: 订单管理,参数 action(create/transition/listByStatus) + 对应字段
+- list_orders: 查询订单列表(只读),可选 status 枚举:
+  pending|confirmed|processing|shipped|delivered|cancelled|returned;缺省返回全部
+- list_approvals: 查询审批请求列表(只读),可选 status 枚举:
+  pending|approved|rejected|expired|shadow|executed;缺省返回全部
 - check_inventory: 库存预警检查,参数 productName(商品名), currentStock(当前库存), threshold(安全线)
 - detect_anomalies: 异常订单检测,参数 orderDescription(订单描述文本)
 
@@ -34,7 +40,12 @@ SYSTEM_PROMPT = """你是跨境电商订单处理助手。根据用户需求执�
 - 创建商品成功后告知用户商品ID和SKU
 - 更新订单状态时务必验证状态转换是否合法
 - 库存不足时给出明确的补货建议
-- 检测到异常订单时说明异常原因"""
+- 检测到异常订单时说明异常原因
+- 订单状态只有 7 种: pending、confirmed、processing、shipped、delivered、cancelled、returned,禁止编造任何其他状态值
+- 审批状态只有 6 种: pending、approved、rejected、expired、shadow、executed,禁止编造任何其他状态值
+- "有没有订单/审批留存、列表、数量"类问题必须调用 list_orders 或 list_approvals 查询后回答
+- 严禁用创建/流转等写操作或凭空猜测替代查询
+- 查询结果为空时,如实告知用户"没有查到相关记录",不要编造数据,也不要擅自改问其他问题"""
 
 
 class OrderManagementAgent(BaseAgent):
@@ -51,9 +62,18 @@ class OrderManagementAgent(BaseAgent):
         order_workflow: OrderWorkflowTool,
         inventory_alert: InventoryAlertTool,
         anomaly_detection: AnomalyDetectionTool,
+        order_list: OrderListTool,
+        approval_list: ApprovalListTool,
     ) -> None:
         super().__init__(event_bus, llm)
-        self.tools = [product_crud, order_workflow, inventory_alert, anomaly_detection]
+        self.tools = [
+            product_crud,
+            order_workflow,
+            inventory_alert,
+            anomaly_detection,
+            order_list,
+            approval_list,
+        ]
         self._product_crud = product_crud
 
     async def handle_event(self, event: AgentEvent) -> None:

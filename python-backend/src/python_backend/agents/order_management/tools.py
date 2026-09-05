@@ -1,4 +1,4 @@
-"""订单处理 Agent 的 4 个工具(镜像 src/agents/order-management/tools/*.tool.ts)。"""
+"""订单处理 Agent 的 6 个工具(镜像 src/agents/order-management/tools/*.tool.ts)。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from decimal import Decimal
 from typing import Any, ClassVar
 
 from python_backend.core.event_bus import EventBus
-from python_backend.db.models import Order, OrderStatus, Product
+from python_backend.db import approval_repo
+from python_backend.db.models import ApprovalStatus, Order, OrderStatus, Product
 from python_backend.db.rows import row_to_dict
 from python_backend.db.session import SessionLocal
 from python_backend.domain.events import AgentEventType
@@ -285,3 +286,66 @@ class AnomalyDetectionTool:
 
     async def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.detect(params["orderDescription"])
+
+
+class OrderListTool:
+    definition = ToolDefinition(
+        name="list_orders",
+        description=(
+            "查询订单列表(只读,不改动任何数据)。可选参数 status 按状态过滤,"
+            "不传返回全部订单;状态枚举仅限: "
+            "pending|confirmed|processing|shipped|delivered|cancelled|returned"
+        ),
+        parameters=[
+            ToolParameter(
+                "status",
+                "string",
+                "订单状态筛选(枚举: pending|confirmed|processing|shipped|delivered|cancelled|returned),不传返回全部",
+                required=False,
+            ),
+        ],
+    )
+
+    def list_orders(self, status: str | None = None) -> list[dict]:
+        with SessionLocal() as session:
+            stmt = session.query(Order).order_by(Order.createdAt.desc())
+            if status:
+                stmt = stmt.where(Order.status == OrderStatus(status))
+            results = []
+            for order in stmt:
+                row = row_to_dict(order)
+                row["product"] = row_to_dict(order.product) if order.product else None
+                results.append(row)
+            return results
+
+    async def execute(self, params: dict[str, Any]) -> list[dict]:
+        return self.list_orders(params.get("status"))
+
+
+class ApprovalListTool:
+    definition = ToolDefinition(
+        name="list_approvals",
+        description=(
+            "查询审批请求列表(只读,不改动任何数据)。可选参数 status 按状态过滤,"
+            "不传返回全部;状态枚举仅限: "
+            "pending|approved|rejected|expired|shadow|executed"
+        ),
+        parameters=[
+            ToolParameter(
+                "status",
+                "string",
+                "审批状态筛选(枚举: pending|approved|rejected|expired|shadow|executed),不传返回全部",
+                required=False,
+            ),
+        ],
+    )
+
+    def list_approvals(self, status: str | None = None) -> list[dict]:
+        if status:
+            ApprovalStatus(status)  # 无效枚举提前抛 ValueError,比 DB 绑定异常信息清晰
+        # repo 已开 session 并关闭;ApprovalRequest 无 relationship,返回对象所有列均已加载,
+        # detached 后访问安全
+        return [row_to_dict(r) for r in approval_repo.list_requests(status)]
+
+    async def execute(self, params: dict[str, Any]) -> list[dict]:
+        return self.list_approvals(params.get("status"))

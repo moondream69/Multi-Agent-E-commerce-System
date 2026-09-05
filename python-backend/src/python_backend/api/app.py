@@ -23,7 +23,9 @@ from python_backend.agents.customer_service.tools import (
 from python_backend.agents.order_management.agent import OrderManagementAgent
 from python_backend.agents.order_management.tools import (
     AnomalyDetectionTool,
+    ApprovalListTool,
     InventoryAlertTool,
+    OrderListTool,
     OrderWorkflowTool,
     ProductCrudTool,
 )
@@ -67,6 +69,8 @@ def build_real_tools(llm: LlmService, event_bus: EventBus | None = None) -> dict
             OrderWorkflowTool(event_bus),
             InventoryAlertTool(event_bus),
             AnomalyDetectionTool(),
+            OrderListTool(),
+            ApprovalListTool(),
         ),
         "service": (
             TranslatorTool(llm),

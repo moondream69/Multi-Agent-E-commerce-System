@@ -19,7 +19,9 @@ from python_backend.agents.customer_service.tools import (
 from python_backend.agents.order_management.agent import OrderManagementAgent
 from python_backend.agents.order_management.tools import (
     AnomalyDetectionTool,
+    ApprovalListTool,
     InventoryAlertTool,
+    OrderListTool,
     OrderWorkflowTool,
     ProductCrudTool,
 )
@@ -89,11 +91,13 @@ async def test_order_management_agent_basics():
         OrderWorkflowTool(),
         InventoryAlertTool(),
         AnomalyDetectionTool(),
+        OrderListTool(),
+        ApprovalListTool(),
     )
     assert agent.id == "order-management"
     assert agent.name == "订单处理Agent"
     assert agent.system_prompt
-    assert len(agent.get_tools()) == 4
+    assert len(agent.get_tools()) == 6
 
 
 async def test_order_management_handle_task():
@@ -104,6 +108,8 @@ async def test_order_management_handle_task():
         OrderWorkflowTool(),
         InventoryAlertTool(),
         AnomalyDetectionTool(),
+        OrderListTool(),
+        ApprovalListTool(),
     )
     await _patch_execute(agent, {"result": "test output"})
     result = await agent.handle_task(
@@ -180,6 +186,8 @@ async def test_other_agents_have_no_workflow():
         OrderWorkflowTool(),
         InventoryAlertTool(),
         AnomalyDetectionTool(),
+        OrderListTool(),
+        ApprovalListTool(),
     )
     assert research.workflow is None
     assert order.workflow is None
