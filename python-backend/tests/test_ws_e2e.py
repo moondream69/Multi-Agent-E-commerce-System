@@ -15,10 +15,14 @@ from pathlib import Path
 import pytest
 import requests
 import socketio
+import socketio.exceptions
+
+from python_backend.api.auth import create_access_token
 
 pytestmark = pytest.mark.e2e
 
-
+# WS 已鉴权,测试持有真实 JWT 连接(require_user 只验签不查库,无需数据库用户)
+WS_AUTH = {"token": create_access_token("e2e-test")}
 
 
 PYTHON_BACKEND = Path(__file__).resolve().parents[1]
@@ -89,7 +93,7 @@ async def test_chat_message_full_flow(server):
     client.on("chat:response", on_response)
     client.on("agent:event", on_agent)
 
-    await client.connect(BASE_URL, wait_timeout=15)
+    await client.connect(BASE_URL, wait_timeout=15, auth=WS_AUTH)
     task_text = f"分析蓝牙耳机市场趋势-{uuid.uuid4().hex[:4]}"
     await client.emit("chat:message", {"text": task_text})
     await asyncio.wait_for(result_event.wait(), timeout=240)
@@ -135,10 +139,17 @@ async def test_invalid_message_gets_task_error(server):
             error_event.set()
 
     client.on("chat:response", on_response)
-    await client.connect(BASE_URL, wait_timeout=15)
+    await client.connect(BASE_URL, wait_timeout=15, auth=WS_AUTH)
     await client.emit("chat:message", {"text": ""})
     await asyncio.wait_for(error_event.wait(), timeout=15)
     await client.disconnect()
 
     assert responses[-1]["type"] == "task_error"
     assert "格式错误" in responses[-1]["error"]
+
+
+async def test_ws_rejects_invalid_token(server):
+    client = socketio.AsyncClient()
+    with pytest.raises(socketio.exceptions.ConnectionError):
+        await client.connect(BASE_URL, wait_timeout=10, auth={"token": "invalid.token.here"})
+    await client.disconnect()

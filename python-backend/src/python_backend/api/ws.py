@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
+from python_backend.api.auth import verify_token
 from python_backend.api.schemas import ChatMessagePayload
 from python_backend.api.serializers import event_payload, to_json
 from python_backend.core.event_bus import EventBus
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 # 固定演示买家(与 store.py 的下单买家一致)
 DEMO_BUYER_ID = "demo-buyer"
 
+# sid → 登录用户名(单进程内存映射;多 worker 部署时此映射与 EventBus 一样会断,架构约束)
+_SID_USERS: dict[str, str] = {}
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -36,11 +40,17 @@ def register_ws_handlers(
     intent_parser: IntentParser,
 ) -> None:
     @sio.event
-    async def connect(sid: str, environ: dict) -> None:
-        logger.info("客户端已连接: %s", sid)
+    async def connect(sid: str, environ: dict, auth: dict | None = None) -> None:
+        token = (auth or {}).get("token") if isinstance(auth, dict) else None
+        username = verify_token(token) if token else None
+        if username is None:
+            raise ConnectionRefusedError("认证失败")
+        _SID_USERS[sid] = username
+        logger.info("客户端已连接: %s (%s)", sid, username)
 
     @sio.event
     async def disconnect(sid: str) -> None:
+        _SID_USERS.pop(sid, None)
         logger.info("客户端已断开: %s", sid)
 
     @sio.on("chat:message")
@@ -63,15 +73,17 @@ def register_ws_handlers(
 
         text = parsed.text
         logger.info("收到聊天消息: %s...", text[:50])
+        username = _SID_USERS.get(sid, DEMO_BUYER_ID)
         parsed_intent = intent_parser.parse(text)
         task = AgentTask(
             id=task_id,
             type=parsed_intent.task_type,
             input={**parsed_intent.extracted_input, "originalText": text},
+            requested_by=None if username == DEMO_BUYER_ID else username,
         )
 
         try:
-            append_message(DEMO_BUYER_ID, "user", text)
+            append_message(username, "user", text)
         except Exception as error:
             logger.warning("保存用户消息失败: %s", error)
 
@@ -91,7 +103,7 @@ def register_ws_handlers(
             result = await orchestrator.route_task(task)
             try:
                 append_message(
-                    DEMO_BUYER_ID,
+                    username,
                     "assistant",
                     json.dumps(result.output, ensure_ascii=False),
                     agent_id=result.agent_id,

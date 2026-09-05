@@ -1,28 +1,81 @@
-import { AgentInfo, Order, Product } from '../types/events';
+import { AgentInfo, ApprovalRequest } from '../types/events';
+import { clearToken, getToken } from './auth';
 
 const BASE = '/api';
 
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  onUnauthorized = handler;
+}
+
+/** 令牌过期统一处理:REST 401 与 WS connect_error 都走这里。 */
+export function handleAuthError() {
+  clearToken();
+  onUnauthorized?.();
+}
+
+async function authFetch(
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const token = getToken();
+  const headers = new Headers(init.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+  if (res.status === 401) handleAuthError();
+  return res;
+}
+
 export async function fetchAgents(): Promise<AgentInfo[]> {
-  const res = await fetch(`${BASE}/dashboard/agents`);
+  const res = await authFetch('/dashboard/agents');
+  if (!res.ok) throw new Error(await res.text());
   return (await res.json()) as AgentInfo[];
 }
 
-export async function fetchProducts(): Promise<Product[]> {
-  const res = await fetch(`${BASE}/products`);
-  return (await res.json()) as Product[];
+export interface ConversationMessage {
+  role: string;
+  content: string;
+  timestamp: string;
+  taskId?: string;
 }
 
-export async function fetchOrders(): Promise<Order[]> {
-  const res = await fetch(`${BASE}/orders`);
-  return (await res.json()) as Order[];
+export async function fetchConversations(): Promise<ConversationMessage[]> {
+  const res = await authFetch('/conversations');
+  if (!res.ok) throw new Error(await res.text());
+  const data = (await res.json()) as { messages: ConversationMessage[] };
+  return data.messages;
 }
 
-export async function createOrder(productId: string): Promise<Order> {
-  const res = await fetch(`${BASE}/orders`, {
+export async function fetchApprovals(
+  status?: string,
+): Promise<ApprovalRequest[]> {
+  const query = status ? `?status=${status}` : '';
+  const res = await authFetch(`/approvals${query}`);
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as ApprovalRequest[];
+}
+
+export async function decideApproval(
+  approvalId: string,
+  approve: boolean,
+  comment?: string,
+): Promise<ApprovalRequest> {
+  const res = await authFetch(`/approvals/${approvalId}/decide`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ productId }),
+    body: JSON.stringify({ approve, comment }),
   });
   if (!res.ok) throw new Error(await res.text());
-  return (await res.json()) as Order;
+  return (await res.json()) as ApprovalRequest;
+}
+
+export async function executeShadowApproval(
+  approvalId: string,
+): Promise<ApprovalRequest> {
+  const res = await authFetch(`/approvals/${approvalId}/execute`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as ApprovalRequest;
 }

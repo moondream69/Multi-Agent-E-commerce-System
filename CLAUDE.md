@@ -90,3 +90,17 @@ CustomerServiceAgent: systemPrompt + [translator, faqSearch, sentimentAnalysis, 
 
 > ⚠️ Embedding 服务不可用时 `EmbeddingService` 显式报错(不静默降级为零向量)。
 > 前端类型是 API 契约唯一真源:`frontend/src/types/events.ts`(对应契约测试 `python-backend/tests/test_contract.py`)。
+
+## Agent skills
+
+### Issue tracker
+
+Issue 跟踪在 GitHub Issues,用 `gh` CLI 读写。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+五个规范角色直接作为标签名(`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`)。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文布局:仓库根一个 `CONTEXT.md`,ADR 在 `docs/adr/`。见 `docs/agents/domain.md`。

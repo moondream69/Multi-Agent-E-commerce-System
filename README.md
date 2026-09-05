@@ -98,14 +98,18 @@ cd frontend && npm install && npm run dev  # Vite 开发服务器 (端口 5173)
 | GET | `/api/dashboard/status` | Agent 在线统计 |
 | GET | `/api/products` (`?category=`) | 商店商品列表(仅 active) |
 | GET | `/api/products/{id}` | 商品详情 |
-| POST | `/api/orders` | 买家下单(演示买家,金额缺省取商品价) |
+| POST | `/api/orders` | 下单(模拟流量入口,可指定买家邮箱) |
 | GET | `/api/orders` | 订单列表(含嵌套商品) |
+| POST | `/api/auth/login` | 登录(用户名密码 → JWT) |
+| GET | `/api/approvals` | 审批列表(分级审批护栏) |
+| POST | `/api/approvals/{id}/decide` | 通过/拒绝高危操作审批 |
+| POST | `/api/approvals/{id}/execute` | 影子建议一键补执行 |
 
-WebSocket:`chat:message` → `chat:response`(task_created / task_result / task_error 三形状);服务端推送 `agent:event`(全量事件)与 `chat:notification`(客服主动通知)。契约真源:`frontend/src/types/events.ts`。
+WebSocket:`chat:message` → `chat:response`(task_created / task_result / task_error 三形状);服务端推送 `agent:event`(全量事件)与 `chat:notification`(客服主动通知)。WS 连接需携带登录 token(`io({ auth: { token } })`)。契约真源:`frontend/src/types/events.ts`。
 
-## 数据库(10 表)
+## 数据库(12 表)
 
-`products` · `customers` · `orders` · `conversations`(聊天记录持久化) · `agent_tasks`(任务审计) · `agent_memory`(预留) · `product_embeddings` · `faq_embeddings` · `market_embeddings`(pgvector) · `reply_templates`(客服话术模板)
+`products` · `customers` · `orders` · `conversations`(聊天记录持久化) · `agent_tasks`(任务审计) · `agent_memory`(预留) · `product_embeddings` · `faq_embeddings` · `market_embeddings`(pgvector) · `reply_templates`(客服话术模板) · `users`(系统登录用户) · `approval_requests`(高危操作审批)
 
 ## 环境配置
 
@@ -116,11 +120,22 @@ WebSocket:`chat:message` → `chat:response`(task_created / task_result / task_e
 | `LLM_API_KEY` | API Key |
 | `LLM_API_URL` | API 端点 (如 `https://api.deepseek.com`) |
 | `LLM_MODEL` | 模型名 (如 `deepseek-v4-flash`) |
+| `LLM_MAX_CONCURRENCY` | 进程内 LLM 并发上限(DeepSeek 账号级限流防护,默认 2) |
 | `EMBEDDING_API_URL` | Ollama 端点 (`http://localhost:11434`)，留空则用 OpenAI |
 | `EMBEDDING_MODEL` | `bge-m3` (1024 维) 或 `text-embedding-3-small` (1536 维) |
 | `EMBEDDING_DIMENSION` | 向量维度 (1024 或 1536) |
+| `AUTH_JWT_SECRET` | JWT 签名密钥(生产必改:`openssl rand -hex 32`) |
+| `AUTH_ADMIN_USERNAME/PASSWORD` | 初始管理员(seed 幂等创建;密码留空则随机生成) |
+| `SHADOW_MODE` | 影子模式:AI 高危建议只记录不执行,审批中心一键补执行 |
 
 > ⚠️ Embedding 服务不可用时 `EmbeddingService` 显式报错(不静默降级为零向量)。
+> ⚠️ 业务路由已整体加认证(匿名 401);`/health`、`/api/auth/login` 保持公开。
+
+## 生产部署(局域网)
+
+定位为内部卖家工具(2-5 人小团队)。`docker compose up -d --build` 一键起 PostgreSQL + Redis + 应用(自动迁移 + 播种),前端由后端静态托管(单端口 3000)。模拟流量:`docker compose --profile sim up -d`。
+
+详见 [docs/OPERATIONS.md](docs/OPERATIONS.md):启动流程、**单 worker 硬约束**、备份/恢复、跑一天后的审计 SQL。
 
 ## 开发命令
 

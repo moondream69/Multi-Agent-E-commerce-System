@@ -1,0 +1,9 @@
+/* 全局样式:去掉 body 默认 margin(否则 100vh 布局溢出产生无用的外层滚动条) */
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+#root {
+  height: 100%;
+}

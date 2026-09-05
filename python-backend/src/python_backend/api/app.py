@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 import socketio
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from python_backend.agents.customer_service.agent import CustomerServiceAgent
 from python_backend.agents.customer_service.tools import (
@@ -29,6 +34,8 @@ from python_backend.agents.product_research.tools import (
     ScoringTool,
     TrendQueryTool,
 )
+from python_backend.api.approvals import build_approvals_router
+from python_backend.api.auth import build_auth_router, require_user
 from python_backend.api.rest import build_router
 from python_backend.api.store import build_store_router
 from python_backend.api.ws import (
@@ -36,12 +43,15 @@ from python_backend.api.ws import (
     bridge_notifications,
     register_ws_handlers,
 )
+from python_backend.core.approval import register_tool
 from python_backend.core.event_bus import EventBus
 from python_backend.core.intent_parser import IntentParser
 from python_backend.core.orchestrator import Orchestrator
+from python_backend.db import approval_repo
 from python_backend.domain.events import AgentEventType
 from python_backend.domain.tasks import TaskType
 from python_backend.infrastructure.llm import LlmService
+from python_backend.settings import settings
 
 
 def build_real_tools(llm: LlmService, event_bus: EventBus | None = None) -> dict:
@@ -74,8 +84,22 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
 
     orchestrator 为 None 时注册真实三 Agent;测试可注入带桩 Agent 的编排器。
     """
-    http_app = FastAPI(title="multi-agent-ecommerce", version="0.1.0")
-    http_app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # 启动清扫:进程重启丢在途审批,陈旧 pending 置 expired(卖家重发指令即可)
+        expired = approval_repo.expire_stale(settings.approval_ttl_hours)
+        if expired:
+            print(f"[approval] 启动清扫: {expired} 条过期审批已置 expired", flush=True)
+        yield
+
+    http_app = FastAPI(title="multi-agent-ecommerce", version="0.1.0", lifespan=lifespan)
+    http_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
@@ -83,6 +107,11 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
         event_bus = EventBus()
         llm = LlmService()
         real_tools = build_real_tools(llm, event_bus)
+
+        # 工具实例注册进全局注册表(影子建议补执行 + 审计用)
+        for group in real_tools.values():
+            for tool in group:
+                register_tool(tool)
 
         research_agent = ProductResearchAgent(event_bus, llm, *real_tools["research"])
         order_agent = OrderManagementAgent(event_bus, llm, *real_tools["order"])
@@ -104,16 +133,35 @@ def create_app(orchestrator: Orchestrator | None = None) -> FastAPI:
     register_ws_handlers(sio, orchestrator, IntentParser())
     bridge_all_events(sio, event_bus)
     bridge_notifications(sio, event_bus)
-    http_app.include_router(build_router(orchestrator))
-    http_app.include_router(build_store_router(event_bus))
-
-    @http_app.get("/")
-    def root() -> dict:
-        return {"message": "Hello World!"}
+    http_app.include_router(build_auth_router())
+    # 业务路由整体加认证(内部工具,store API 保留为模拟流量入口,同样需 token)
+    http_app.include_router(build_router(orchestrator), dependencies=[Depends(require_user)])
+    http_app.include_router(build_store_router(event_bus), dependencies=[Depends(require_user)])
+    http_app.include_router(build_approvals_router(event_bus), dependencies=[Depends(require_user)])
 
     @http_app.get("/health")
     def health() -> dict:
         return {"status": "ok"}
+
+    # 生产:前端构建产物由本进程静态托管(单端口 3000,同源部署,CORS 不再跨域);
+    # 开发/测试(无 dist):保留 JSON 根路由,契约测试锚定
+    dist_dir = Path(__file__).resolve().parents[3] / "dist"
+    if dist_dir.is_dir():
+        http_app.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
+
+        @http_app.get("/")
+        def index() -> FileResponse:
+            return FileResponse(dist_dir / "index.html")
+
+        @http_app.get("/{path:path}")
+        def spa_fallback(path: str) -> FileResponse:
+            """SPA 回退:非 API/非静态路径一律返回 index.html(前端无路由库,防刷新 404)。"""
+            return FileResponse(dist_dir / "index.html")
+    else:
+
+        @http_app.get("/")
+        def root() -> dict:
+            return {"message": "Hello World!"}
 
     # 作为 uvicorn 入口的 ASGI 应用
     http_app.state.asgi = socketio.ASGIApp(sio, other_asgi_app=http_app)

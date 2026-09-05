@@ -16,9 +16,6 @@ from python_backend.db.session import engine
 pytestmark = pytest.mark.integration
 
 
-
-
-
 @pytest.fixture()
 def prepared_db():
     Base.metadata.create_all(engine)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import secrets
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -16,6 +17,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from python_backend.api.auth import hash_password
 from python_backend.db.models import (
     Customer,
     FaqEmbedding,
@@ -23,10 +25,12 @@ from python_backend.db.models import (
     Product,
     ProductEmbedding,
     ReplyTemplate,
+    User,
 )
 from python_backend.db.session import SessionLocal
 from python_backend.infrastructure.embedding import EmbeddingService
 from python_backend.infrastructure.llm import LlmService
+from python_backend.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +429,19 @@ def seed_templates() -> int:
     return added
 
 
+def seed_admin() -> int:
+    """幂等创建初始管理员(按用户名)。密码取 AUTH_ADMIN_PASSWORD,未配置则随机生成并打印一次。"""
+    with SessionLocal() as session:
+        if session.scalar(select(User.id).where(User.username == settings.auth_admin_username)):
+            return 0
+        password = settings.auth_admin_password or secrets.token_urlsafe(12)
+        if not settings.auth_admin_password:
+            print(f"[admin] 初始密码(仅显示一次,请保存): {password}", flush=True)
+        session.add(User(username=settings.auth_admin_username, passwordHash=hash_password(password)))
+        session.commit()
+        return 1
+
+
 def main() -> None:
     start = time.time()
     product_count = seed_products()
@@ -432,9 +449,10 @@ def main() -> None:
     faq_count = seed_faq()
     customer_count = seed_customers()
     template_count = seed_templates()
+    admin_count = seed_admin()
 
     elapsed = f"{time.time() - start:.1f}"
-    total = product_count + market_count + faq_count + customer_count + template_count
+    total = product_count + market_count + faq_count + customer_count + template_count + admin_count
     print("\n========================================")
     print(f"  播种完成 ({elapsed}s)")
     print("========================================")
@@ -443,6 +461,7 @@ def main() -> None:
     print(f"  FAQ + 向量     : {faq_count}")
     print(f"  客户           : {customer_count}")
     print(f"  回复模板       : {template_count}")
+    print(f"  登录用户       : {admin_count}")
     print("  -------------------------------------")
     print(f"  总计           : {total}")
     print("========================================")

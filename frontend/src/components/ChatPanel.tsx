@@ -1,12 +1,18 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Markdown from 'react-markdown';
-import { ChatResponse, NotificationMessage } from '../types/events';
 import { StepsTimeline, StepEntry } from './StepsTimeline';
 
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  ts: string;
+  steps?: StepEntry[];
+  placeholder?: boolean;
+}
+
 interface Props {
+  messages: ChatMessage[];
   onSend: (text: string) => void;
-  lastResponse: ChatResponse | null;
-  notifications?: NotificationMessage[];
   title?: string;
   placeholder?: string;
 }
@@ -95,116 +101,22 @@ const markdownComponents: React.ComponentProps<typeof Markdown>['components'] =
   };
 
 export function ChatPanel({
+  messages,
   onSend,
-  lastResponse,
-  notifications = [],
   title = '与 Agent 团队对话',
   placeholder = '输入任务，如：分析蓝牙耳机市场趋势...',
 }: Props) {
   const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<
-    Array<{ role: string; content: string; ts: string; steps?: StepEntry[] }>
-  >([]);
-  const processingRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const seenNotificationsRef = useRef(0);
-
-  // 客服主动通知(chat:notification)追加为系统气泡;切换视图后历史通知会重放
-  useEffect(() => {
-    const fresh = notifications.slice(seenNotificationsRef.current);
-    if (fresh.length === 0) return;
-    seenNotificationsRef.current = notifications.length;
-    setMessages((prev) => [
-      ...prev,
-      ...fresh.map((n) => ({
-        role: 'system',
-        content: n.message,
-        ts: n.timestamp,
-      })),
-    ]);
-  }, [notifications]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  useEffect(() => {
-    if (!lastResponse) return;
-
-    if (lastResponse.type === 'task_result') {
-      const output = lastResponse.output;
-      let content = '';
-      if (typeof output.report === 'string' && output.report) {
-        content = output.report;
-      } else if (typeof output.result === 'string' && output.result) {
-        content = output.result;
-      } else if (typeof output.reply === 'string' && output.reply) {
-        content = output.reply;
-      } else if (output.alert !== undefined) {
-        content =
-          typeof output.message === 'string'
-            ? output.message
-            : JSON.stringify(output, null, 2);
-      } else if (typeof output.message === 'string' && output.message) {
-        content = output.message;
-      } else {
-        content = JSON.stringify(output, null, 2);
-      }
-
-      setMessages((prev) => {
-        const updated = [...prev];
-        const entry = {
-          role: 'assistant',
-          content,
-          ts: new Date().toISOString(),
-          steps: Array.isArray(lastResponse.steps)
-            ? (lastResponse.steps as StepEntry[])
-            : undefined,
-        };
-        if (
-          processingRef.current &&
-          updated.length > 0 &&
-          updated[updated.length - 1].role === 'assistant'
-        ) {
-          updated[updated.length - 1] = entry;
-        } else {
-          updated.push(entry);
-        }
-        return updated;
-      });
-      processingRef.current = false;
-    } else if (lastResponse.type === 'task_error') {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `错误: ${lastResponse.error}`,
-          ts: new Date().toISOString(),
-        },
-      ]);
-      processingRef.current = false;
-    }
-  }, [lastResponse]);
-
   const handleSend = () => {
     if (!input.trim()) return;
-    setMessages((prev) => [
-      ...prev,
-      { role: 'user', content: input, ts: new Date().toISOString() },
-    ]);
     onSend(input);
     setInput('');
-    processingRef.current = true;
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Agent 正在思考...',
-          ts: new Date().toISOString(),
-        },
-      ]);
-    }, 300);
   };
 
   return (
@@ -219,7 +131,7 @@ export function ChatPanel({
       >
         {title}
       </div>
-      <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 12 }}>
         {messages.map((msg, i) => (
           <div
             key={i}

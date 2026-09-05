@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from python_backend.api.app import create_app
+from python_backend.api.auth import create_access_token
 from python_backend.core.base_agent import BaseAgent
 from python_backend.core.event_bus import EventBus
 from python_backend.core.orchestrator import Orchestrator
@@ -16,6 +17,9 @@ from python_backend.infrastructure.llm import LlmService
 
 BUS = EventBus()
 LLM = LlmService()
+
+# 业务路由已整体加认证,测试统一携带有效令牌
+AUTH_HEADERS = {"Authorization": f"Bearer {create_access_token('tester')}"}
 
 
 class ContractStubAgent(BaseAgent):
@@ -35,7 +39,7 @@ def _build_app() -> TestClient:
     orchestrator.register_agent(ContractStubAgent("a1", "选品"), TaskType.PRODUCT_RESEARCH)
     orchestrator.register_agent(ContractStubAgent("a2", "订单"), TaskType.ORDER_MANAGEMENT)
     orchestrator.register_agent(ContractStubAgent("a3", "客服"), TaskType.CUSTOMER_SERVICE)
-    return TestClient(create_app(orchestrator))
+    return TestClient(create_app(orchestrator), headers=AUTH_HEADERS)
 
 
 def test_root_and_health():

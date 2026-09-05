@@ -16,9 +16,6 @@ from python_backend.seed import seed_templates
 pytestmark = pytest.mark.integration
 
 
-
-
-
 @pytest.fixture()
 def prepared_db():
     Base.metadata.create_all(engine)  # 幂等:表已存在时无操作

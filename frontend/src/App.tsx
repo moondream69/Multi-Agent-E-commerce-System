@@ -1,28 +1,68 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChatPanel } from './components/ChatPanel';
+import ApprovalPanel from './components/ApprovalPanel';
+import { ChatMessage, ChatPanel } from './components/ChatPanel';
 import { Dashboard } from './components/Dashboard';
-import { OrderList } from './components/store/OrderList';
-import { ProductList } from './components/store/ProductList';
+import LoginPage from './components/LoginPage';
 import { useWebSocket } from './hooks/useWebSocket';
+import { clearToken, fetchMe, getToken } from './services/auth';
 import {
-  createOrder,
   fetchAgents,
-  fetchOrders,
-  fetchProducts,
+  fetchApprovals,
+  fetchConversations,
+  setUnauthorizedHandler,
 } from './services/api';
-import { AgentEventType, AgentInfo, Order, Product } from './types/events';
+import { AgentEventType, AgentInfo } from './types/events';
 import { theme } from './theme';
 
-type View = 'cockpit' | 'store' | 'orders' | 'support';
+type View = 'cockpit' | 'support' | 'approvals';
 
 const NAV_ITEMS: Array<{ key: View; label: string }> = [
   { key: 'cockpit', label: '驾驶舱' },
-  { key: 'store', label: '商品商店' },
-  { key: 'orders', label: '我的订单' },
-  { key: 'support', label: '客服中心' },
+  { key: 'support', label: '客服工作台' },
+  { key: 'approvals', label: '审批中心' },
 ];
 
 export default function App() {
+  const [user, setUser] = useState<string | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setUser(null));
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  // 刷新页面后凭 token 恢复登录态
+  useEffect(() => {
+    if (!getToken()) {
+      setChecking(false);
+      return;
+    }
+    fetchMe()
+      .then(setUser)
+      .catch(() => clearToken())
+      .finally(() => setChecking(false));
+  }, []);
+
+  if (checking) return null;
+  if (!user) return <LoginPage onLogin={setUser} />;
+  return (
+    <MainApp
+      username={user}
+      onLogout={() => {
+        clearToken();
+        setUser(null);
+      }}
+    />
+  );
+}
+
+function MainApp({
+  username,
+  onLogout,
+}: {
+  username: string;
+  onLogout: () => void;
+}) {
   const {
     events,
     sendMessage,
@@ -32,15 +72,130 @@ export default function App() {
     notifications,
   } = useWebSocket();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
   const [view, setView] = useState<View>('cockpit');
 
-  const refreshProducts = useCallback(() => {
-    fetchProducts().then(setProducts).catch(console.error);
+  // —— 聊天消息流(App 级持有:视图切换/重挂载不丢;刷新后由历史接口恢复)——
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const historyLoadedRef = useRef(false);
+  const consumedResponseRef = useRef<string | null>(null);
+  const seenNotificationsRef = useRef(0);
+  const pendingReplyRef = useRef(false);
+
+  // 首次挂载拉取历史对话(StrictMode double-effect 由 ref 防重)
+  useEffect(() => {
+    if (historyLoadedRef.current) return;
+    historyLoadedRef.current = true;
+    fetchConversations()
+      .then((history) =>
+        setChatMessages(
+          history.map((m) => ({
+            role: m.role as ChatMessage['role'],
+            content: m.content,
+            ts: m.timestamp,
+          })),
+        ),
+      )
+      .catch(console.error);
   }, []);
-  const refreshOrders = useCallback(() => {
-    fetchOrders().then(setOrders).catch(console.error);
+
+  // 客服主动通知(chat:notification)追加为系统气泡(App 级:切换视图不重放)
+  useEffect(() => {
+    const fresh = notifications.slice(seenNotificationsRef.current);
+    if (fresh.length === 0) return;
+    seenNotificationsRef.current = notifications.length;
+    setChatMessages((prev) => [
+      ...prev,
+      ...fresh.map((n) => ({
+        role: 'system' as const,
+        content: n.message,
+        ts: n.timestamp,
+      })),
+    ]);
+  }, [notifications]);
+
+  // WS 任务响应:按 taskId 去重消费(StrictMode double-effect / 视图切换重挂载均不重复)
+  useEffect(() => {
+    if (!lastResponse || lastResponse.type === 'task_created') return;
+    const key = `${lastResponse.taskId}:${lastResponse.type}`;
+    if (consumedResponseRef.current === key) return;
+    consumedResponseRef.current = key;
+
+    if (lastResponse.type === 'task_result') {
+      const output = lastResponse.output;
+      let content = '';
+      if (typeof output.report === 'string' && output.report) {
+        content = output.report;
+      } else if (typeof output.result === 'string' && output.result) {
+        content = output.result;
+      } else if (typeof output.reply === 'string' && output.reply) {
+        content = output.reply;
+      } else if (output.alert !== undefined) {
+        content =
+          typeof output.message === 'string'
+            ? output.message
+            : JSON.stringify(output, null, 2);
+      } else if (typeof output.message === 'string' && output.message) {
+        content = output.message;
+      } else {
+        content = JSON.stringify(output, null, 2);
+      }
+      const entry: ChatMessage = {
+        role: 'assistant',
+        content,
+        ts: new Date().toISOString(),
+        steps: Array.isArray(lastResponse.steps)
+          ? (lastResponse.steps as ChatMessage['steps'])
+          : undefined,
+      };
+      setChatMessages((prev) => {
+        if (pendingReplyRef.current && prev[prev.length - 1]?.placeholder) {
+          return [...prev.slice(0, -1), entry]; // 替换"正在思考..."占位
+        }
+        return [...prev, entry];
+      });
+      pendingReplyRef.current = false;
+    } else if (lastResponse.type === 'task_error') {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `错误: ${lastResponse.error}`,
+          ts: new Date().toISOString(),
+        },
+      ]);
+      pendingReplyRef.current = false;
+    }
+  }, [lastResponse]);
+
+  const handleSend = useCallback(
+    (text: string) => {
+      sendMessage(text);
+      setChatMessages((prev) => [
+        ...prev,
+        { role: 'user', content: text, ts: new Date().toISOString() },
+      ]);
+      pendingReplyRef.current = true;
+      setTimeout(() => {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: 'Agent 正在思考...',
+            ts: new Date().toISOString(),
+            placeholder: true,
+          },
+        ]);
+      }, 300);
+    },
+    [sendMessage],
+  );
+
+  // 待审批数:进入审批中心/审批事件到达时刷新
+  const refreshPendingApprovals = useCallback(() => {
+    fetchApprovals('pending')
+      .then((rows) => setPendingApprovals(rows.length))
+      .catch(console.error);
   }, []);
 
   // socket 首连/重连时拉取一次状态快照,补齐断线期间丢失的状态变化(断线时 statuses 已清空)
@@ -52,32 +207,17 @@ export default function App() {
     wasConnected.current = connected;
   }, [connected]);
 
-  useEffect(() => {
-    refreshProducts();
-    refreshOrders();
-  }, [refreshProducts, refreshOrders]);
-
-  // 业务事件驱动前台刷新:订单状态变化刷新订单,商品事件刷新商店
+  // 审批事件驱动前台刷新徽标
   useEffect(() => {
     const last = events[0];
     if (!last) return;
-    if (last.type === AgentEventType.ORDER_STATUS_CHANGED) refreshOrders();
     if (
-      last.type === AgentEventType.PRODUCT_CREATED ||
-      last.type === AgentEventType.PRODUCT_UPDATED
+      last.type === AgentEventType.APPROVAL_REQUESTED ||
+      last.type === AgentEventType.APPROVAL_DECIDED
     ) {
-      refreshProducts();
+      refreshPendingApprovals();
     }
-  }, [events, refreshOrders, refreshProducts]);
-
-  const handleBuy = (product: Product) => {
-    createOrder(product.id)
-      .then(() => {
-        setView('orders');
-        refreshOrders();
-      })
-      .catch((err) => console.error('下单失败', err));
-  };
+  }, [events, refreshPendingApprovals]);
 
   const liveAgents = agents.map((a) => ({
     ...a,
@@ -120,7 +260,10 @@ export default function App() {
           {NAV_ITEMS.map((item) => (
             <button
               key={item.key}
-              onClick={() => setView(item.key)}
+              onClick={() => {
+                setView(item.key);
+                if (item.key === 'approvals') refreshPendingApprovals();
+              }}
               style={{
                 padding: '6px 14px',
                 border: 'none',
@@ -130,21 +273,67 @@ export default function App() {
                 background:
                   view === item.key ? theme.color.brand : 'transparent',
                 color: view === item.key ? '#fff' : theme.color.textSecondary,
+                position: 'relative',
               }}
             >
               {item.label}
+              {item.key === 'approvals' && pendingApprovals > 0 && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: -6,
+                    right: -6,
+                    minWidth: 16,
+                    height: 16,
+                    borderRadius: theme.radius.full,
+                    background: theme.color.danger,
+                    color: '#fff',
+                    fontSize: 10,
+                    lineHeight: '16px',
+                    textAlign: 'center',
+                    padding: '0 4px',
+                  }}
+                >
+                  {pendingApprovals}
+                </span>
+              )}
             </button>
           ))}
         </nav>
         <div
           style={{
             marginLeft: 'auto',
-            color: connected ? theme.color.success : theme.color.danger,
-            fontSize: 13,
-            fontFamily: theme.font.mono,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
           }}
         >
-          {connected ? '已连接' : '未连接'}
+          <span
+            style={{
+              color: connected ? theme.color.success : theme.color.danger,
+              fontSize: 13,
+              fontFamily: theme.font.mono,
+            }}
+          >
+            {connected ? '已连接' : '未连接'}
+          </span>
+          <span style={{ fontSize: 13, color: theme.color.textSecondary }}>
+            {username}
+          </span>
+          <button
+            onClick={onLogout}
+            style={{
+              padding: '4px 10px',
+              border: `1px solid ${theme.color.border}`,
+              borderRadius: theme.radius.sm,
+              background: 'transparent',
+              color: theme.color.textSecondary,
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            退出
+          </button>
         </div>
       </header>
 
@@ -167,47 +356,23 @@ export default function App() {
               background: '#fff',
             }}
           >
-            <ChatPanel
-              onSend={sendMessage}
-              lastResponse={lastResponse}
-              notifications={notifications}
-            />
+            <ChatPanel messages={chatMessages} onSend={handleSend} />
           </div>
-        </div>
-      )}
-      {view === 'store' && (
-        <div
-          style={{
-            flex: 1,
-            padding: 24,
-            overflow: 'auto',
-            background: theme.color.bg,
-          }}
-        >
-          <ProductList products={products} onBuy={handleBuy} />
-        </div>
-      )}
-      {view === 'orders' && (
-        <div
-          style={{
-            flex: 1,
-            padding: 24,
-            overflow: 'auto',
-            background: theme.color.bg,
-          }}
-        >
-          <OrderList orders={orders} />
         </div>
       )}
       {view === 'support' && (
         <div style={{ flex: 1, minHeight: 0 }}>
           <ChatPanel
-            onSend={sendMessage}
-            lastResponse={lastResponse}
-            notifications={notifications}
-            title="客服中心"
-            placeholder="输入问题，如：我的订单到哪里了？"
+            messages={chatMessages}
+            onSend={handleSend}
+            title="客服工作台"
+            placeholder="输入问题，如：查一下退货政策"
           />
+        </div>
+      )}
+      {view === 'approvals' && (
+        <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+          <ApprovalPanel />
         </div>
       )}
     </div>

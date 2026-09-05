@@ -15,8 +15,6 @@ from python_backend.db.session import engine
 pytestmark = pytest.mark.integration
 
 
-
-
 DIM = 1024
 
 

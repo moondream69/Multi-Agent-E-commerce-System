@@ -23,6 +23,37 @@ services:
       - redisdata:/data
     restart: unless-stopped
 
+  app:
+    build: ./python-backend
+    container_name: mae_app
+    env_file: .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    # 单 worker 是硬约束:EventBus 进程内 + 审批等待协程 + WS sid→user 映射都依赖单进程
+
+  simulator:
+    build: ./python-backend
+    container_name: mae_simulator
+    profiles: ["sim"]
+    env_file: .env
+    command: python -m python_backend.simulator --loop 300 --base-url http://app:3000
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    container_name: mae_ollama
+    profiles: ["embed"]
+    volumes:
+      - ollamadata:/root/.ollama
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:
+  ollamadata:

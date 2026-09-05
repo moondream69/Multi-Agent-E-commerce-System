@@ -9,6 +9,7 @@ from sqlalchemy import Table, select
 from sqlalchemy.orm import Session
 
 from python_backend.api.app import create_app
+from python_backend.api.auth import create_access_token
 from python_backend.core.event_bus import EventBus
 from python_backend.core.orchestrator import Orchestrator
 from python_backend.db.base import Base
@@ -18,8 +19,8 @@ from python_backend.domain.events import AgentEventType
 
 pytestmark = pytest.mark.integration
 
-
-
+# 业务路由已整体加认证,测试统一携带有效令牌
+AUTH_HEADERS = {"Authorization": f"Bearer {create_access_token('tester')}"}
 
 
 @pytest.fixture()
@@ -77,7 +78,7 @@ def _seed_demo_buyer() -> tuple[str, bool]:
 
 
 def _client() -> TestClient:
-    return TestClient(create_app(Orchestrator(EventBus())))
+    return TestClient(create_app(Orchestrator(EventBus())), headers=AUTH_HEADERS)
 
 
 def test_list_products_only_active(clean_rows):
@@ -160,7 +161,7 @@ def test_create_order_emits_order_status_changed(clean_rows):
     bus = EventBus()
     captured: list = []
     bus.on(AgentEventType.ORDER_STATUS_CHANGED, lambda event: captured.append(event))
-    client = TestClient(create_app(Orchestrator(bus)))
+    client = TestClient(create_app(Orchestrator(bus)), headers=AUTH_HEADERS)
 
     order = client.post("/api/orders", json={"productId": product_id}).json()
     clean_rows[0].append(order["id"])

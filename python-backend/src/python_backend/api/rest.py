@@ -5,11 +5,14 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from sqlalchemy import select
 
 from python_backend.api.schemas import CreateTaskDto
 from python_backend.api.serializers import agent_info, result_payload, to_json
 from python_backend.core.orchestrator import Orchestrator
+from python_backend.db.models import Conversation
+from python_backend.db.session import SessionLocal
 from python_backend.domain.agents import AgentStatus
 from python_backend.domain.tasks import AgentTask, TaskType
 
@@ -18,12 +21,13 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
     router = APIRouter()
 
     @router.post("/api/agents/task")
-    async def create_task(dto: CreateTaskDto) -> dict:
+    async def create_task(request: Request, dto: CreateTaskDto) -> dict:
         task = AgentTask(
             id=str(uuid.uuid4()),
             type=TaskType(dto.type),
             input=dto.input,
             target_agent_id=dto.targetAgentId,
+            requested_by=getattr(request.state, "username", None),
         )
         result = await orchestrator.route_task(task)
         return result_payload(result)
@@ -53,5 +57,13 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
             "onlineAgents": online_agents,
             "timestamp": datetime.now(UTC).isoformat(),
         }
+
+    @router.get("/api/conversations")
+    async def get_conversation(request: Request) -> dict:
+        """当前登录用户的聊天历史(按会话归属人隔离;兼容旧数据回落到演示买家)。"""
+        username = getattr(request.state, "username", None) or "demo-buyer"
+        with SessionLocal() as session:
+            row = session.scalar(select(Conversation).where(Conversation.customerId == username))
+            return {"customerId": username, "messages": list(row.messages or []) if row else []}
 
     return router
