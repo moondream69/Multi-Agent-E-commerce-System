@@ -68,7 +68,13 @@ def build_store_router(event_bus: EventBus | None = None) -> APIRouter:
             product = session.get(Product, product_id)
             if product is None:
                 raise HTTPException(status_code=404, detail="商品未找到")
-            customer = session.scalar(select(Customer).where(Customer.email == DEMO_BUYER_EMAIL))
+            email = dto.customerEmail or DEMO_BUYER_EMAIL
+            customer = session.scalar(select(Customer).where(Customer.email == email))
+            if customer is None and dto.customerEmail:
+                # 模拟流量可引入新买家:按 email 幂等创建(名字取邮箱前缀)
+                customer = Customer(name=email.split("@")[0], email=email, locale="zh-CN")
+                session.add(customer)
+                session.flush()
             order = Order(
                 product_id=product.id,
                 customer_id=customer.id if customer else None,

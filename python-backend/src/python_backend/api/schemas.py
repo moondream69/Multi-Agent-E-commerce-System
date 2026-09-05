@@ -18,7 +18,8 @@ class ChatMessagePayload(BaseModel):
 
 
 class CreateOrderDto(BaseModel):
-    """买家前台下单入参(store 路由)。totalAmount 缺省取商品价格。"""
+    """买家下单选入参(store 路由,模拟流量入口)。totalAmount 缺省取商品价格;customerEmail 缺省回落演示买家。"""
 
     productId: str = Field(min_length=1)
     totalAmount: float | None = None
+    customerEmail: str | None = None

@@ -21,10 +21,11 @@ import asyncio
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from python_backend.core.approval import GuardContext, execute_guarded
 from python_backend.core.workflow import Workflow, WorkflowPhase
 from python_backend.domain.tasks import TaskStatus, ToolDefinition
 from python_backend.domain.tools import ToolProtocol
@@ -46,6 +47,9 @@ class AgentState(TypedDict):
     messages: list[dict[str, Any]]
     steps: list[dict[str, Any]]
     result: dict[str, Any] | None
+    task_id: NotRequired[str]
+    agent_id: NotRequired[str]
+    requested_by: NotRequired[str | None]
 
 
 def _now() -> datetime:
@@ -71,6 +75,32 @@ def _show(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+async def _execute_guarded_tool(
+    name: str,
+    args: dict[str, Any],
+    tool: ToolProtocol,
+    state: AgentState,
+    event_bus,
+) -> str:
+    """分级审批守卫执行:低风险直接执行,高风险(订单流转/上架)等待人工决定。"""
+
+    async def _run() -> Any:
+        return await tool.execute(args)
+
+    result = await execute_guarded(
+        name,
+        args,
+        _run,
+        GuardContext(
+            state.get("task_id", ""),
+            state.get("agent_id", ""),
+            state.get("requested_by"),
+            event_bus,
+        ),
+    )
+    return _show(result)
+
+
 def parse_final(text: str) -> dict[str, Any]:
     try:
         return json.loads(text)
@@ -84,6 +114,8 @@ def build_react_graph(
     llm: LlmLike,
     max_iterations: int = 10,
     workflow: Workflow | None = None,
+    event_bus=None,
+    agent_id: str = "",
 ):
     tool_defs: list[ToolDefinition] = [t.definition for t in tools]
     tool_map: dict[str, ToolProtocol] = {t.definition.name: t for t in tools}
@@ -203,7 +235,8 @@ def build_react_graph(
                     TaskStatus.IN_PROGRESS,
                     f"执行 {name}({json.dumps(args, ensure_ascii=False)[:100]})",
                 )
-                result_str = _show(await tool.execute(args))
+                # 分级审批守卫执行(提取为模块级 helper,避免循环闭包绑定)
+                result_str = await _execute_guarded_tool(name, args, tool, state, event_bus)
                 _add_step(state, name, TaskStatus.COMPLETED, result_str[:200])
                 state["messages"].append({"role": "tool", "content": result_str, "tool_call_id": tc["id"]})
             except Exception as error:

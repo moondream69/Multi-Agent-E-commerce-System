@@ -118,7 +118,14 @@ class BaseAgent:
 
     async def execute_task(self, task: AgentTask) -> dict[str, Any]:
         if self._graph is None:
-            self._graph = build_react_graph(self.system_prompt, self.tools, self._llm, workflow=self.workflow)
+            self._graph = build_react_graph(
+                self.system_prompt,
+                self.tools,
+                self._llm,
+                workflow=self.workflow,
+                event_bus=self._event_bus,
+                agent_id=self.id,
+            )
         state: AgentState = {
             "messages": [
                 {"role": "system", "content": self.system_prompt},
@@ -127,6 +134,9 @@ class BaseAgent:
             "steps": [],
             "round": 0,
             "result": None,
+            "task_id": task.id,
+            "agent_id": self.id,
+            "requested_by": task.requested_by,
         }
         end = await self._graph.ainvoke(state)
         self._task_steps[task.id] = end["steps"]

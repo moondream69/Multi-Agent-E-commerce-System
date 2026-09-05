@@ -50,6 +50,27 @@ class AgentTaskStatus(StrEnum):
     FAILED = "failed"
 
 
+class ApprovalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    SHADOW = "shadow"
+    EXECUTED = "executed"
+
+
+class User(Base):
+    """第 11 张表:系统登录用户(小团队平权,无角色)。"""
+
+    __tablename__ = "users"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    passwordHash: Mapped[str] = mapped_column(String(255))
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -197,5 +218,37 @@ class ReplyTemplate(Base):
     template: Mapped[str] = mapped_column(Text)
     locale: Mapped[str] = mapped_column(String(255), default="zh-CN")
     variables: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ApprovalRequest(Base):
+    """第 12 张表:高危工具操作的人工审批/影子建议记录。
+
+    mode='approval' 阻塞等待人工决定;mode='shadow' 只记录建议(影子模式),卖家一键补执行。
+    """
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (Index("idx_approval_status", "status"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
+    toolName: Mapped[str] = mapped_column(String(255))
+    params: Mapped[dict] = mapped_column(JSONB)
+    agentId: Mapped[str | None] = mapped_column(String(255))
+    taskId: Mapped[str | None] = mapped_column(String(255))
+    requestedBy: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[ApprovalStatus] = mapped_column(
+        Enum(
+            ApprovalStatus,
+            name="approval_requests_status_enum",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        default=ApprovalStatus.PENDING,
+    )
+    mode: Mapped[str] = mapped_column(String(16), default="approval")
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    decidedBy: Mapped[str | None] = mapped_column(String(255))
+    decidedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    comment: Mapped[str | None] = mapped_column(Text)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updatedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

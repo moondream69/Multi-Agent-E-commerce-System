@@ -12,6 +12,8 @@ export const AgentEventType = {
   TASK_COMPLETED: 'task.completed',
   TASK_FAILED: 'task.failed',
   AGENT_STATUS_CHANGED: 'agent.status_changed',
+  APPROVAL_REQUESTED: 'approval.requested',
+  APPROVAL_DECIDED: 'approval.decided',
 } as const;
 
 export type AgentEventType =
@@ -165,4 +167,40 @@ export interface NotificationMessage {
   agentId: string;
   orderId?: string | null;
   timestamp: string;
+}
+
+// —— 分级审批(内部卖家工具护栏)——
+
+export type ApprovalStatus =
+  'pending' | 'approved' | 'rejected' | 'expired' | 'shadow' | 'executed';
+
+export interface ApprovalRequest {
+  id: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  agentId: string | null;
+  taskId: string | null;
+  requestedBy: string | null;
+  status: ApprovalStatus;
+  mode: 'approval' | 'shadow';
+  result: Record<string, unknown> | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  comment: string | null;
+  createdAt: string;
+}
+
+export interface ApprovalRequestedPayload {
+  approvalId: string;
+  toolName?: string;
+  params?: unknown;
+  mode?: 'approval' | 'shadow';
+}
+
+export interface ApprovalDecidedPayload {
+  approvalId: string;
+  toolName?: string;
+  approve?: boolean;
+  decidedBy?: string;
+  comment?: string | null;
 }

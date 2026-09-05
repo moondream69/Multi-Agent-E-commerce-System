@@ -21,6 +21,8 @@ class AgentEventType(StrEnum):
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     AGENT_STATUS_CHANGED = "agent.status_changed"
+    APPROVAL_REQUESTED = "approval.requested"
+    APPROVAL_DECIDED = "approval.decided"
 
 
 @dataclass
