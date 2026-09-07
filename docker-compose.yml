@@ -1,27 +1,207 @@
-version: '3.8'
+# 重构目标态基础设施(ADR-0005):PostgreSQL + Redis + Milvus(etcd/minio) + Langfuse(clickhouse) + app
+# 运行于 WSL Docker,不改变 WSL 环境;开发额外 --profile embed 起 Ollama
+# 组件版本为查证钉版:milvus 2.6.x(配 pymilvus 2.6.x)、clickhouse 24.3(langfuse v3.170 官方 pin,26.x 有破坏性变更)
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16-alpine
     container_name: mae_postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: multi_agent_ecommerce
+      POSTGRES_DB: mae
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres-init:/docker-entrypoint-initdb.d:ro # 第一启动自动建 langfuse 库
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mae"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: mae_redis
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
+
+  # ---- Milvus Standalone(向量仓库,宪章 A9 接口抽象;独立服务,不经 WSL 外的通路)----
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    container_name: mae_etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+    volumes:
+      - etcddata:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health", "--endpoints=http://etcd:2379"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    container_name: mae_minio
+    command: minio server /minio_data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9001:9001" # 控制台(Milvus 与 Langfuse 的对象存储均走容器内网)
+    volumes:
+      - miniodata:/minio_data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.6.20
+    container_name: mae_milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvusdata:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    security_opt:
+      - seccomp:unconfined
+    restart: unless-stopped
+
+  # ---- Langfuse v3(观测层,宪章:数据不出局域网)----
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: mae_clickhouse
+    user: "101:101"
+    environment:
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: langfuse
+      CLICKHOUSE_DB: langfuse
+    volumes:
+      - clickhousedata:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--host", "127.0.0.1", "-q", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  langfuse-server:
+    image: langfuse/langfuse:3
+    container_name: mae_langfuse
+    ports:
+      - "3001:3000"
+    environment:
+      # Next.js standalone 默认把 Docker 注入的 HOSTNAME(容器 ID)当绑定地址,导致只监听 eth0 IP、
+      # 容器内 localhost 探不到(健康检查与日后观测探针全挂)——显式钉到 0.0.0.0。
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-dev-nextauth-secret-change}
+      SALT: ${LANGFUSE_SALT:-dev-salt-change}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse:langfuse@clickhouse:9000
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: langfuse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_CONNECTION_STRING: redis://redis:6379/1
+      LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/public/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: mae_langfuse_worker
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/langfuse
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-dev-nextauth-secret-change}
+      SALT: ${LANGFUSE_SALT:-dev-salt-change}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse:langfuse@clickhouse:9000
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: langfuse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---- 应用(重构骨架:仅后端 API;前端静态托管在前端增量接入)----
 
   app:
     build:
@@ -32,22 +212,15 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
     restart: unless-stopped
-    # 单 worker 是硬约束:EventBus 进程内 + 审批等待协程 + WS sid→user 映射都依赖单进程
 
-  simulator:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mae_simulator
-    profiles: ["sim"]
-    env_file: .env
-    command: python -m python_backend.simulator --loop 300 --base-url http://app:3000
-    depends_on:
-      - app
-    restart: unless-stopped
+  # ---- 演练环境专属:本地 Embedding(bge-m3)----
 
   ollama:
     image: ollama/ollama
@@ -60,4 +233,8 @@ services:
 volumes:
   pgdata:
   redisdata:
+  etcddata:
+  miniodata:
+  milvusdata:
+  clickhousedata:
   ollamadata:

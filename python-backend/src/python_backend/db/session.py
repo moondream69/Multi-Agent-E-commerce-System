@@ -1,19 +1,10 @@
-from collections.abc import Generator
+"""数据库会话(与 Alembic 同源:env.py 复用本模块的 DATABASE_URL)。"""
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from python_backend.settings import settings
+from python_backend.settings import get_settings
 
-DATABASE_URL = (
-    f"postgresql+psycopg://{settings.db_username}:{settings.db_password}"
-    f"@{settings.db_host}:{settings.db_port}/{settings.db_name}"
-)
+DATABASE_URL = get_settings().database_url
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False)
-
-
-def get_db() -> Generator[Session]:
-    with SessionLocal() as session:
-        yield session
+engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+SessionFactory = async_sessionmaker(engine, expire_on_commit=False)

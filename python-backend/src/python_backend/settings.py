@@ -1,53 +1,59 @@
-"""配置加载:沿用仓库根目录 .env,变量名与 NestJS 版一致。"""
+"""应用配置(宪章 ADR-0005):单源来自环境变量,.env 可选。"""
 
-from pathlib import Path
+from __future__ import annotations
+
+from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=_REPO_ROOT / ".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Postgres(.env 用 DB_USERNAME)
-    db_host: str = "localhost"
-    db_port: int = 5432
-    db_username: str = "postgres"
-    db_password: str = "postgres"
-    db_name: str = "multi_agent_ecommerce"
-
-    # Redis
+    # 环境剖面(宪章 Q33):dev=演练(影子可见)/ prod=生产(审批锁死)
+    environment: str = "dev"
+    # 数据库(业务库 mae;langfuse 库由 postgres 初始化脚本创建)
+    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/mae"
+    # Redis(LLM 并发限流 + 短时状态)
     redis_host: str = "localhost"
     redis_port: int = 6379
-
-    # LLM(OpenAI 兼容协议)
+    # LLM(DeepSeek,OpenAI 兼容协议)
     llm_api_key: str = ""
     llm_api_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
-    llm_max_concurrency: int = 2  # 进程内并发上限(DeepSeek 账号级限流防护)
-
-    # Embedding(Ollama)
+    llm_max_concurrency: int = 2
+    # Embedding(Ollama bge-m3,1024 维)
     embedding_api_url: str = "http://localhost:11434"
     embedding_model: str = "bge-m3"
     embedding_dimension: int = 1024
-
-    # 认证(JWT + bcrypt,小团队平权)
-    auth_jwt_secret: str = "dev-insecure-secret-change-me-0123456789abcdef"
+    # Milvus Standalone
+    milvus_uri: str = "http://localhost:19530"
+    # Langfuse(观测层;留空禁用)
+    langfuse_host: str = ""
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    # 认证
+    auth_jwt_secret: str = "dev-secret-change-me"
     auth_token_ttl_hours: int = 24
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
-
-    # 初始管理员(seed 幂等创建;密码留空则随机生成并打印一次)
     auth_admin_username: str = "admin"
     auth_admin_password: str = ""
-
-    # 分级审批护栏
-    shadow_mode: bool = False
+    # 审批
     approval_ttl_hours: int = 4
+    # 汇率(实时 API,基准 CNY;失效降级用缓存)
+    fx_api_url: str = "https://open.er-api.com/v6/latest/CNY"
+    # 跨域(前端 dev 服务器)
+    cors_origins: str = "http://localhost:5173"
+
+    @property
+    def shadow_mode(self) -> bool:
+        """影子模式 = 环境级配置(宪章 Q33):dev 演练开、prod 生产锁死,运行时不可切换。"""
+        return self.environment == "dev"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
