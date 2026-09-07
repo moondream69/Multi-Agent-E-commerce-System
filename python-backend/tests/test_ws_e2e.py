@@ -129,9 +129,17 @@ async def test_chat_message_full_flow(server):
     assert any(e["type"] == "task.assigned" for e in agent_events)
 
     # 落库检查:助手消息应以提取后的可读文本落库,而非 json.dumps 字面量
-    # (server 为 module 级 fixture、会话跨轮累积,必须按 taskId 精确匹配本轮消息)
+    # (server 为 module 级 fixture、会话跨轮累积,必须按 taskId 精确匹配本轮消息;
+    #  WS 未带 sessionId → 回落 default 会话,经列表接口确认后按会话取消息)
     resp = requests.get(
         f"{BASE_URL}/api/conversations",
+        headers={"Authorization": f"Bearer {create_access_token('e2e-test')}"},
+        timeout=15,
+    )
+    assert resp.ok, resp.text
+    assert isinstance(resp.json(), list)
+    resp = requests.get(
+        f"{BASE_URL}/api/conversations/default/messages",
         headers={"Authorization": f"Bearer {create_access_token('e2e-test')}"},
         timeout=15,
     )

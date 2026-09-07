@@ -121,10 +121,15 @@ class Order(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
-    __table_args__ = (Index("idx_conversations_agent_id", "agentId"),)
+    __table_args__ = (
+        Index("idx_conversations_agent_id", "agentId"),
+        UniqueConstraint("customerId", "sessionId", name="uq_conversations_customer_session"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, server_default=text("gen_random_uuid()"))
     customerId: Mapped[str | None] = mapped_column(String(255))
+    sessionId: Mapped[str] = mapped_column(String(255), server_default="default")
+    title: Mapped[str | None] = mapped_column(String(255))
     agentId: Mapped[str | None] = mapped_column(String(255))
     messages: Mapped[list] = mapped_column(JSONB)
     summary: Mapped[str | None] = mapped_column(Text)

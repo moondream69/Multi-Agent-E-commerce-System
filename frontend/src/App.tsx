@@ -7,16 +7,21 @@ import { useNotificationBells } from './hooks/useNotificationBells';
 import { useWebSocket } from './hooks/useWebSocket';
 import { clearToken, fetchMe, getToken } from './services/auth';
 import {
+  deleteSession as apiDeleteSession,
   fetchAgents,
   fetchApprovals,
   fetchConversations,
+  fetchSessionMessages,
   setUnauthorizedHandler,
 } from './services/api';
-import { AgentEventType, AgentInfo } from './types/events';
+import { AgentEventType, AgentInfo, ConversationMeta } from './types/events';
 import { theme } from './theme';
 import { contentToDisplay, outputToContent } from './utils/output';
 
 type View = 'cockpit' | 'support' | 'approvals';
+
+// 当前会话的 localStorage 键(登录新开、刷新恢复,见 ADR 0004)
+const SESSION_KEY = 'mae_session';
 
 const NAV_ITEMS: Array<{ key: View; label: string }> = [
   { key: 'cockpit', label: '驾驶舱' },
@@ -52,6 +57,7 @@ export default function App() {
       username={user}
       onLogout={() => {
         clearToken();
+        localStorage.removeItem(SESSION_KEY); // 登录新开:登出清当前会话,下次登录进新会话
         setUser(null);
       }}
     />
@@ -76,31 +82,103 @@ function MainApp({
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [view, setView] = useState<View>('cockpit');
+  const [sessions, setSessions] = useState<ConversationMeta[]>([]);
+  // 当前会话:null = 未落库的空白新会话(惰性落库,首条消息才建行)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(() =>
+    localStorage.getItem(SESSION_KEY),
+  );
+  // 同步 ref:handleSend 等异步回调读取最新值,避免切换后立即发送写入旧会话
+  const currentSessionIdRef = useRef(currentSessionId);
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
 
-  // —— 聊天消息流(App 级持有:视图切换/重挂载不丢;刷新后由历史接口恢复)——
+  // —— 聊天消息流(App 级持有:视图切换/重挂载不丢;刷新后按会话恢复)——
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const historyLoadedRef = useRef(false);
   const consumedResponseRef = useRef<string | null>(null);
   const pendingReplyRef = useRef(false);
   const bells = useNotificationBells(notifications);
 
-  // 首次挂载拉取历史对话(StrictMode double-effect 由 ref 防重)
+  const refreshSessions = useCallback(
+    () => fetchConversations().then(setSessions).catch(console.error),
+    [],
+  );
+
+  const newSession = useCallback(() => {
+    setCurrentSessionId(null);
+    localStorage.removeItem(SESSION_KEY);
+    setChatMessages([]);
+  }, []);
+
+  // 会话历史加载:竞态序号(快速切换只让最后一次生效);404 可回落空白新会话
+  const sessionLoadSeqRef = useRef(0);
+  const loadSessionMessages = useCallback(
+    (sessionId: string, fallbackToNew = false) => {
+      const seq = ++sessionLoadSeqRef.current;
+      fetchSessionMessages(sessionId)
+        .then((data) => {
+          if (seq !== sessionLoadSeqRef.current) return;
+          setChatMessages(
+            data.messages.map((m) => ({
+              role: m.role as ChatMessage['role'],
+              content:
+                m.role === 'assistant'
+                  ? contentToDisplay(m.content)
+                  : m.content,
+              ts: m.timestamp,
+            })),
+          );
+        })
+        .catch((error) => {
+          if (seq !== sessionLoadSeqRef.current) return;
+          console.error(error);
+          if (fallbackToNew) newSession();
+        });
+    },
+    [newSession],
+  );
+
+  // 首次挂载:拉会话列表;当前会话存在则恢复其历史,不存在(陈旧 id)回落新会话
   useEffect(() => {
     if (historyLoadedRef.current) return;
     historyLoadedRef.current = true;
-    fetchConversations()
-      .then((history) =>
-        setChatMessages(
-          history.map((m) => ({
-            role: m.role as ChatMessage['role'],
-            content:
-              m.role === 'assistant' ? contentToDisplay(m.content) : m.content,
-            ts: m.timestamp,
-          })),
-        ),
-      )
-      .catch(console.error);
-  }, []);
+    void refreshSessions();
+    if (currentSessionId) {
+      loadSessionMessages(currentSessionId, true);
+    }
+  }, [currentSessionId, refreshSessions, loadSessionMessages]);
+
+  const switchSession = useCallback(
+    (sessionId: string) => {
+      setCurrentSessionId(sessionId);
+      localStorage.setItem(SESSION_KEY, sessionId);
+      loadSessionMessages(sessionId);
+    },
+    [loadSessionMessages],
+  );
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      const meta = sessions.find((s) => s.sessionId === sessionId);
+      if (
+        !window.confirm(
+          `删除会话「${meta?.title || '未命名会话'}」?此操作不可恢复。`,
+        )
+      ) {
+        return;
+      }
+      try {
+        await apiDeleteSession(sessionId);
+        await refreshSessions();
+      } catch (error) {
+        console.error(error);
+        return;
+      }
+      if (sessionId === currentSessionId) newSession();
+    },
+    [sessions, currentSessionId, refreshSessions, newSession],
+  );
 
   // WS 任务响应:按 taskId 去重消费(StrictMode double-effect / 视图切换重挂载均不重复)
   useEffect(() => {
@@ -125,6 +203,7 @@ function MainApp({
         return [...prev, entry];
       });
       pendingReplyRef.current = false;
+      void refreshSessions(); // 首条消息落库后,新会话进入列表
     } else if (lastResponse.type === 'task_error') {
       setChatMessages((prev) => [
         ...prev,
@@ -135,12 +214,20 @@ function MainApp({
         },
       ]);
       pendingReplyRef.current = false;
+      void refreshSessions(); // 首条消息已落库,新会话也应进入列表
     }
-  }, [lastResponse]);
+  }, [lastResponse, refreshSessions]);
 
   const handleSend = useCallback(
     (text: string) => {
-      sendMessage(text);
+      // 空白新会话:首条消息前生成会话 id(后端按 (用户, sessionId) 惰性建行)
+      let sessionId = currentSessionIdRef.current;
+      if (!sessionId) {
+        sessionId = crypto.randomUUID();
+        setCurrentSessionId(sessionId);
+        localStorage.setItem(SESSION_KEY, sessionId);
+      }
+      sendMessage(text, sessionId);
       setChatMessages((prev) => [
         ...prev,
         { role: 'user', content: text, ts: new Date().toISOString() },
@@ -326,7 +413,17 @@ function MainApp({
               background: '#fff',
             }}
           >
-            <ChatPanel messages={chatMessages} onSend={handleSend} />
+            <ChatPanel
+              messages={chatMessages}
+              onSend={handleSend}
+              sessions={sessions}
+              currentSessionId={currentSessionId}
+              onNewSession={newSession}
+              onSwitchSession={switchSession}
+              onDeleteSession={(sessionId) =>
+                void handleDeleteSession(sessionId)
+              }
+            />
           </div>
         </div>
       )}
@@ -337,6 +434,11 @@ function MainApp({
             onSend={handleSend}
             title="客服工作台"
             placeholder="输入问题，如：查一下退货政策"
+            sessions={sessions}
+            currentSessionId={currentSessionId}
+            onNewSession={newSession}
+            onSwitchSession={switchSession}
+            onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
           />
         </div>
       )}

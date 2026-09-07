@@ -108,3 +108,35 @@ def test_event_json_shape_matches_events_ts():
     assert set(data.keys()) == {"id", "type", "source", "timestamp", "payload", "correlationId"}
     assert data["type"] == "report.generated"
     assert data["correlationId"] == "corr-1"
+
+
+def test_chat_message_payload_accepts_optional_session_id():
+    from python_backend.api.schemas import ChatMessagePayload
+
+    parsed = ChatMessagePayload(text="你好", sessionId="abc")
+    assert parsed.sessionId == "abc"
+    assert ChatMessagePayload(text="你好").sessionId is None
+
+
+def test_conversations_endpoints_shape():
+    """会话三端点形状与前端手抄类型(events.ts 的 ConversationMeta/SessionMessages)一致。"""
+    from python_backend.db.conversation_repo import append_message, delete_session
+
+    client = _build_app()
+    assert client.get("/api/conversations").json() == []
+
+    append_message("tester", "user", "契约会话消息", session_id="s-c")
+    try:
+        rows = client.get("/api/conversations").json()
+        assert len(rows) == 1
+        assert set(rows[0].keys()) == {"sessionId", "title", "updatedAt", "messageCount"}
+        assert rows[0]["sessionId"] == "s-c"
+
+        data = client.get("/api/conversations/s-c/messages").json()
+        assert set(data.keys()) == {"sessionId", "messages"}
+        assert data["messages"][0]["role"] == "user"
+
+        assert client.delete("/api/conversations/s-c").status_code == 200
+        assert client.get("/api/conversations").json() == []
+    finally:
+        delete_session("tester", "s-c")

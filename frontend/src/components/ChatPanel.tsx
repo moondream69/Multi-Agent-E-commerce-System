@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Markdown from 'react-markdown';
+import { ConversationMeta } from '../types/events';
 import { StepsTimeline, StepEntry } from './StepsTimeline';
 
 export interface ChatMessage {
@@ -15,6 +16,11 @@ interface Props {
   onSend: (text: string) => void;
   title?: string;
   placeholder?: string;
+  sessions?: ConversationMeta[];
+  currentSessionId?: string | null;
+  onNewSession?: () => void;
+  onSwitchSession?: (sessionId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
 }
 
 // Agent 消息的 markdown 渲染样式(内联风格,与气泡一致;不含原始 HTML 透传,XSS 安全)
@@ -105,6 +111,11 @@ export function ChatPanel({
   onSend,
   title = '与 Agent 团队对话',
   placeholder = '输入任务，如：分析蓝牙耳机市场趋势...',
+  sessions,
+  currentSessionId,
+  onNewSession,
+  onSwitchSession,
+  onDeleteSession,
 }: Props) {
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -123,13 +134,84 @@ export function ChatPanel({
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div
         style={{
-          padding: '12px 16px',
+          padding: '8px 16px',
           borderBottom: '1px solid #e0e0e0',
-          fontWeight: 600,
-          fontSize: 14,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
         }}
       >
-        {title}
+        <span
+          style={{
+            fontWeight: 600,
+            fontSize: 14,
+            marginRight: 'auto',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {title}
+        </span>
+        {sessions && (
+          <>
+            <select
+              value={currentSessionId ?? ''}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value) onSwitchSession?.(value);
+                else onNewSession?.();
+              }}
+              style={{
+                fontSize: 12,
+                padding: '3px 6px',
+                border: '1px solid #d0d0d0',
+                borderRadius: 6,
+                maxWidth: 180,
+                outline: 'none',
+                background: '#fff',
+              }}
+            >
+              <option value="">＋ 新会话</option>
+              {sessions.map((s) => (
+                <option key={s.sessionId} value={s.sessionId}>
+                  {s.title || '未命名会话'}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={onNewSession}
+              style={{
+                padding: '4px 10px',
+                border: '1px solid #d0d0d0',
+                borderRadius: 6,
+                background: 'transparent',
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              新建
+            </button>
+            {currentSessionId && (
+              <button
+                onClick={() => {
+                  void onDeleteSession?.(currentSessionId);
+                }}
+                style={{
+                  padding: '4px 10px',
+                  border: '1px solid #d0d0d0',
+                  borderRadius: 6,
+                  background: 'transparent',
+                  color: '#ef4444',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                删除
+              </button>
+            )}
+          </>
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 12 }}>
         {messages.map((msg, i) => (

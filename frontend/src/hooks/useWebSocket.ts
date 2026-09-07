@@ -55,9 +55,9 @@ export function useWebSocket() {
     };
   }, []);
 
-  const sendMessage = useCallback((text: string) => {
+  const sendMessage = useCallback((text: string, sessionId?: string | null) => {
     setLastResponse(null);
-    socketRef.current?.emit('chat:message', { text });
+    socketRef.current?.emit('chat:message', { text, sessionId });
   }, []);
 
   return {

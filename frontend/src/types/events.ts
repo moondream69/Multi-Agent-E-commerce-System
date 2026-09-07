@@ -171,6 +171,27 @@ export interface NotificationMessage {
   timestamp: string;
 }
 
+// —— 会话(issue #5:多会话,conversations 表每 (customerId, sessionId) 一行)——
+
+export interface ConversationMessage {
+  role: string;
+  content: string;
+  timestamp: string;
+  taskId?: string;
+}
+
+export interface ConversationMeta {
+  sessionId: string;
+  title: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export interface SessionMessages {
+  sessionId: string;
+  messages: ConversationMessage[];
+}
+
 // —— 分级审批(内部卖家工具护栏)——
 
 export type ApprovalStatus =

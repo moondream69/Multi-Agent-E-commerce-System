@@ -1,4 +1,9 @@
-import { AgentInfo, ApprovalRequest } from '../types/events';
+import {
+  AgentInfo,
+  ApprovalRequest,
+  ConversationMeta,
+  SessionMessages,
+} from '../types/events';
 import { clearToken, getToken } from './auth';
 
 const BASE = '/api';
@@ -33,18 +38,28 @@ export async function fetchAgents(): Promise<AgentInfo[]> {
   return (await res.json()) as AgentInfo[];
 }
 
-export interface ConversationMessage {
-  role: string;
-  content: string;
-  timestamp: string;
-  taskId?: string;
-}
-
-export async function fetchConversations(): Promise<ConversationMessage[]> {
+/** 会话元数据列表(按更新时间倒序,最近 50 个)。 */
+export async function fetchConversations(): Promise<ConversationMeta[]> {
   const res = await authFetch('/conversations');
   if (!res.ok) throw new Error(await res.text());
-  const data = (await res.json()) as { messages: ConversationMessage[] };
-  return data.messages;
+  return (await res.json()) as ConversationMeta[];
+}
+
+/** 单个会话的消息历史。 */
+export async function fetchSessionMessages(
+  sessionId: string,
+): Promise<SessionMessages> {
+  const res = await authFetch(`/conversations/${sessionId}/messages`);
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as SessionMessages;
+}
+
+/** 硬删除会话。 */
+export async function deleteSession(sessionId: string): Promise<void> {
+  const res = await authFetch(`/conversations/${sessionId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await res.text());
 }
 
 export async function fetchApprovals(

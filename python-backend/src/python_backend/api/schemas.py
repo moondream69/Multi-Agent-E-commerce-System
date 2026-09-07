@@ -15,6 +15,7 @@ class CreateTaskDto(BaseModel):
 
 class ChatMessagePayload(BaseModel):
     text: str = Field(min_length=1)
+    sessionId: str | None = None  # 多会话(issue #5):缺省回落默认会话
 
 
 class CreateOrderDto(BaseModel):

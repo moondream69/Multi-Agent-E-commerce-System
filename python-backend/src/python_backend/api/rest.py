@@ -5,14 +5,18 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Request
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, Request
 
 from python_backend.api.schemas import CreateTaskDto
 from python_backend.api.serializers import agent_info, result_payload, to_json
 from python_backend.core.orchestrator import Orchestrator
-from python_backend.db.models import Conversation
-from python_backend.db.session import SessionLocal
+from python_backend.db.conversation_repo import (
+    delete_session as repo_delete_session,
+)
+from python_backend.db.conversation_repo import (
+    get_messages,
+    list_sessions,
+)
 from python_backend.domain.agents import AgentStatus
 from python_backend.domain.tasks import AgentTask, TaskType
 
@@ -59,11 +63,24 @@ def build_router(orchestrator: Orchestrator) -> APIRouter:
         }
 
     @router.get("/api/conversations")
-    async def get_conversation(request: Request) -> dict:
-        """当前登录用户的聊天历史(按会话归属人隔离;兼容旧数据回落到演示买家)。"""
+    async def list_conversations(request: Request) -> list[dict]:
+        """当前登录用户的会话元数据列表(按更新时间倒序,最近 50 个)。"""
         username = getattr(request.state, "username", None) or "demo-buyer"
-        with SessionLocal() as session:
-            row = session.scalar(select(Conversation).where(Conversation.customerId == username))
-            return {"customerId": username, "messages": list(row.messages or []) if row else []}
+        return list_sessions(username)
+
+    @router.get("/api/conversations/{session_id}/messages")
+    async def get_session_messages(request: Request, session_id: str) -> dict:
+        username = getattr(request.state, "username", None) or "demo-buyer"
+        messages = get_messages(username, session_id)
+        if messages is None:
+            raise HTTPException(status_code=404, detail="会话未找到")
+        return {"sessionId": session_id, "messages": messages}
+
+    @router.delete("/api/conversations/{session_id}")
+    async def delete_session(request: Request, session_id: str) -> dict:
+        username = getattr(request.state, "username", None) or "demo-buyer"
+        if not repo_delete_session(username, session_id):
+            raise HTTPException(status_code=404, detail="会话未找到")
+        return {"deleted": True}
 
     return router

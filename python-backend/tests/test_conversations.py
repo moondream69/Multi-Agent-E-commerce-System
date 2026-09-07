@@ -1,4 +1,7 @@
-"""conversations 历史接口测试(integration,需 docker Postgres,模式同 test_reply_templates)。"""
+"""conversations 会话接口测试(integration,需 docker Postgres,模式同 test_reply_templates)。
+
+issue #5:GET /api/conversations 语义改为会话元数据列表;新增 messages 与 DELETE 端点。
+"""
 
 from __future__ import annotations
 
@@ -50,19 +53,62 @@ def clean_conversation():
         session.commit()
 
 
-def test_get_conversation_empty(clean_conversation):
-    data = _client().get("/api/conversations").json()
-    assert data["messages"] == []
+def test_list_conversations_empty(clean_conversation):
+    assert _client().get("/api/conversations").json() == []
 
 
-def test_get_conversation_returns_history(clean_conversation):
-    append_message(USER, "user", "你好", task_id="t-1")
-    append_message(USER, "assistant", "你好,请问有什么可以帮您?", agent_id="customer-service", task_id="t-1")
+def test_list_conversations_returns_session_meta(clean_conversation):
+    append_message(USER, "user", "第一会话", session_id="s-1")
+    append_message(USER, "assistant", "回复", session_id="s-1")
     data = _client().get("/api/conversations").json()
-    assert data["customerId"] == USER
+    assert len(data) == 1
+    row = data[0]
+    assert set(row.keys()) == {"sessionId", "title", "updatedAt", "messageCount"}
+    assert row["sessionId"] == "s-1"
+    assert row["title"] == "第一会话"
+    assert row["messageCount"] == 2
+
+
+def test_list_conversations_includes_default_session(clean_conversation):
+    append_message(USER, "user", "无会话id的消息")  # 缺省回落 default
+    data = _client().get("/api/conversations").json()
+    assert len(data) == 1
+    assert data[0]["sessionId"] == "default"
+    assert data[0]["title"] == "无会话id的消息"
+
+
+def test_get_session_messages(clean_conversation):
+    append_message(USER, "user", "你好", task_id="t-1", session_id="s-1")
+    append_message(
+        USER,
+        "assistant",
+        "你好,请问有什么可以帮您?",
+        agent_id="customer-service",
+        task_id="t-1",
+        session_id="s-1",
+    )
+    data = _client().get("/api/conversations/s-1/messages").json()
+    assert data["sessionId"] == "s-1"
     messages = data["messages"]
     assert len(messages) == 2
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "你好"
     assert messages[1]["role"] == "assistant"
     assert messages[1]["taskId"] == "t-1"
+
+
+def test_get_session_messages_not_found(clean_conversation):
+    assert _client().get("/api/conversations/nope/messages").status_code == 404
+
+
+def test_delete_session(clean_conversation):
+    append_message(USER, "user", "要删的", session_id="s-d")
+    append_message(USER, "user", "保留的", session_id="s-keep")
+    assert _client().delete("/api/conversations/s-d").status_code == 200
+    assert _client().get("/api/conversations/s-d/messages").status_code == 404
+    remaining = _client().get("/api/conversations").json()
+    assert [r["sessionId"] for r in remaining] == ["s-keep"]
+
+
+def test_delete_session_not_found(clean_conversation):
+    assert _client().delete("/api/conversations/nope").status_code == 404

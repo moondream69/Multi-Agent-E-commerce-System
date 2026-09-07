@@ -83,7 +83,7 @@ def register_ws_handlers(
         )
 
         try:
-            append_message(username, "user", text)
+            append_message(username, "user", text, session_id=parsed.sessionId)
         except Exception as error:
             logger.warning("保存用户消息失败: %s", error)
 
@@ -108,6 +108,7 @@ def register_ws_handlers(
                     extract_output_text(result.output),
                     agent_id=result.agent_id,
                     task_id=task.id,
+                    session_id=parsed.sessionId,
                 )
             except Exception as error:
                 logger.warning("保存助手消息失败: %s", error)
