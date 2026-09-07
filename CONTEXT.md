@@ -24,6 +24,10 @@ _Avoid_: 意图、模块
 客服话术的标准文本,含变量占位(如 {order_id}),按 场景(scenario)+语言(locale) 唯一;持久化于 reply_templates 表,由客服 Agent 经 manage_template 工具查找/填充/新增。
 _Avoid_: 话术库、快捷回复、标准回复
 
+**会话**(Session):
+一次连续对话的容器,归属登录用户;用户可开多个会话,每次登录默认开新会话、刷新恢复到当前会话(localStorage 记当前 id),可在会话列表切换回看历史。标题自动取自首条用户消息(截断 20 字)。持久化于 conversations 表(每会话一行),空白会话惰性落库(首条消息才建行)。
+_Avoid_: 对话、聊天(泛)
+
 ## 编排
 
 **意图解析**(IntentParser):
