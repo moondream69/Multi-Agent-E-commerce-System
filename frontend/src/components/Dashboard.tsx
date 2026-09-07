@@ -1,10 +1,13 @@
 import React from 'react';
+import { NotificationBells } from '../hooks/useNotificationBells';
 import { AgentEvent, AgentInfo } from '../types/events';
+import { NotificationBell } from './NotificationBell';
 import { theme } from '../theme';
 
 interface Props {
   agents: AgentInfo[];
   events: AgentEvent[];
+  bells: NotificationBells;
 }
 
 const AGENT_STATUS_META: Record<
@@ -171,7 +174,7 @@ function eventSummary(evt: AgentEvent): string {
   }
 }
 
-export function Dashboard({ agents, events }: Props) {
+export function Dashboard({ agents, events, bells }: Props) {
   return (
     <div>
       <div
@@ -209,19 +212,27 @@ export function Dashboard({ agents, events }: Props) {
                 >
                   {agent.name}
                 </h3>
-                <span
-                  style={{
-                    padding: '2px 10px',
-                    borderRadius: theme.radius.full,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    fontFamily: theme.font.mono,
-                    background: meta.bg,
-                    color: meta.color,
-                  }}
-                >
-                  {meta.label}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <NotificationBell
+                    items={bells.lists[agent.id] ?? []}
+                    unread={bells.unread[agent.id] ?? 0}
+                    onOpen={() => bells.openPanel(agent.id)}
+                    onClose={() => bells.closePanel(agent.id)}
+                  />
+                  <span
+                    style={{
+                      padding: '2px 10px',
+                      borderRadius: theme.radius.full,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      fontFamily: theme.font.mono,
+                      background: meta.bg,
+                      color: meta.color,
+                    }}
+                  >
+                    {meta.label}
+                  </span>
+                </div>
               </div>
               <p
                 style={{

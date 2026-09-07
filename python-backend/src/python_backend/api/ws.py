@@ -148,7 +148,7 @@ def bridge_all_events(sio, event_bus: EventBus) -> None:
 
 
 def bridge_notifications(sio, event_bus: EventBus) -> None:
-    """客服主动通知(customer.notification)桥接为 client 侧的 chat:notification(买家视角聊天面板)。"""
+    """客服主动通知(customer.notification)桥接为 client 侧的 chat:notification(按 kind 归类的 Agent 卡片铃铛)。"""
 
     async def _bridge(event) -> None:
         payload = event.payload or {}
@@ -159,6 +159,7 @@ def bridge_notifications(sio, event_bus: EventBus) -> None:
                 "notificationId": event.id,
                 "message": payload.get("message") or "",
                 "agentId": payload.get("agentId") or "customer-service",
+                "kind": payload.get("kind") or "",
                 "orderId": payload.get("orderId"),
                 "timestamp": to_json(event.timestamp),
             },

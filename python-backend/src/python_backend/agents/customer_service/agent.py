@@ -113,6 +113,7 @@ class CustomerServiceAgent(BaseAgent):
                 "message": template.format(order_id=order_id),
                 "agentId": self.id,
                 "orderId": order_id,
+                "kind": "order_status",
             },
             source=self.id,
         )
@@ -123,6 +124,7 @@ class CustomerServiceAgent(BaseAgent):
             {
                 "message": payload.get("message") or "库存告警",
                 "agentId": self.id,
+                "kind": "inventory_alert",
             },
             source=self.id,
         )

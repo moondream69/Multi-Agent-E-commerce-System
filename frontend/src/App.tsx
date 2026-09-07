@@ -3,6 +3,7 @@ import ApprovalPanel from './components/ApprovalPanel';
 import { ChatMessage, ChatPanel } from './components/ChatPanel';
 import { Dashboard } from './components/Dashboard';
 import LoginPage from './components/LoginPage';
+import { useNotificationBells } from './hooks/useNotificationBells';
 import { useWebSocket } from './hooks/useWebSocket';
 import { clearToken, fetchMe, getToken } from './services/auth';
 import {
@@ -80,8 +81,8 @@ function MainApp({
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const historyLoadedRef = useRef(false);
   const consumedResponseRef = useRef<string | null>(null);
-  const seenNotificationsRef = useRef(0);
   const pendingReplyRef = useRef(false);
+  const bells = useNotificationBells(notifications);
 
   // 首次挂载拉取历史对话(StrictMode double-effect 由 ref 防重)
   useEffect(() => {
@@ -100,21 +101,6 @@ function MainApp({
       )
       .catch(console.error);
   }, []);
-
-  // 客服主动通知(chat:notification)追加为系统气泡(App 级:切换视图不重放)
-  useEffect(() => {
-    const fresh = notifications.slice(seenNotificationsRef.current);
-    if (fresh.length === 0) return;
-    seenNotificationsRef.current = notifications.length;
-    setChatMessages((prev) => [
-      ...prev,
-      ...fresh.map((n) => ({
-        role: 'system' as const,
-        content: n.message,
-        ts: n.timestamp,
-      })),
-    ]);
-  }, [notifications]);
 
   // WS 任务响应:按 taskId 去重消费(StrictMode double-effect / 视图切换重挂载均不重复)
   useEffect(() => {
@@ -331,7 +317,7 @@ function MainApp({
               background: theme.color.bg,
             }}
           >
-            <Dashboard agents={liveAgents} events={events} />
+            <Dashboard agents={liveAgents} events={events} bells={bells} />
           </div>
           <div
             style={{

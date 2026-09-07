@@ -1,4 +1,4 @@
-"""chat:notification 桥接测试:customer.notification → 买家视角通知信封(纯单测,无 DB)。"""
+"""chat:notification 桥接测试:customer.notification → Agent 卡片铃铛通知信封(纯单测,无 DB)。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,12 @@ async def test_bridge_emits_notification_envelope():
 
     bus.emit(
         AgentEventType.CUSTOMER_NOTIFICATION,
-        {"message": "您的订单已发货", "agentId": "customer-service", "orderId": "ord-1"},
+        {
+            "message": "您的订单已发货",
+            "agentId": "customer-service",
+            "orderId": "ord-1",
+            "kind": "order_status",
+        },
     )
     # EventBus.emit 对 async handler 用 create_task 调度,让出事件循环等待执行
     await asyncio.sleep(0.05)
@@ -35,6 +40,7 @@ async def test_bridge_emits_notification_envelope():
     assert data["type"] == "chat:notification"
     assert data["message"] == "您的订单已发货"
     assert data["agentId"] == "customer-service"
+    assert data["kind"] == "order_status"
     assert data["orderId"] == "ord-1"
     assert data["notificationId"]
     assert data["timestamp"]
@@ -50,6 +56,7 @@ async def test_bridge_uses_defaults_for_missing_fields():
 
     _, data = sio.emitted[0]
     assert data["agentId"] == "customer-service"
+    assert data["kind"] == ""
     assert data["orderId"] is None
 
 

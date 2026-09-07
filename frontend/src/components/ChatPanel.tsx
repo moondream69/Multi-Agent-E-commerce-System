@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import { StepsTimeline, StepEntry } from './StepsTimeline';
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant';
   content: string;
   ts: string;
   steps?: StepEntry[];
@@ -143,12 +143,9 @@ export function ChatPanel({
               background:
                 msg.role === 'user'
                   ? '#eff6ff'
-                  : msg.role === 'system'
-                    ? '#fefce8'
-                    : msg.content.startsWith('错误')
-                      ? '#fef2f2'
-                      : '#f3f4f6',
-              border: msg.role === 'system' ? '1px solid #fde68a' : 'none',
+                  : msg.content.startsWith('错误')
+                    ? '#fef2f2'
+                    : '#f3f4f6',
               alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
               fontSize: 13,
               lineHeight: 1.5,
@@ -163,11 +160,7 @@ export function ChatPanel({
                 marginBottom: 2,
               }}
             >
-              {msg.role === 'user'
-                ? '你'
-                : msg.role === 'system'
-                  ? '客服 Agent 主动通知'
-                  : 'Agent'}
+              {msg.role === 'user' ? '你' : 'Agent'}
             </div>
             {msg.role === 'user' ? (
               msg.content

@@ -157,6 +157,7 @@ export interface CustomerNotificationPayload {
   message?: string;
   agentId?: string;
   orderId?: string;
+  kind?: string;
 }
 
 // 客服主动通知(chat:notification,独立于 chat:response 三形状)
@@ -165,6 +166,7 @@ export interface NotificationMessage {
   notificationId: string;
   message: string;
   agentId: string;
+  kind: string;
   orderId?: string | null;
   timestamp: string;
 }
