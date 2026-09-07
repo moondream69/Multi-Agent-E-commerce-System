@@ -209,6 +209,12 @@ services:
       dockerfile: Dockerfile
     container_name: mae_app
     env_file: .env
+    environment:
+      # 容器内 localhost 指向容器自身:.env 的本机地址须覆盖为 compose 服务名
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/mae
+      REDIS_HOST: redis
+      MILVUS_URI: http://milvus:19530
+      LANGFUSE_HOST: http://langfuse-server:3000
     ports:
       - "3000:3000"
     depends_on:
@@ -218,6 +224,12 @@ services:
         condition: service_healthy
       milvus:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; b=json.load(urllib.request.urlopen('http://localhost:3000/health')); sys.exit(0 if b['status']=='ok' else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   # ---- 演练环境专属:本地 Embedding(bge-m3)----

@@ -4,7 +4,8 @@ WORKDIR /app
 ENV UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uv/bin/uv
+# uv 镜像是单二进制(/uv 即可执行文件);拷到 PATH 内位置,否则 RUN 里的 uv 找不到
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 COPY python-backend/pyproject.toml python-backend/uv.lock ./
 COPY python-backend/src ./src
 COPY python-backend/alembic ./alembic
