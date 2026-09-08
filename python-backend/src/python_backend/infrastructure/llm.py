@@ -2,12 +2,14 @@
 
 宪章 ADR-0005 行为:
 - 分层失败语义:瞬时错误(429/5xx/网络)本地重试 1-2 次,仍败上抛(永不静默吞错);4xx(非 429)不重试
-- 并发闸:进程内 asyncio.Semaphore(单进程模型,settings.llm_max_concurrency=2)
+- 并发闸:进程级 asyncio.Semaphore(单进程模型,settings.llm_max_concurrency=2)。
+  闸为模块级单例——DeepSeek 限流是账号级,增量 4 起每 Agent 各建 LlmService 实例时闸仍全局生效
 - Langfuse 埋点:host 留空则 no-op(不初始化);配置后记录 LLM 调用 trace/generation
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -17,6 +19,27 @@ import httpx
 from python_backend.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# 并发闸(宪章:LLM 并发闸 2 保留,DeepSeek 账号级限流防护)。
+# 按事件循环缓存:生产单 loop 即进程级单例,增量 4 起每 Agent 各建 LlmService 实例时闸仍全局生效;
+# asyncio.Semaphore 绑定其首次使用的 loop,不能做纯模块级单例(测试每用例新建 loop 会跨 loop 复用抛错)。
+_LOOP_GATES: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+
+
+def _llm_gate() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    gate = _LOOP_GATES.get(loop)
+    if gate is None:
+        gate = _LOOP_GATES[loop] = asyncio.Semaphore(get_settings().llm_max_concurrency)
+    return gate
+
+
+class LlmFailure(Exception):
+    """LLM 调用失败(重试耗尽/不可重试状态码/网络错误)。
+
+    与编程错误(响应结构变化等)相区分:上层 fallback 只承接 LlmFailure,
+    编程错误继续上抛(宪章:永不静默吞错)。
+    """
 
 
 @dataclass
@@ -90,7 +113,6 @@ class LlmService:
         self._client = httpx.AsyncClient(transport=transport, timeout=60.0)
         self._tracer = tracer if tracer is not None else _default_tracer(settings)
         self._retry_delays = retry_delays
-        self._gate = _concurrency_gate(settings.llm_max_concurrency)
 
     async def complete(
         self,
@@ -135,7 +157,6 @@ class LlmService:
         url = get_settings().llm_api_url.rstrip("/") + "/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_settings().llm_api_key}"}
         model = get_settings().llm_model
-        last_error: Exception | None = None
         for delay in (*self._retry_delays, None):
             try:
                 response = await self._client.post(url, json=payload, headers=headers)
@@ -143,28 +164,20 @@ class LlmService:
                     message = response.json()["choices"][0]["message"]
                     self._tracer.record_generation("chat.completions", input=payload, output=message, model=model)
                     return message
-                error = httpx.HTTPStatusError(
+                error: Exception = httpx.HTTPStatusError(
                     f"LLM 调用失败:HTTP {response.status_code}", request=response.request, response=response
                 )
-                self._tracer.record_generation(
-                    "chat.completions", input=payload, output={"error": str(error)}, model=model
-                )
-                if not _is_retryable(error) or delay is None:
-                    raise error
-            except (httpx.ConnectError, httpx.TimeoutException) as error:
-                self._tracer.record_generation(
-                    "chat.completions", input=payload, output={"error": str(error)}, model=model
-                )
-                if delay is None:
-                    raise
-                error = error
-            last_error = error
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                error = exc  # 瞬时网络错误:落入下方统一的重试/上抛判定
+            self._tracer.record_generation("chat.completions", input=payload, output={"error": str(error)}, model=model)
+            if delay is None or not _is_retryable(error):
+                raise LlmFailure(f"LLM 调用失败:{error}") from error
             logger.warning("LLM 调用失败(%s),%.1fs 后重试", type(error).__name__, delay)
             await _sleep(delay)
-        raise last_error  # pragma: no cover - 循环结构保证不可达
+        raise AssertionError("unreachable")  # pragma: no cover - 循环结构保证不可达
 
     async def _with_gate(self, fn) -> dict:
-        async with self._gate:
+        async with _llm_gate():
             return await fn()
 
 
@@ -175,14 +188,9 @@ def _default_tracer(settings) -> LlmTracer:
     return NullTracer()
 
 
-def _concurrency_gate(limit: int):
-    import asyncio
-
-    return asyncio.Semaphore(limit)
-
-
 def _is_retryable(error: Exception) -> bool:
-    if isinstance(error, httpx.TimeoutException):
+    """瞬时错误判定:网络错误与 429/5xx 重试,4xx(非 429)不重试。"""
+    if isinstance(error, (httpx.ConnectError, httpx.TimeoutException)):
         return True
     response = getattr(error, "response", None)
     if response is None:
@@ -191,6 +199,4 @@ def _is_retryable(error: Exception) -> bool:
 
 
 async def _sleep(seconds: float) -> None:
-    import asyncio
-
     await asyncio.sleep(seconds)

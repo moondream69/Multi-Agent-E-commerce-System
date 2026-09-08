@@ -5,9 +5,7 @@ verify 阶段(`docker compose up -d` + Ollama bge-m3)执行;任一依赖不在�
 
 from __future__ import annotations
 
-import socket
 from collections.abc import Iterator
-from urllib.parse import urlparse
 
 import pytest
 from pymilvus import MilvusClient
@@ -16,26 +14,17 @@ from python_backend.infrastructure.embedding import EmbeddingService
 from python_backend.settings import get_settings
 from python_backend.vector_repo.base import VectorRecord
 from python_backend.vector_repo.milvus_repo import MilvusVectorRepository
+from tests.conftest import milvus_reachable
 
 pytestmark = pytest.mark.e2e
 
 COLLECTION = "e2e_roundtrip"
 
 
-def _milvus_reachable(uri: str, timeout: float = 2.0) -> bool:
-    """TCP 快速探测:gRPC 连接失败的重试放大很慢,先探端口再构造客户端。"""
-    parsed = urlparse(uri)
-    try:
-        with socket.create_connection((parsed.hostname or "", parsed.port or 19530), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
 @pytest.fixture(scope="module")
 def services() -> Iterator[tuple[EmbeddingService, MilvusVectorRepository]]:
     settings = get_settings()
-    if not _milvus_reachable(settings.milvus_uri):
+    if not milvus_reachable(settings.milvus_uri):
         pytest.skip("Milvus 不在线")
     try:
         client = MilvusClient(uri=settings.milvus_uri, timeout=5.0)

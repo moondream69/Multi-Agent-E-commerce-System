@@ -5,9 +5,7 @@ Milvus 不在线时整体 skip;在线时 MilvusVectorRepository 跑与 InMemory 
 
 from __future__ import annotations
 
-import socket
 from collections.abc import Iterator
-from urllib.parse import urlparse
 
 import pytest
 from pymilvus import MilvusClient
@@ -15,6 +13,7 @@ from pymilvus import MilvusClient
 from python_backend.settings import get_settings
 from python_backend.vector_repo.base import VectorRepository
 from python_backend.vector_repo.milvus_repo import MilvusVectorRepository
+from tests.conftest import milvus_reachable
 from tests.vector_repo_contracts import (
     CONTRACT_COLLECTIONS,
     contract_delete_removes_records,
@@ -27,19 +26,9 @@ from tests.vector_repo_contracts import (
 pytestmark = pytest.mark.integration
 
 
-def _milvus_reachable(uri: str, timeout: float = 2.0) -> bool:
-    """TCP 快速探测:gRPC 连接失败的重试放大很慢,先探端口再构造客户端。"""
-    parsed = urlparse(uri)
-    try:
-        with socket.create_connection((parsed.hostname or "", parsed.port or 19530), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
 @pytest.fixture(scope="module")
 def repo() -> Iterator[VectorRepository]:
-    if not _milvus_reachable(get_settings().milvus_uri):
+    if not milvus_reachable(get_settings().milvus_uri):
         pytest.skip("Milvus 不在线,跳过 integration 契约测试")
     try:
         client = MilvusClient(uri=get_settings().milvus_uri, timeout=5.0)

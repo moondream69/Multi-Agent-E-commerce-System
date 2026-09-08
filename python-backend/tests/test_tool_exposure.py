@@ -10,15 +10,15 @@ def tool(name: str) -> ToolDefinition:
 class TestToolRegistry:
     def test_visible_for_returns_only_authorized_tools(self) -> None:
         registry = ToolRegistry()
-        registry.register(tool("read_inventory"), authorized_nodes={"order_agent", "manager"})
+        registry.register(tool("read_inventory"), authorized_nodes={"order_management", "manager"})
         registry.register(tool("publish_product"), authorized_nodes={"human_console"})
-        visible = [t.name for t in registry.visible_for("order_agent")]
-        assert visible == ["read_inventory"]  # publish_product 对 order_agent 不可见
+        visible = [t.name for t in registry.visible_for("order_management")]
+        assert visible == ["read_inventory"]  # publish_product 对 order_management 不可见
 
     def test_visible_for_unauthorized_node_is_empty(self) -> None:
         registry = ToolRegistry()
-        registry.register(tool("read_inventory"), authorized_nodes={"order_agent"})
-        assert registry.visible_for("product_agent") == []
+        registry.register(tool("read_inventory"), authorized_nodes={"order_management"})
+        assert registry.visible_for("product_research") == []
 
     def test_empty_registry_returns_empty(self) -> None:
         assert ToolRegistry().visible_for("anything") == []

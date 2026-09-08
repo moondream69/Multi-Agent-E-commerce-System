@@ -15,17 +15,18 @@ agents 以闭包注入而非 state 字段(可序列化要求,为增量 3 checkpo
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from python_backend.core.planning import ManagerPlanner, PlanFailed, Planner, Slice, SlicePlan
 
 
-def merge_dicts(state: dict, update: dict) -> dict:
+def merge_dicts(current: dict, update: dict) -> dict:
     """并行扇出结果合并 reducer(Annotated 约定:reducer(current, single_update))。"""
-    result = dict(state)
+    result = dict(current)
     result.update(update)
     return result
 
@@ -37,10 +38,10 @@ class SupervisorState(TypedDict, total=False):
     current_layer: int
     results: Annotated[dict[int, dict], merge_dicts]
     error: str | None
+    summary: dict | None
     # Send 注入的切片数据(Send 状态为完整替换,execute_slice 经这些 key 取切片)
     slice_no: int
-    agent: str
-    description: str
+    slice: dict  # 完整切片字段(Slice 构造参数),无损往返——depends_on/approval_points 增量 3 审批断点要用
 
 
 AgentRunner = Callable[[Slice], dict]
@@ -74,7 +75,7 @@ def _prepare(state: SupervisorState) -> dict:
 def _next_step(state: SupervisorState) -> list[Send] | str:
     """条件边:当前层全部完成(join 语义保证)→ 发下一层 Send;全部层完成 → 汇总。
 
-    Send 状态为完整替换(非合并),须携带切片数据本身——execute_slice 看不到主 state。
+    Send 状态为完整替换(非合并),须携带切片完整数据——execute_slice 看不到主 state。
     """
     if state["current_layer"] >= len(state["layers"]):
         return "aggregate"
@@ -82,17 +83,29 @@ def _next_step(state: SupervisorState) -> list[Send] | str:
     assert isinstance(plan, SlicePlan)
     by_no = {s.no: s for s in plan.slices}
     layer = state["layers"][state["current_layer"]]
-    return [
-        Send(
-            "execute_slice",
-            {"slice_no": no, "agent": by_no[no].agent, "description": by_no[no].description},
+    sends = []
+    for no in layer:
+        s = by_no[no]
+        sends.append(
+            Send(
+                "execute_slice",
+                {
+                    "slice_no": no,
+                    "slice": {
+                        "no": s.no,
+                        "agent": s.agent,
+                        "description": s.description,
+                        "depends_on": s.depends_on,
+                        "approval_points": s.approval_points,
+                    },
+                },
+            )
         )
-        for no in layer
-    ]
+    return sends
 
 
 def _execute_slice(state: SupervisorState, agents: dict[str, AgentRunner]) -> dict:
-    slice_ = Slice(no=state["slice_no"], agent=state["agent"], description=state["description"])
+    slice_ = Slice(**state["slice"])  # 无损重建:增量 3 起审批断点(approval_points)随切片流转
     runner = agents.get(slice_.agent, _default_agent)
     return {"results": {slice_.no: runner(slice_)}}
 
@@ -107,7 +120,26 @@ def _after_check(state: SupervisorState) -> list[Send] | str:
 
 
 def _aggregate(state: SupervisorState) -> dict:
-    return {"error": state.get("error")}
+    """汇总(监督图定义:规划 → 分派 → 汇总):拼装切片轨迹与结果供上层/前端消费。"""
+    plan = state["plan"]
+    if isinstance(plan, SlicePlan):
+        return {
+            "error": state.get("error"),
+            "summary": {
+                "slices": [
+                    {
+                        "no": s.no,
+                        "agent": s.agent,
+                        "description": s.description,
+                        "depends_on": s.depends_on,
+                        "approval_points": s.approval_points,
+                    }
+                    for s in plan.slices
+                ],
+                "results": state.get("results", {}),
+            },
+        }
+    return {"error": state.get("error"), "summary": {"slices": [], "results": {}}}
 
 
 def _report_failure(state: SupervisorState) -> dict:
@@ -147,6 +179,6 @@ def build_supervisor(
     return builder.compile()
 
 
-def default_supervisor() -> Any:
+def default_supervisor() -> CompiledStateGraph:
     """生产装配入口:真实 ManagerPlanner + 占位业务 Agent(增量 4 换真实子图)。"""
     return build_supervisor(ManagerPlanner())

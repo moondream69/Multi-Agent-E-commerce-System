@@ -49,6 +49,8 @@ async def test_supervisor_compiles_and_runs_single_slice() -> None:
     assert result["error"] is None
     assert result["results"][1]["executed"] is True
     assert executed == [1]
+    assert [s["no"] for s in result["summary"]["slices"]] == [1]  # 汇总环节:切片轨迹拼装
+    assert set(result["summary"]["results"]) == {1}
 
 
 async def test_dependencies_run_in_topological_order() -> None:

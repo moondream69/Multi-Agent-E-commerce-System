@@ -12,6 +12,7 @@ from python_backend.core.planning import (
     PlanningError,
     SlicePlan,
 )
+from python_backend.infrastructure.llm import LlmFailure
 
 
 def plan_dict(slices: list[dict]) -> dict:
@@ -113,7 +114,6 @@ class TestPlanFailed:
     def test_plan_failed_carries_reason(self) -> None:
         failed = PlanFailed("规划步数超上限(6 > 5)")
         assert "上限" in failed.reason
-        assert failed.is_complete is False
 
 
 def test_agents_are_the_three_business_domains() -> None:
@@ -136,6 +136,7 @@ class TestManagerPlanner:
         result = await planner.plan("查库存")
         assert isinstance(result, SlicePlan)
         assert len(llm.calls) == 2
+        assert "校验失败" in llm.calls[1]["messages"][-1]["content"]  # 重试携带失败原因反馈
 
     async def test_terminates_with_reason_when_always_over_limit(self) -> None:
         """B17:规划步数超限 → 校验重试 2 次后强制终止,产出「未完成+原因」。"""
@@ -149,20 +150,27 @@ class TestManagerPlanner:
 
     async def test_falls_back_to_keyword_routing_when_llm_fails(self) -> None:
         """B13:LLM 调用失败 → 关键词规则确定性路由兜底(单切片直达)。"""
-        llm = FakeLlm([RuntimeError("DeepSeek 超时")])
+        llm = FakeLlm([LlmFailure("DeepSeek 超时")])
         planner = ManagerPlanner(llm)
         result = await planner.plan("帮我查一下库存情况")
         assert isinstance(result, SlicePlan)
         assert len(result.slices) == 1
         assert result.slices[0].agent == "order_management"
 
+    async def test_programming_errors_are_not_swallowed_by_fallback(self) -> None:
+        """宪章:永不静默吞错——fallback 只承接 LlmFailure,编程错误继续上抛。"""
+        llm = FakeLlm([RuntimeError("响应结构变化,编程错误")])
+        planner = ManagerPlanner(llm)
+        with pytest.raises(RuntimeError, match="编程错误"):
+            await planner.plan("查库存")
+
     async def test_fallback_routes_customer_complaint_with_logistics_to_customer_service(self) -> None:
         """旧 IntentParser 教训回归守护:命中数优先("客户/回复"3 命中 vs "物流"1 命中)。"""
-        result = await ManagerPlanner(FakeLlm([RuntimeError("挂")])).plan("客户抱怨物流太慢,帮我写个回复")
+        result = await ManagerPlanner(FakeLlm([LlmFailure("挂")])).plan("客户抱怨物流太慢,帮我写个回复")
         assert isinstance(result, SlicePlan)
         assert result.slices[0].agent == "customer_service"
 
     async def test_fallback_defaults_to_customer_service(self) -> None:
-        result = await ManagerPlanner(FakeLlm([RuntimeError("挂")])).plan("在吗")
+        result = await ManagerPlanner(FakeLlm([LlmFailure("挂")])).plan("在吗")
         assert isinstance(result, SlicePlan)
         assert result.slices[0].agent == "customer_service"

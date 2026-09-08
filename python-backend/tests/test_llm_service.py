@@ -7,7 +7,7 @@
 import httpx
 import pytest
 
-from python_backend.infrastructure.llm import LlmService
+from python_backend.infrastructure.llm import LlmFailure, LlmService
 
 
 def mock_transport(handler) -> httpx.MockTransport:
@@ -53,7 +53,7 @@ async def test_complete_retries_on_transient_5xx_then_succeeds() -> None:
 async def test_complete_raises_after_retries_exhausted() -> None:
     transport, calls = counting_transport([httpx.Response(500, json={"error": "boom"})])
     svc = LlmService(transport=transport, retry_delays=(0, 0))
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(LlmFailure):
         await svc.complete([{"role": "user", "content": "hi"}])
     assert len(calls) == 3  # 1 次 + 2 次重试(分层失败语义:本地重试 1-2 次,仍败上抛)
 
@@ -61,7 +61,7 @@ async def test_complete_raises_after_retries_exhausted() -> None:
 async def test_complete_does_not_retry_on_4xx() -> None:
     transport, calls = counting_transport([httpx.Response(400, json={"error": "bad request"})])
     svc = LlmService(transport=transport, retry_delays=(0, 0))
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(LlmFailure):
         await svc.complete([{"role": "user", "content": "hi"}])
     assert len(calls) == 1
 
@@ -155,10 +155,35 @@ async def test_tracer_records_failures_before_raising() -> None:
     tracer = FakeTracer()
     transport = counting_transport([httpx.Response(500, json={"error": "boom"})])[0]
     svc = LlmService(transport=transport, tracer=tracer, retry_delays=(0, 0))
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(LlmFailure):
         await svc.complete([{"role": "user", "content": "hi"}])
     assert len(tracer.records) == 3  # 每次尝试(含重试)均记录
     assert all("error" in r["output"] for r in tracer.records)
+
+
+async def test_concurrency_gate_is_shared_across_instances() -> None:
+    """宪章:并发闸是账号级防护——增量 4 起每 Agent 各建 LlmService,闸必须跨实例共享。"""
+    import asyncio
+
+    active = 0
+    peak = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    svc_a = LlmService(transport=httpx.MockTransport(handler), retry_delays=(0, 0))
+    svc_b = LlmService(transport=httpx.MockTransport(handler), retry_delays=(0, 0))
+    results = await asyncio.gather(
+        *[svc_a.complete([{"role": "user", "content": "hi"}]) for _ in range(3)],
+        *[svc_b.complete([{"role": "user", "content": "hi"}]) for _ in range(3)],
+    )
+    assert all(r == "ok" for r in results)
+    assert peak <= 2
 
 
 async def test_noop_when_langfuse_unconfigured() -> None:

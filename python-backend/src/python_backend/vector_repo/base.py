@@ -22,7 +22,7 @@ class VectorRecord:
 
 @dataclass
 class SearchHit:
-    """一次检索命中:score 为相似度(0-1 量纲,大=近)。"""
+    """一次检索命中:score 为余弦相似度(大=近;取值范围 -1~1)。"""
 
     id: str
     score: float

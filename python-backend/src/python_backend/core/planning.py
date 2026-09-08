@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from python_backend.infrastructure.llm import LlmClient, LlmService
+from python_backend.infrastructure.llm import LlmClient, LlmFailure, LlmService
 
 # 三个业务域(宪章:选品/订单/客服三业务 Agent,不扩展)
 AGENTS = ("product_research", "order_management", "customer_service")
@@ -135,7 +135,6 @@ class PlanFailed:
     """规划强制终止(未完成 + 原因),如实上抛给用户(宪章:永不静默吞错)。"""
 
     reason: str
-    is_complete: bool = False
 
 
 # fallback 关键词表(旧 IntentParser 语义:命中数优先、平局按配置序、无命中兜底客服)。
@@ -184,7 +183,7 @@ class ManagerPlanner:
     async def plan(self, request: str) -> SlicePlan | PlanFailed:
         try:
             data, reason = await self._llm_plan_with_validation(request)
-        except Exception:  # LLM 调用失败/超时 → fallback 安全网(B13)
+        except LlmFailure:  # 仅 LLM 调用失败/超时 → fallback 安全网(B13);编程错误继续上抛(永不静默吞错)
             return fallback_route(request)
 
         if data is None:
@@ -192,20 +191,24 @@ class ManagerPlanner:
         return SlicePlan.from_dict(data)
 
     async def _llm_plan_with_validation(self, request: str) -> tuple[dict | None, str]:
-        """LLM 生成 + 校验重试:上限 VALIDATION_RETRY_LIMIT 次,返回最终数据或失败原因。"""
+        """LLM 生成 + 校验重试:上限 VALIDATION_RETRY_LIMIT 次,返回最终数据或失败原因。
+
+        校验失败携错误重试:把失败原因作为用户消息反馈给 LLM,提高重试恢复率。
+        """
         last_reason = ""
+        messages: list[dict] = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": request},
+        ]
         for _attempt in range(VALIDATION_RETRY_LIMIT + 1):
-            raw = await self._llm.complete(
-                [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": request},
-                ],
-                json_mode=True,
-            )
+            raw = await self._llm.complete(messages, json_mode=True)
             try:
                 data = json.loads(raw)
                 SlicePlan.from_dict(data)  # 校验先行:非法输出不落地
                 return data, ""
             except (json.JSONDecodeError, PlanningError) as error:
                 last_reason = str(error)
+                messages.append(
+                    {"role": "user", "content": f"上一次输出校验失败:{last_reason}。请只输出修正后的 JSON。"}
+                )
         return None, last_reason
