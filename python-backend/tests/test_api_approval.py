@@ -1,4 +1,4 @@
-"""REST 四端点 + 自然消息意图判定(切片 4,spec #6 D4)。
+"""REST 端点(spec #7):任务发起/全量与按线程批次列表/多批一次决定/自然消息/影子补执行。
 
 接缝:HTTP 接口(create_app 注入图与批次存储)与意图判定纯函数。
 """
@@ -11,23 +11,32 @@ from langgraph.checkpoint.memory import InMemorySaver
 from python_backend.api.app import create_app
 from python_backend.core.approvals import parse_decision_intent
 from python_backend.core.graph import build_supervisor
-from tests.conftest import InMemoryApprovalBatchStore, StubPlanner, slice_agent
+from tests.conftest import FakeApply, InMemoryApprovalBatchStore, StubPlanner, slice_agent
+
+PUBLISH = {
+    "action": "product.publish",
+    "params": {"product_id": 1},
+    "snapshot": {"exists": True, "status": "draft"},
+}
 
 
-def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore]:
+def make_client(*, shadow_mode: bool = False) -> tuple[TestClient, InMemoryApprovalBatchStore, FakeApply]:
     store = InMemoryApprovalBatchStore()
+    apply_fn = FakeApply()
     graph = build_supervisor(
         StubPlanner(),
-        agents={"order_management": slice_agent()},
+        agents={"order_management": slice_agent(actions=[PUBLISH], answer="上架动作已登记")},
         checkpointer=InMemorySaver(),
         batch_store=store,
+        shadow_mode=shadow_mode,
+        apply_fn=apply_fn,
     )
-    return TestClient(create_app(graph=graph, batch_store=store)), store
+    return TestClient(create_app(graph=graph, batch_store=store, apply_fn=apply_fn)), store, apply_fn
 
 
-async def test_create_task_interrupts_with_approval_point() -> None:
-    """POST /api/tasks:带审批切片的任务发起后状态 interrupted。"""
-    client, _ = make_client()
+async def test_create_task_interrupts_with_batches() -> None:
+    """POST /api/tasks:带审批动作的任务发起后状态 interrupted。"""
+    client, _store, _apply = make_client()
     response = client.post("/api/tasks", json={"request": "上架商品"})
     assert response.status_code == 201
     body = response.json()
@@ -35,26 +44,31 @@ async def test_create_task_interrupts_with_approval_point() -> None:
     assert body["thread_id"]
 
 
-async def test_list_pending_approvals() -> None:
-    """GET /approvals:挂起批次以切片语义暴露(batch_id/action_type/actions 快照)。"""
-    client, _ = make_client()
+async def test_list_open_and_per_thread_approvals() -> None:
+    """GET /api/approvals(全局)+ GET /api/threads/{id}/approvals:真实参数快照形状。"""
+    client, store, _apply = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
 
-    response = client.get(f"/api/threads/{thread_id}/approvals")
-
-    assert response.status_code == 200
+    response = client.get("/api/approvals")
     approvals = response.json()["approvals"]
     assert len(approvals) == 1
     batch = approvals[0]
     assert batch["status"] == "pending"
     assert batch["sliceNo"] == 1
-    assert batch["actionType"] == "上架审批"
-    assert batch["actions"][0]["approvalPoints"] == ["上架审批"]
+    assert batch["actionType"] == "product.publish"
+    assert batch["actions"][0]["action"] == "product.publish"
+    assert batch["actions"][0]["params"] == {"product_id": 1}
+    assert batch["actions"][0]["snapshot"]["status"] == "draft"
+
+    per_thread = client.get(f"/api/threads/{thread_id}/approvals").json()["approvals"]
+    assert [b["batchId"] for b in per_thread] == [batch["batchId"]]
+    stored = await store.get_batch(batch_id=batch["batchId"])
+    assert stored is not None and stored.status == "pending"
 
 
-async def test_resume_with_approve_completes_thread() -> None:
-    """POST /resume(按钮入口):approve 决定 → 图恢复执行 → 完成。"""
-    client, store = make_client()
+async def test_resume_approve_completes_and_applies() -> None:
+    """POST /resume(按钮入口):approve → apply 被调(接缝)→ 任务完成。"""
+    client, store, apply_fn = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
     batch_id = (await store.list_pending(thread_id))[0].batch_id
 
@@ -64,12 +78,13 @@ async def test_resume_with_approve_completes_thread() -> None:
     body = response.json()
     assert body["status"] == "completed"
     assert body["summary"]["results"]["1"]["executed"] is True
+    assert [bid for bid, _a in apply_fn.calls] == [batch_id]
     assert await store.list_pending(thread_id) == []
 
 
-async def test_resume_with_reject_updates_batch_and_terminates_replan() -> None:
-    """POST /resume:reject 决定 → 批次落 rejected,图回流后按冲突终止(StubPlanner 静态计划)。"""
-    client, store = make_client()
+async def test_resume_reject_updates_batch_and_replans() -> None:
+    """POST /resume:reject → 批次落 rejected,回流后按冲突终止(StubPlanner 静态计划)。"""
+    client, store, apply_fn = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
     batch_id = (await store.list_pending(thread_id))[0].batch_id
 
@@ -80,35 +95,57 @@ async def test_resume_with_reject_updates_batch_and_terminates_replan() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    batch = next(r for r in store._by_id.values() if r.batch_id == batch_id)
+    batch = await store.get_batch(batch_id=batch_id)
+    assert batch is not None
     assert batch.status == "rejected"
     assert batch.comment == "价格太低"
+    assert apply_fn.calls == []
     assert body["error"], "重规划冲突应如实上报「未完成+原因」"
 
 
 async def test_resume_unknown_batch_is_404() -> None:
     """resume 不存在的批次 → 404。"""
-    client, _ = make_client()
+    client, _store, _apply = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
     response = client.post(f"/api/threads/{thread_id}/resume", json={"no-such-batch": {"decision": "approve"}})
     assert response.status_code == 404
 
 
-async def test_natural_message_approve_resumes_pending_batch() -> None:
-    """POST /message(自然消息入口):「同意」→ 挂起批次 approve → 完成。"""
-    client, store = make_client()
+async def test_resume_partial_body_is_422() -> None:
+    """部分决定被拒绝(422):未决定批次会静默按拒处理,必须一次提交全部决定。"""
+    client, _store, _apply = make_client()
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    response = client.post(f"/api/threads/{thread_id}/resume", json={})
+    assert response.status_code == 422
+    assert "全部" in response.json()["detail"]
+
+
+async def test_resume_without_pending_is_409() -> None:
+    """无挂起中断时 resume → 409。"""
+    client, store, _apply = make_client()
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    batch_id = (await store.list_pending(thread_id))[0].batch_id
+    client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve"}})
+    response = client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve"}})
+    assert response.status_code == 409
+
+
+async def test_natural_message_approve_resumes_all_batches() -> None:
+    """POST /message:「同意」→ 全部挂起批次 approve → 完成。"""
+    client, store, apply_fn = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
 
     response = client.post(f"/api/threads/{thread_id}/message", json={"text": "同意"})
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert len(apply_fn.calls) == 1
     assert await store.list_pending(thread_id) == []
 
 
 async def test_natural_message_without_pending_is_409() -> None:
     """无挂起批次时发决定消息 → 409。"""
-    client, _ = make_client()
+    client, _store, _apply = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
     client.post(f"/api/threads/{thread_id}/message", json={"text": "同意"})
     response = client.post(f"/api/threads/{thread_id}/message", json={"text": "同意"})
@@ -117,7 +154,7 @@ async def test_natural_message_without_pending_is_409() -> None:
 
 async def test_natural_message_terminate_ends_thread_without_replan() -> None:
     """POST /message「算了」→ terminate:批次落 rejected、图「用户终止」结束、不回流重规划。"""
-    client, store = make_client()
+    client, store, apply_fn = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
 
     response = client.post(f"/api/threads/{thread_id}/message", json={"text": "算了"})
@@ -126,17 +163,41 @@ async def test_natural_message_terminate_ends_thread_without_replan() -> None:
     body = response.json()
     assert body["status"] == "completed"
     assert body["error"] == "用户终止任务"
-    batch = next(r for r in store._by_id.values() if r.thread_id == thread_id)
+    batch = store.batches[0]
     assert batch.status == "rejected"
     assert "算了" in (batch.comment or "")
+    assert apply_fn.calls == []
 
 
 async def test_unrecognized_intent_is_422() -> None:
     """无法识别的自然消息 → 422。"""
-    client, _ = make_client()
+    client, _store, _apply = make_client()
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
     response = client.post(f"/api/threads/{thread_id}/message", json={"text": "今天天气不错"})
     assert response.status_code == 422
+
+
+async def test_shadow_batch_execute_endpoint() -> None:
+    """A15:影子批次一键补执行——execute 端点调 apply,批次落 executed。"""
+    client, store, apply_fn = make_client(shadow_mode=True)
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    assert client.post("/api/tasks", json={"request": "上架商品"}).json()["status"] == "completed"
+
+    batch = (await store.list_open())[0]
+    assert batch.mode == "shadow"
+
+    response = client.post(f"/api/threads/{thread_id}/shadow-batches/{batch.batch_id}/execute")
+    assert response.status_code == 200
+    assert response.json()["status"] == "executed"
+    assert [bid for bid, _a in apply_fn.calls] == [
+        batch.batch_id
+    ]  # 批次状态落 executed 由真实 apply 负责(此处注入假实现)
+
+
+async def test_shadow_execute_unknown_batch_is_404() -> None:
+    client, _store, _apply = make_client()
+    response = client.post("/api/threads/whatever/shadow-batches/no-such/execute")
+    assert response.status_code == 404
 
 
 def test_parse_decision_intent_priority() -> None:

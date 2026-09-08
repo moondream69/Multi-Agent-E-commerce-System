@@ -194,6 +194,7 @@ class ApprovalBatch(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     comment: Mapped[str | None] = mapped_column(Text)
     result: Mapped[dict | None] = mapped_column(JSONB)
+    run_output: Mapped[dict | None] = mapped_column(JSONB)  # 子图运行输出(spec #7:durable 重放的子图缓存)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

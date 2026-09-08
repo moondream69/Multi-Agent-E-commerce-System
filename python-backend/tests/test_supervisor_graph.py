@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from python_backend.core.graph import SupervisorState, build_supervisor
 from python_backend.core.planning import PlanFailed, Slice, SlicePlan
@@ -16,8 +16,8 @@ class StubPlanner:
         return self._plan
 
 
-def slice_agent(executed: list[int], *, record_order: bool = True) -> Callable[[Slice], dict]:
-    def run(slice_: Slice) -> dict:
+def slice_agent(executed: list[int], *, record_order: bool = True) -> Callable[[Slice], Awaitable[dict]]:
+    async def run(slice_: Slice) -> dict:
         if record_order:
             executed.append(slice_.no)
         return {"agent": slice_.agent, "description": slice_.description, "executed": True}

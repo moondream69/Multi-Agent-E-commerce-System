@@ -1,15 +1,17 @@
 """监督图(术语表:Manager + 业务子图组成的顶层状态图)。
 
-宪章 ADR-0005 增量 2 骨架:
+宪章 ADR-0005 + spec #7:
 - manager 节点:ManagerPlanner 产出切片计划(或 PlanFailed 强制终止)
 - prepare:计算拓扑分层(execution_order)
 - 每层经条件边 Send 并行扇出(独立切片并行、依赖串行由分层保证;Pregel 语义下
   同层 Send 分支自动 join 后才推进 check_layer)
-- execute_slice:调用业务 Agent(增量 4 前为注入的 stub;真实子图挂接点)
+- execute_slice:调用业务 Agent 子图(AgentRunner 挂接);切片内收集的审批动作按类型
+  打包批次(真实参数快照)→ 切片边界 interrupt(载荷携带本切片全部批次)→ 批准后
+  事务内统一执行(apply);影子模式只记录不阻塞;durable 重放以批次表为缓存,不重跑子图
 - aggregate/report_failure:汇总结果或如实上报未完成+原因
 
-注意:增量 2 不挂 PostgresSaver(durable interrupt 属增量 3);
-agents 以闭包注入而非 state 字段(可序列化要求,为增量 3 checkpointer 铺路)。
+增量 3 遗留说明:interrupt 的 durable 语义靠监督图 checkpointer + 批次表双保险;
+子图不另挂 checkpointer(状态经返回值回传,审批动作已随批次落库)。
 """
 
 from __future__ import annotations
@@ -24,8 +26,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send, interrupt
 
+from python_backend.agents.executor import ApplyFunction, apply_batch_actions
 from python_backend.core.approvals import ApprovalBatchStore
+from python_backend.core.events import EventEmitter, NullEmitter
 from python_backend.core.planning import ManagerPlanner, PlanFailed, Planner, Slice, SlicePlan
+from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
 
 def supervisor_serde() -> JsonPlusSerializer:
@@ -49,6 +54,14 @@ def merge_dicts(current: dict, update: dict) -> dict:
     return result
 
 
+class BatchPayload(TypedDict):
+    """interrupt 载荷中的单个批次(spec #7:一次 interrupt 携带切片全部批次)。"""
+
+    batch_id: str
+    action_type: str
+    actions: list[dict]
+
+
 class SupervisorState(TypedDict, total=False):
     request: str
     thread_id: str
@@ -61,17 +74,17 @@ class SupervisorState(TypedDict, total=False):
     summary: dict | None
     # Send 注入的切片数据(Send 状态为完整替换,execute_slice 经这些 key 取切片)
     slice_no: int
-    slice: dict  # 完整切片字段(Slice 构造参数),无损往返——depends_on/approval_points 增量 3 审批断点要用
+    slice: dict  # 完整切片字段(Slice 构造参数),无损往返
 
 
-AgentRunner = Callable[[Slice], dict]
+AgentRunner = Callable[[Slice], Awaitable[dict]]
 
 # 重规划回流次数上限(spec #6 D3):超限强制终止,防 LLM 反复产出被拒计划
 REPLAN_LIMIT = 2
 
 
-def _default_agent(slice_: Slice) -> dict:
-    """业务子图占位(增量 4 替换为真实 Agent 子图):记录执行、返回占位结果。"""
+async def _default_agent(slice_: Slice) -> dict:
+    """业务子图占位(装配未挂真实子图时使用):记录执行、返回占位结果。"""
     return {"agent": slice_.agent, "description": slice_.description, "executed": True}
 
 
@@ -98,22 +111,23 @@ def _brief(result: dict) -> str:
     return "已完成"
 
 
-def _manager_node(planner: Planner) -> Callable[[SupervisorState], Awaitable[dict]]:
+def _manager_node(planner: Planner, tracer: TaskTracer) -> Callable[[SupervisorState], Awaitable[dict]]:
     async def run(state: SupervisorState) -> dict:
         results = state.get("results", {})
-        if not any(r.get("rejected") for r in results.values()):
-            return {"plan": await planner.plan(state["request"])}
+        with tracer.span("manager.plan", input={"request": state["request"]}):
+            if not any(r.get("rejected") for r in results.values()):
+                return {"plan": await planner.plan(state["request"])}
 
-        # 重规划路径:携拒因 + 已完成上下文;超限强制终止;切片号冲突强制终止
-        replan_count = state.get("replan_count", 0) + 1
-        if replan_count > REPLAN_LIMIT:
-            return {"plan": PlanFailed(f"重规划次数超限({REPLAN_LIMIT})"), "replan_count": replan_count}
-        plan = await planner.plan(_replan_prompt(state["request"], results))
-        if isinstance(plan, SlicePlan):
-            conflicts = sorted(no for no in (s.no for s in plan.slices) if no in results)
-            if conflicts:
-                plan = PlanFailed(f"重规划切片号与已完成切片冲突:{conflicts}")
-        return {"plan": plan, "replan_count": replan_count}
+            # 重规划路径:携拒因 + 已完成上下文;超限强制终止;切片号冲突强制终止
+            replan_count = state.get("replan_count", 0) + 1
+            if replan_count > REPLAN_LIMIT:
+                return {"plan": PlanFailed(f"重规划次数超限({REPLAN_LIMIT})"), "replan_count": replan_count}
+            plan = await planner.plan(_replan_prompt(state["request"], results))
+            if isinstance(plan, SlicePlan):
+                conflicts = sorted(no for no in (s.no for s in plan.slices) if no in results)
+                if conflicts:
+                    plan = PlanFailed(f"重规划切片号与已完成切片冲突:{conflicts}")
+            return {"plan": plan, "replan_count": replan_count}
 
     return run
 
@@ -168,49 +182,127 @@ async def _execute_slice(
     agents: dict[str, AgentRunner],
     batch_store: ApprovalBatchStore | None,
     shadow_mode: bool,
+    apply_fn: ApplyFunction,
+    emitter: EventEmitter,
+    tracer: TaskTracer,
 ) -> dict:
-    """执行切片:带审批点 → 打包落批次(影子模式只记录)→ interrupt 挂起;决定后从 interrupt 处继续。
+    """执行切片(spec #7):子图运行 → 审批动作按类型打包(真实参数快照)→ 边界 interrupt → apply。
 
-    切片级打包(spec #6 D5):actions = 切片意图快照(description + approval_points),
-    真实动作级打包在增量 4 业务工具挂接时替换。
+    durable 重放防护:批次表即子图结果的 durable 记录——重放时若 (thread, slice_no) 已有批次,
+    跳过子图重跑(LLM 轮次与 auto 工具副作用不重复),直接以既有批次继续中断/决定流程。
+    批次打包按 action_type 分组(同类型同批、不跨类型混批,B4);
+    batch_id = uuid5(thread:slice:action_type) 确定性推导;一次 interrupt 携带本切片全部批次;
+    批准批次在 resume 后事务内统一执行(apply,批内同进同退),冲突如实上报(B18)。
     """
     slice_ = Slice(**state["slice"])  # 无损重建:审批断点(approval_points)随切片流转
-    if slice_.approval_points:
-        if batch_store is None:
-            raise RuntimeError("审批批次存储未注入(build_supervisor 需传 batch_store)")
-        # 确定性 batch_id(thread+slice_no 的 uuid5):resume 时 Pregel 重放节点,
-        # 随机 uuid 会重复落库;切片号在 thread 内唯一且只执行一次,推导稳定。
-        batch_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{state.get('thread_id', '')}:{slice_.no}"))
-        await batch_store.create_batch(
-            batch_id=batch_id,
-            thread_id=state.get("thread_id", ""),
-            slice_no=slice_.no,
-            action_type=slice_.approval_points[0],
-            actions=[{"description": slice_.description, "approval_points": slice_.approval_points}],
-            mode="shadow" if shadow_mode else "approval",
+    thread_id = state.get("thread_id", "")
+    existing = await batch_store.list_by_slice(thread_id, slice_.no) if batch_store is not None else []
+    batches: list[BatchPayload] = []
+
+    if existing:
+        # durable 重放:子图不重跑(LLM 轮次与 auto 工具副作用不重复),输出从批次行恢复
+        run = existing[0].run_output or {}
+        batches = [{"batch_id": r.batch_id, "action_type": r.action_type, "actions": r.actions} for r in existing]
+    else:
+        runner = agents.get(slice_.agent, _default_agent)
+        with tracer.span(f"slice.{slice_.agent}", input={"description": slice_.description}):
+            run = await runner(slice_)
+        actions = run.get("actions") or []
+        run_output = {"answer": run.get("answer"), "executed": run.get("executed")}
+        if actions:
+            if batch_store is None:
+                raise RuntimeError("审批批次存储未注入(build_supervisor 需传 batch_store)")
+            groups: dict[str, list[dict]] = {}
+            for item in actions:
+                groups.setdefault(item["action"], []).append(item)
+            for action_type in sorted(groups):  # 排序:重放时批次序确定
+                batch_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{thread_id}:{slice_.no}:{action_type}"))
+                await batch_store.create_batch(
+                    batch_id=batch_id,
+                    thread_id=thread_id,
+                    slice_no=slice_.no,
+                    action_type=action_type,
+                    actions=groups[action_type],
+                    mode="shadow" if shadow_mode else "approval",
+                    run_output=run_output,
+                )
+                batches.append({"batch_id": batch_id, "action_type": action_type, "actions": groups[action_type]})
+            if batches:
+                # WS 载荷按契约 camelCase(与 REST 序列化一致);interrupt 载荷保持 snake(内部)
+                await emitter.emit(
+                    "approval.requested",
+                    {
+                        "threadId": thread_id,
+                        "sliceNo": slice_.no,
+                        "agent": slice_.agent,
+                        "batches": [
+                            {"batchId": b["batch_id"], "actionType": b["action_type"], "actions": b["actions"]}
+                            for b in batches
+                        ],
+                    },
+                )
+                tracer.record_event(
+                    "approval.requested",
+                    {"threadId": thread_id, "sliceNo": slice_.no, "batchIds": [b["batch_id"] for b in batches]},
+                )
+
+    merged: dict = {"agent": slice_.agent, "description": slice_.description}
+    if run.get("answer"):
+        merged["answer"] = run["answer"]
+    if run.get("executed"):
+        merged["executed"] = True
+
+    if batches:
+        assert batch_store is not None  # 有批次必有存储(创建/重放路径都经 store)
+        if shadow_mode:
+            merged["shadow_batches"] = len(batches)
+            return {"results": {slice_.no: merged}}
+
+        decision = interrupt(
+            {
+                "slice_no": slice_.no,
+                "agent": slice_.agent,
+                "description": slice_.description,
+                "batches": batches,
+            }
         )
-        if not shadow_mode:
-            decision = interrupt(
-                {
-                    "batch_id": batch_id,
-                    "slice_no": slice_.no,
-                    "agent": slice_.agent,
-                    "description": slice_.description,
-                    "approval_points": slice_.approval_points,
-                }
+        if decision.get("terminate"):
+            comments = [d.get("comment") for d in (decision.get("decisions") or {}).values() if d.get("comment")]
+            comment = "; ".join(comments) if comments else "用户终止"
+            for batch in batches:
+                await batch_store.decide_batch(
+                    batch_id=batch["batch_id"],
+                    decision="reject",
+                    comment=comment,
+                )
+            merged.update({"rejected": True, "terminated": True, "comment": comment})
+            return {"results": {slice_.no: merged}}
+
+        decisions: dict = decision.get("decisions") or {}
+        rejected_comments: list[str] = []
+        conflicts: list[str] = []
+        for batch in batches:
+            batch_id = batch["batch_id"]
+            decided: dict[str, str | None] = decisions.get(batch_id) or {"decision": "reject", "comment": None}
+            decision_value = decided["decision"] or "reject"
+            comment_value = decided.get("comment")
+            await batch_store.decide_batch(batch_id=batch_id, decision=decision_value, comment=comment_value)
+            tracer.record_event(
+                "approval.decided",
+                {"threadId": thread_id, "batchId": batch_id, "decision": decision_value, "comment": comment_value},
             )
-            verdict = decision["decision"]
-            comment = decision.get("comment")
-            await batch_store.decide_batch(batch_id=batch_id, decision=verdict, comment=comment)
-            if decision.get("terminate"):
-                # 用户终止:批次落 rejected,结果带终止标记(不回流重规划,由 report_terminated 结束)
-                return {
-                    "results": {slice_.no: {"rejected": True, "terminated": True, "comment": comment or "用户终止"}}
-                }
-            if verdict == "reject":
-                return {"results": {slice_.no: {"rejected": True, "comment": comment}}}
-    runner = agents.get(slice_.agent, _default_agent)
-    return {"results": {slice_.no: runner(slice_)}}
+            if decision_value == "approve":
+                outcome = await apply_fn(batch_id, batch["actions"])
+                if not outcome.applied:
+                    conflicts.append(f"{batch['action_type']}:{outcome.reason}")
+            else:
+                rejected_comments.append(comment_value or "")
+        if rejected_comments:
+            merged["rejected"] = True
+            merged["comment"] = "; ".join(c for c in rejected_comments if c)
+        if conflicts:
+            merged["conflict"] = "; ".join(conflicts)
+    return {"results": {slice_.no: merged}}
 
 
 def _check_layer(state: SupervisorState) -> dict:
@@ -238,11 +330,21 @@ def _report_terminated(state: SupervisorState) -> dict:
 
 
 def _aggregate(state: SupervisorState) -> dict:
-    """汇总(监督图定义:规划 → 分派 → 汇总):拼装切片轨迹与结果供上层/前端消费。"""
+    """汇总(监督图定义:规划 → 分派 → 汇总):拼装切片轨迹与结果供上层/前端消费。
+
+    冲突/未完成如实上报为 error(B18/B17):审批动作执行冲突与子图步数超限不是静默事件。
+    """
     plan = state["plan"]
     if isinstance(plan, SlicePlan):
+        problems = []
+        for no in sorted(state.get("results", {})):
+            result = state["results"][no]
+            if result.get("conflict"):
+                problems.append(f"切片 {no} 审批动作执行冲突:{result['conflict']}")
+            if result.get("incomplete"):
+                problems.append(f"切片 {no} 未完成:{result['incomplete']}")
         return {
-            "error": state.get("error"),
+            "error": state.get("error") or ("; ".join(problems) if problems else None),
             "summary": {
                 "slices": [
                     {
@@ -273,20 +375,27 @@ def build_supervisor(
     checkpointer: BaseCheckpointSaver | None = None,
     batch_store: ApprovalBatchStore | None = None,
     shadow_mode: bool = False,
+    apply_fn: ApplyFunction | None = None,
+    emitter: EventEmitter | None = None,
+    tracer: TaskTracer | None = None,
 ):
     """构建监督图:manager → prepare → 逐层 Send 扇出 → check_layer → … → aggregate。
 
     checkpointer 为 None 时不持久化(interrupt 会如实报错);生产装配挂 PostgresSaver(spec #6 D1)。
+    apply_fn/emitter/tracer 默认生产实现或 no-op(spec #7 接缝),测试注入假实现。
     """
     agents = agents or {}
+    apply_fn = apply_fn or apply_batch_actions
+    emitter = emitter or NullEmitter()
+    tracer = tracer or NullTaskTracer()
 
     async def execute_slice(state: SupervisorState) -> dict:
-        return await _execute_slice(state, agents, batch_store, shadow_mode)
+        return await _execute_slice(state, agents, batch_store, shadow_mode, apply_fn, emitter, tracer)
 
     # langgraph 的 StateLike/_Node 泛型上界在静态检查下对具体 TypedDict 与
     # 逆变节点函数必然报 invalid-argument-type(运行时合法且为官方文档模式),故精确忽略。
     builder = StateGraph(SupervisorState)  # ty: ignore
-    builder.add_node("manager", _manager_node(planner))  # ty: ignore
+    builder.add_node("manager", _manager_node(planner, tracer))  # ty: ignore
     builder.add_node("prepare", _prepare)
     builder.add_node("execute_slice", execute_slice)
     builder.add_node("check_layer", _check_layer)
@@ -310,11 +419,20 @@ def default_supervisor(
     checkpointer: BaseCheckpointSaver | None = None,
     batch_store: ApprovalBatchStore | None = None,
     shadow_mode: bool = False,
+    agents: dict[str, AgentRunner] | None = None,
+    emitter: EventEmitter | None = None,
+    tracer: TaskTracer | None = None,
 ) -> CompiledStateGraph:
-    """生产装配入口:真实 ManagerPlanner + 占位业务 Agent(增量 4 换真实子图)。
+    """生产装配入口:真实 ManagerPlanner + 注入的业务子图 runner(spec #7 挂接)。
 
-    checkpointer/batch_store/shadow_mode 由装配方注入(spec #6 D1)。
+    checkpointer/batch_store/shadow_mode/emitter/tracer 由装配方注入(spec #6 D1 / spec #7)。
     """
     return build_supervisor(
-        ManagerPlanner(), checkpointer=checkpointer, batch_store=batch_store, shadow_mode=shadow_mode
+        ManagerPlanner(),
+        agents=agents,
+        checkpointer=checkpointer,
+        batch_store=batch_store,
+        shadow_mode=shadow_mode,
+        emitter=emitter,
+        tracer=tracer,
     )

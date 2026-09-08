@@ -14,7 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from python_backend.api.app import create_app
 from python_backend.core.graph import build_supervisor
-from tests.conftest import InMemoryApprovalBatchStore, StubPlanner
+from tests.conftest import InMemoryApprovalBatchStore, StubPlanner, slice_agent
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EVENTS_TS = REPO_ROOT / "frontend" / "src" / "types" / "events.ts"
@@ -40,7 +40,17 @@ async def test_approval_batch_response_keys_match_contract() -> None:
     store = InMemoryApprovalBatchStore()
     graph = build_supervisor(
         StubPlanner(),
-        agents={"order_management": lambda s: {"executed": True}},
+        agents={
+            "order_management": slice_agent(
+                actions=[
+                    {
+                        "action": "product.publish",
+                        "params": {"product_id": 1},
+                        "snapshot": {"exists": True, "status": "draft"},
+                    }
+                ]
+            )
+        },
         checkpointer=InMemorySaver(),
         batch_store=store,
     )
@@ -52,6 +62,10 @@ async def test_approval_batch_response_keys_match_contract() -> None:
     expected = _ts_interface_fields("ApprovalBatch")
     assert len(approvals) == 1
     assert set(approvals[0]) == expected, f"响应键 {set(approvals[0])} 应等于契约字段 {expected}"
+    action = approvals[0]["actions"][0]
+    assert action["action"] == "product.publish"
+    assert action["params"] == {"product_id": 1}
+    assert action["snapshot"] == {"exists": True, "status": "draft"}
 
 
 def test_approval_batch_status_values_match_contract() -> None:

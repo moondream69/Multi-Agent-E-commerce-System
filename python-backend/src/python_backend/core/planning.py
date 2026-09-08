@@ -150,8 +150,10 @@ _SYSTEM_PROMPT = """你是多 Agent 电商系统的经理(Manager)。将用户�
 规则:
 1. 切片数上限 {max_slices};切片按人工断点切分(高危写动作后需要人工审批处是天然断点)
 2. 每个切片指定 agent:{agents} 之一
-3. 依赖声明:能并行的切片不互相依赖;有依赖的切片在 depends_on 中引用切片编号
-4. 仅输出 JSON,格式:
+3. 领域路由:商品操作(上架/下架/改价/删除)与订单/库存管理 → order_management;
+   选品调研/市场分析/报告 → product_research;买家消息处理/翻译/查证 → customer_service
+4. 依赖声明:能并行的切片不互相依赖;有依赖的切片在 depends_on 中引用切片编号
+5. 仅输出 JSON,格式:
 {{"slices": [{{"no": 1, "agent": "...", "description": "...",
 "depends_on": [], "approval_points": ["上架审批"]}}]}}
 """.format(max_slices=MAX_SLICES, agents="/".join(AGENTS))

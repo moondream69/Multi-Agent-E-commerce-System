@@ -192,37 +192,53 @@ export interface SessionMessages {
   messages: ConversationMessage[];
 }
 
-// —— 切片式审批批次(增量 3:切片内同类高危动作打包,批内同进同退)——
+// —— 切片式审批批次(spec #7:切片内同类高危动作打包真实参数快照,批内同进同退)——
 
 export type ApprovalBatchStatus =
-  | 'pending'
-  | 'approved'
-  | 'rejected'
-  | 'expired'
-  | 'shadow'
-  | 'executed';
+  'pending' | 'approved' | 'rejected' | 'expired' | 'shadow' | 'executed';
+
+export interface ApprovalActionSnapshot {
+  action: string;
+  params: Record<string, unknown>;
+  snapshot: Record<string, unknown> | null;
+}
 
 export interface ApprovalBatch {
   batchId: string;
   threadId: string;
   sliceNo: number;
   actionType: string;
-  actions: { description: string; approvalPoints: string[] }[];
+  actions: ApprovalActionSnapshot[];
   status: ApprovalBatchStatus;
   mode: 'approval' | 'shadow';
   comment: string | null;
+  result: Record<string, unknown> | null;
+  runOutput: Record<string, unknown> | null;
 }
 
+// 一次 interrupt 携带切片全部批次(spec #7),逐批决定一次提交
 export interface ApprovalRequestedPayload {
-  batchId: string;
   threadId: string;
   sliceNo: number;
+  agent: string;
+  batches: ApprovalBatchRequested[];
+}
+
+export interface ApprovalBatchRequested {
+  batchId: string;
   actionType: string;
-  mode: 'approval' | 'shadow';
+  actions: ApprovalActionSnapshot[];
 }
 
 export interface ApprovalDecidedPayload {
+  threadId: string;
   batchId: string;
   decision: 'approve' | 'reject';
   comment?: string | null;
+}
+
+export interface TaskLifecyclePayload {
+  threadId: string;
+  status: 'created' | 'interrupted' | 'completed' | 'failed';
+  error?: string | null;
 }

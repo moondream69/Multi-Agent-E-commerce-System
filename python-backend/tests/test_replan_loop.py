@@ -1,6 +1,7 @@
-"""拒后重规划图内回流(切片 3,spec #6 D3):被拒 → 携拒因回 manager 重规划;冲突/超限强制终止。
+"""拒后重规划图内回流(spec #6 D3 + spec #7):被拒 → 携拒因回 manager 重规划;冲突/超限强制终止。
 
 接缝:监督图公共接口(build_supervisor + Planner 协议注入)。
+审批动作由脚本化 runner 按切片号返回(spec #7:批次来自子图收集,不再由 approval_points 驱动)。
 """
 
 from __future__ import annotations
@@ -10,7 +11,27 @@ from langgraph.types import Command
 
 from python_backend.core.graph import SupervisorState, build_supervisor
 from python_backend.core.planning import Slice, SlicePlan
-from tests.conftest import InMemoryApprovalBatchStore, slice_agent
+from tests.conftest import FakeApply, InMemoryApprovalBatchStore
+
+PUBLISH = {
+    "action": "product.publish",
+    "params": {"product_id": 1},
+    "snapshot": {"exists": True, "status": "draft"},
+}
+
+
+def scripted_runner(executed: list[int], actions_by_no: dict[int, list[dict]] | None = None):
+    """按切片号返回收集动作的 runner:未列出的切片无审批动作(直行)。"""
+    actions_by_no = actions_by_no or {}
+
+    async def run(slice_: Slice) -> dict:
+        executed.append(slice_.no)
+        result: dict = {"agent": slice_.agent, "description": slice_.description, "executed": True}
+        if slice_.no in actions_by_no:
+            result["actions"] = actions_by_no[slice_.no]
+        return result
+
+    return run
 
 
 class ScriptedPlanner:
@@ -34,10 +55,21 @@ async def _start(graph, config: dict) -> None:
 
 
 async def _reject_pending(graph, config: dict, comment: str = "价格太低") -> None:
-    """对当前挂起中断提交 reject 决定。"""
+    """对当前挂起中断的全部批次提交 reject 决定(spec #7 载荷形状)。"""
     snapshot = await graph.aget_state(config)
-    iid = snapshot.tasks[0].interrupts[0].id
-    await graph.ainvoke(Command(resume={iid: {"decision": "reject", "comment": comment}}), config)
+    interrupt_ = snapshot.tasks[0].interrupts[0]
+    batch_id = interrupt_.value["batches"][0]["batch_id"]
+    await graph.ainvoke(
+        Command(
+            resume={
+                interrupt_.id: {
+                    "terminate": False,
+                    "decisions": {batch_id: {"decision": "reject", "comment": comment}},
+                }
+            }
+        ),
+        config,
+    )
 
 
 async def test_rejected_slice_triggers_replan_with_rejection_reason() -> None:
@@ -45,7 +77,7 @@ async def test_rejected_slice_triggers_replan_with_rejection_reason() -> None:
     plans = [
         SlicePlan(
             slices=[
-                Slice(no=1, agent="order_management", description="上架商品", approval_points=["上架审批"]),
+                Slice(no=1, agent="order_management", description="上架商品"),
                 Slice(no=2, agent="order_management", description="发上架通知", depends_on=[1]),
             ]
         ),
@@ -55,9 +87,10 @@ async def test_rejected_slice_triggers_replan_with_rejection_reason() -> None:
     executed: list[int] = []
     graph = build_supervisor(
         planner,
-        agents={"order_management": slice_agent(executed)},
+        agents={"order_management": scripted_runner(executed, {1: [PUBLISH]})},
         checkpointer=InMemorySaver(),
         batch_store=InMemoryApprovalBatchStore(),
+        apply_fn=FakeApply(),
     )
     config = {"configurable": {"thread_id": "replan-basic"}}
 
@@ -81,16 +114,17 @@ async def test_rejected_slice_triggers_replan_with_rejection_reason() -> None:
 async def test_replan_with_conflicting_slice_no_terminates_with_reason() -> None:
     """重规划切片号与已完成切片冲突 → 强制终止「未完成+原因」。"""
     plans = [
-        SlicePlan(slices=[Slice(no=1, agent="order_management", description="上架商品", approval_points=["上架审批"])]),
+        SlicePlan(slices=[Slice(no=1, agent="order_management", description="上架商品")]),
         SlicePlan(slices=[Slice(no=1, agent="order_management", description="换个方式上架")]),
     ]
     planner = ScriptedPlanner(plans)
     executed: list[int] = []
     graph = build_supervisor(
         planner,
-        agents={"order_management": slice_agent(executed)},
+        agents={"order_management": scripted_runner(executed, {1: [PUBLISH]})},
         checkpointer=InMemorySaver(),
         batch_store=InMemoryApprovalBatchStore(),
+        apply_fn=FakeApply(),
     )
     config = {"configurable": {"thread_id": "replan-conflict"}}
 
@@ -100,23 +134,21 @@ async def test_replan_with_conflicting_slice_no_terminates_with_reason() -> None
     final = await graph.aget_state(config)
     assert final.values["error"] is not None
     assert "冲突" in final.values["error"]
-    assert executed == [], "冲突计划不得执行任何切片"
+    assert executed == [1], "冲突计划不得执行新切片"
 
 
 async def test_replan_loop_hits_limit_and_terminates() -> None:
     """连续重规划超限 → 强制终止,不无限回流。"""
     # 每次重规划产出新的审批切片(切片号续编合法),连续拒绝直到回流超限
-    plans = [
-        SlicePlan(slices=[Slice(no=n, agent="order_management", description="上架商品", approval_points=["上架审批"])])
-        for n in (1, 2, 3)
-    ]
+    plans = [SlicePlan(slices=[Slice(no=n, agent="order_management", description="上架商品")]) for n in (1, 2, 3)]
     planner = ScriptedPlanner(plans)
     executed: list[int] = []
     graph = build_supervisor(
         planner,
-        agents={"order_management": slice_agent(executed)},
+        agents={"order_management": scripted_runner(executed, {1: [PUBLISH], 2: [PUBLISH], 3: [PUBLISH]})},
         checkpointer=InMemorySaver(),
         batch_store=InMemoryApprovalBatchStore(),
+        apply_fn=FakeApply(),
     )
     config = {"configurable": {"thread_id": "replan-limit"}}
 
@@ -127,4 +159,4 @@ async def test_replan_loop_hits_limit_and_terminates() -> None:
     final = await graph.aget_state(config)
     assert final.values["error"] is not None
     assert "重规划次数超限" in final.values["error"]
-    assert executed == []
+    assert executed == [1, 2, 3]

@@ -10,8 +10,8 @@ docker compose up -d                                          # 启动 Postgres 
 
 # 后端 (python-backend/,Python 版为唯一后端)
 cd python-backend
-uv run uvicorn python_backend.main:app --port 3000   # 启动(端口 3000,前端契约不变)
-uv run pytest                                        # 全部测试(阶段 5 起含 WS e2e,需 Ollama/DeepSeek 在线)
+uv run python -m python_backend.run                # 启动(端口 3000;Windows 下经 run.py 切 SelectorEventLoop——uvicorn 直接跑 main 会因 psycopg 不支持 Proactor 而启动失败)
+uv run pytest                                      # 全部测试(阶段 5 起含 WS e2e,需 Ollama/DeepSeek 在线)
 uv run python -m python_backend.seed                 # 数据播种(幂等:按自然键跳过已存在记录)
 uv run alembic upgrade head                          # 数据库迁移(12 表,含 pgvector 扩展)
 uv run ruff check .                                  # Lint (无 --fix,自动修复用 `ruff check . --fix`)

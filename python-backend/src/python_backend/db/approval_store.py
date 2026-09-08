@@ -30,11 +30,13 @@ def _to_record(row: ApprovalBatch) -> ApprovalBatchRecord:
         status=row.status,
         mode=row.mode,
         comment=row.comment,
+        result=row.result,
+        run_output=row.run_output,
     )
 
 
 class PostgresApprovalBatchStore(ApprovalBatchStore):
-    """审批批次 PG 实现(approval_batches 表,模型已随 Alembic 0001 就位)。"""
+    """审批批次 PG 实现(approval_batches 表,模型已随 Alembic 0001/0002 就位)。"""
 
     async def create_batch(
         self,
@@ -45,6 +47,7 @@ class PostgresApprovalBatchStore(ApprovalBatchStore):
         action_type: str,
         actions: list[dict],
         mode: str,
+        run_output: dict | None = None,
     ) -> ApprovalBatchRecord:
         status = initial_status(mode)
         async with SessionFactory() as session:
@@ -59,6 +62,7 @@ class PostgresApprovalBatchStore(ApprovalBatchStore):
                     status=status,
                     mode=mode,
                     requested_by="manager",
+                    run_output=run_output,
                 )
                 .on_conflict_do_nothing(index_elements=[ApprovalBatch.batch_id])
             )
@@ -90,6 +94,36 @@ class PostgresApprovalBatchStore(ApprovalBatchStore):
             rows = (
                 await session.execute(
                     select(ApprovalBatch).where(ApprovalBatch.thread_id == thread_id, ApprovalBatch.status == "pending")
+                )
+            ).scalars()
+            return [_to_record(row) for row in rows]
+
+    async def get_batch(self, *, batch_id: str) -> ApprovalBatchRecord | None:
+        async with SessionFactory() as session:
+            row = (
+                await session.execute(select(ApprovalBatch).where(ApprovalBatch.batch_id == batch_id))
+            ).scalar_one_or_none()
+            return _to_record(row) if row is not None else None
+
+    async def list_by_slice(self, thread_id: str, slice_no: int) -> list[ApprovalBatchRecord]:
+        async with SessionFactory() as session:
+            rows = (
+                await session.execute(
+                    select(ApprovalBatch)
+                    .where(ApprovalBatch.thread_id == thread_id, ApprovalBatch.slice_no == slice_no)
+                    .order_by(ApprovalBatch.created_at)
+                )
+            ).scalars()
+            return [_to_record(row) for row in rows]
+
+    async def list_open(self) -> list[ApprovalBatchRecord]:
+        """全量未决批次(pending + shadow,含 result 字段):审批中心数据源(spec #7)。"""
+        async with SessionFactory() as session:
+            rows = (
+                await session.execute(
+                    select(ApprovalBatch)
+                    .where(ApprovalBatch.status.in_(["pending", "shadow"]))
+                    .order_by(ApprovalBatch.created_at)
                 )
             ).scalars()
             return [_to_record(row) for row in rows]

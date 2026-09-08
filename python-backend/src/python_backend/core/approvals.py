@@ -22,6 +22,8 @@ class ApprovalBatchRecord:
     status: str
     mode: str
     comment: str | None = None
+    result: dict | None = None
+    run_output: dict | None = None
 
 
 class BatchAlreadyDecidedError(ValueError):
@@ -42,8 +44,33 @@ def decided_status(decision: str) -> str:
 
 
 # 三层风险分类(宪章:免审=draft 内部编辑;审批=一切对外状态变更;禁做=不暴露)。
-# 真实工具挂接在增量 4,分类表先行建立并钉死语义(B7 在增量 3 的静态分类层验收)。
-_AUTO_ACTIONS = frozenset({"draft.edit", "draft.create"})
+# 增量 4(spec #7):auto 层扩展为全部已暴露的只读/内部安全工具动作;
+# 审批层 6 动作语义不变(增量 3 钉死);未知动作默认 forbidden(禁做工具不存在)。
+_AUTO_ACTIONS = frozenset(
+    {
+        # 免审写:draft 内部编辑
+        "draft.edit",
+        "draft.create",
+        # 只读/纯函数工具(选品)
+        "trend_query",
+        "competitor_analysis",
+        "scoring",
+        "generate_report",
+        # 只读/纯函数工具(订单)
+        "list_orders",
+        "check_inventory",
+        "detect_anomalies",
+        "list_approvals",
+        # 只读/内部安全工具(客服)
+        "faq_search",
+        "order_lookup",
+        "translate",
+        "sentiment_analysis",
+        "manage_template",
+        "escalate_ticket",
+        "generate_draft",
+    }
+)
 _APPROVAL_ACTIONS = frozenset(
     {
         "product.publish",
@@ -84,11 +111,22 @@ class ApprovalBatchStore(Protocol):
         action_type: str,
         actions: list[dict],
         mode: str,
+        run_output: dict | None = None,
     ) -> ApprovalBatchRecord: ...
 
     async def decide_batch(self, *, batch_id: str, decision: str, comment: str | None = None) -> None: ...
 
     async def list_pending(self, thread_id: str) -> list[ApprovalBatchRecord]: ...
+
+    async def list_by_slice(self, thread_id: str, slice_no: int) -> list[ApprovalBatchRecord]:
+        """某线程某切片的全部批次(spec #7:durable 重放的子图缓存,存在即跳过子图重跑)。"""
+        ...
+
+    async def get_batch(self, *, batch_id: str) -> ApprovalBatchRecord | None: ...
+
+    async def list_open(self) -> list[ApprovalBatchRecord]:
+        """全量未决批次(pending + shadow):审批中心数据源(spec #7)。"""
+        ...
 
 
 # 自然消息决定意图关键词(spec #6 D4:增量 3 用确定性规则,LLM 解析留增量 4/5)
