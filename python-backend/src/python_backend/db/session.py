@@ -6,5 +6,9 @@ from python_backend.settings import get_settings
 
 DATABASE_URL = get_settings().database_url
 
-engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    connect_args={"connect_timeout": 5},  # psycopg3:DB 不可达时健康检查快速 degraded(默认超时放大至分钟级)
+)
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
