@@ -8,7 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # 单一真源:根目录 .env(compose env_file 与后端共读);多候选保兼容(cwd 在 python-backend/ 或仓库根均可)
+    model_config = SettingsConfigDict(env_file=("../.env", ".env"), env_file_encoding="utf-8", extra="ignore")
 
     # 环境剖面(宪章 Q33):dev=演练(影子可见)/ prod=生产(审批锁死)
     environment: str = "dev"
