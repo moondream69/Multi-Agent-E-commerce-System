@@ -1,39 +1,62 @@
-"""重构骨架入口:仅 /health 与基础装配;REST/WS 路由、监督图与切片机制在后续增量接入。"""
+"""重构目标态入口(增量 3 生产装配,spec #6 D1/D4):
+
+lifespan 内装配 AsyncPostgresSaver(durable interrupt)+ PG 审批批次存储;
+REST 四端点 + /health。WS 实时通道与审批中心 UI 随增量 4/5。
+"""
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
 
+import psycopg
 from fastapi import FastAPI
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import text
 
+from python_backend.api.app import create_app
+from python_backend.core.graph import default_supervisor, supervisor_serde
+from python_backend.db.approval_store import PostgresApprovalBatchStore
 from python_backend.db.session import engine
 from python_backend.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
+def build_app() -> FastAPI:
     settings = get_settings()
-    logger.info("启动:environment=%s shadow_mode=%s", settings.environment, settings.shadow_mode)
-    yield
-    await engine.dispose()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # AsyncPostgresSaver 必须在事件循环内构造(内部绑定 running loop)
+        # autocommit=True:setup() 建索引用 CREATE INDEX CONCURRENTLY(不能在事务块内)
+        conn = await psycopg.AsyncConnection.connect(conninfo=settings.postgres_dsn, connect_timeout=5, autocommit=True)
+        # ty 对 langgraph aio stubs 的 Conn 泛型报 invalid-argument-type(运行时合法,官方文档模式)
+        saver = AsyncPostgresSaver(conn, serde=supervisor_serde())  # ty: ignore
+        await saver.setup()  # checkpoint 表自建(不入 Alembic)
 
-app = FastAPI(title="Multi-Agent E-commerce System(重构目标态)", version="0.1.0", lifespan=lifespan)
+        batch_store = PostgresApprovalBatchStore()
+        graph = default_supervisor(checkpointer=saver, batch_store=batch_store, shadow_mode=settings.shadow_mode)
+        app.state.graph = graph
+        app.state.batch_store = batch_store
+        logger.info("启动:environment=%s shadow_mode=%s", settings.environment, settings.shadow_mode)
+        yield
+        await conn.close()
+        await engine.dispose()
 
+    app = create_app()
+    app.router.lifespan_context = lifespan
 
-@app.get("/health")
-async def health() -> dict:
-    db_ok = await _ping_db()
-    settings = get_settings()
-    return {
-        "status": "ok" if db_ok else "degraded",
-        "environment": settings.environment,
-        "services": {"db": db_ok},
-    }
+    @app.get("/health")
+    async def health() -> dict:
+        db_ok = await _ping_db()
+        return {
+            "status": "ok" if db_ok else "degraded",
+            "environment": settings.environment,
+            "services": {"db": db_ok},
+        }
+
+    return app
 
 
 async def _ping_db() -> bool:
@@ -44,3 +67,6 @@ async def _ping_db() -> bool:
     except Exception:  # 健康检查需吞掉一切连接错误,以 degraded 呈现
         logger.warning("数据库健康检查失败", exc_info=True)
         return False
+
+
+app = build_app()

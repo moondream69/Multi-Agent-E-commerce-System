@@ -53,6 +53,11 @@ class Settings(BaseSettings):
         return self.environment == "dev"
 
     @property
+    def postgres_dsn(self) -> str:
+        """psycopg 直连 DSN(SQLAlchemy URL 去掉 +psycopg 驱动前缀)。"""
+        return self.database_url.replace("postgresql+psycopg://", "postgresql://")
+
+    @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 

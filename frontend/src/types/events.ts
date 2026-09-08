@@ -192,38 +192,37 @@ export interface SessionMessages {
   messages: ConversationMessage[];
 }
 
-// —— 分级审批(内部卖家工具护栏)——
+// —— 切片式审批批次(增量 3:切片内同类高危动作打包,批内同进同退)——
 
-export type ApprovalStatus =
-  'pending' | 'approved' | 'rejected' | 'expired' | 'shadow' | 'executed';
+export type ApprovalBatchStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'expired'
+  | 'shadow'
+  | 'executed';
 
-export interface ApprovalRequest {
-  id: string;
-  toolName: string;
-  params: Record<string, unknown>;
-  agentId: string | null;
-  taskId: string | null;
-  requestedBy: string | null;
-  status: ApprovalStatus;
+export interface ApprovalBatch {
+  batchId: string;
+  threadId: string;
+  sliceNo: number;
+  actionType: string;
+  actions: { description: string; approvalPoints: string[] }[];
+  status: ApprovalBatchStatus;
   mode: 'approval' | 'shadow';
-  result: Record<string, unknown> | null;
-  decidedBy: string | null;
-  decidedAt: string | null;
   comment: string | null;
-  createdAt: string;
 }
 
 export interface ApprovalRequestedPayload {
-  approvalId: string;
-  toolName?: string;
-  params?: unknown;
-  mode?: 'approval' | 'shadow';
+  batchId: string;
+  threadId: string;
+  sliceNo: number;
+  actionType: string;
+  mode: 'approval' | 'shadow';
 }
 
 export interface ApprovalDecidedPayload {
-  approvalId: string;
-  toolName?: string;
-  approve?: boolean;
-  decidedBy?: string;
+  batchId: string;
+  decision: 'approve' | 'reject';
   comment?: string | null;
 }
