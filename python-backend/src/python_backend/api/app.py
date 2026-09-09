@@ -12,6 +12,7 @@ WS 实时通道与审批中心 UI 见 api/ws(spec #7)。
 
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
 from typing import Literal
@@ -55,6 +56,8 @@ from python_backend.db.models import Product, User
 from python_backend.db.session import SessionFactory
 from python_backend.db.task_store import create_task_row, get_task, list_tasks, task_session, update_task_row
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
+
+logger = logging.getLogger(__name__)
 
 
 class TaskCreateRequest(BaseModel):
@@ -128,10 +131,14 @@ async def _converge_failed_task(thread_id: str, emitter: EventEmitter, error: Ex
     """未预期异常兜底(issue #10):任务行收敛 failed + 广播 task.failed,不留悬挂 in_progress。
 
     调用方随后原样上抛——编程错误保留 500 观测,不许静默吞掉。
+    兜底自身尽力而为:落库/广播再失败只记日志,不遮蔽原始异常。
     """
     reason = f"{type(error).__name__}: {error}"
-    await update_task_row(thread_id=thread_id, status="failed", result={"summary": None, "error": reason})
-    await emitter.emit("task.failed", {"threadId": thread_id, "status": "failed", "error": reason})
+    try:
+        await update_task_row(thread_id=thread_id, status="failed", result={"summary": None, "error": reason})
+        await emitter.emit("task.failed", {"threadId": thread_id, "status": "failed", "error": reason})
+    except Exception:
+        logger.exception("任务 %s 失败兜底未完成(原始异常仍上抛)", thread_id)
 
 
 async def _resume(
@@ -146,38 +153,39 @@ async def _resume(
 ) -> dict:
     """组装好的 resume_map 驱动图恢复,统一响应形状;完成后广播任务终态事件。
 
-    恢复中的任何未预期异常同样收敛(issue #10):行 failed + task.failed 广播后原样上抛。
+    恢复与随后的簿记(刷新计划/落行/记忆)任一步抛错都兜底收敛(issue #10):
+    行 failed + task.failed 广播后原样上抛;响应体 status 与行/事件如实一致。
     """
     try:
         with tracer.trace(thread_id):
             result = await graph.ainvoke(Command(resume=resume_map), _config(thread_id))
+        if "__interrupt__" in result:
+            # 下一层切片又挂起:如实广播(多层切片任务不只一次中断)
+            await emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})
+            return {"status": "interrupted"}
+        status = "failed" if result.get("error") else "completed"
+        await emitter.emit(f"task.{status}", {"threadId": thread_id, "status": status, "error": result.get("error")})
+        # 图状态为最新规划(含重规划):刷新任务行切片计划,驾驶舱时间线展示重规划后的段
+        snapshot = await graph.aget_state(_config(thread_id))
+        refreshed_plan = _plan_payload(snapshot.values.get("plan")) if snapshot.values else None
+        await update_task_row(
+            thread_id=thread_id,
+            status=status,
+            slice_plan=refreshed_plan,
+            result={"summary": result.get("summary"), "error": result.get("error")},
+        )
+        if memory is not None and session_id and (result.get("summary") or result.get("error")):
+            await memory.record(
+                session_id,
+                user_id,
+                role="assistant",
+                content=str(result.get("summary") or result.get("error")),
+                task_id=thread_id,
+            )
+        return {"status": status, "error": result.get("error"), "summary": result.get("summary")}
     except Exception as error:
         await _converge_failed_task(thread_id, emitter, error)
         raise
-    if "__interrupt__" in result:
-        # 下一层切片又挂起:如实广播(多层切片任务不只一次中断)
-        await emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})
-        return {"status": "interrupted"}
-    status = "failed" if result.get("error") else "completed"
-    await emitter.emit(f"task.{status}", {"threadId": thread_id, "status": status, "error": result.get("error")})
-    # 图状态为最新规划(含重规划):刷新任务行切片计划,驾驶舱时间线展示重规划后的段
-    snapshot = await graph.aget_state(_config(thread_id))
-    refreshed_plan = _plan_payload(snapshot.values.get("plan")) if snapshot.values else None
-    await update_task_row(
-        thread_id=thread_id,
-        status=status,
-        slice_plan=refreshed_plan,
-        result={"summary": result.get("summary"), "error": result.get("error")},
-    )
-    if memory is not None and session_id and (result.get("summary") or result.get("error")):
-        await memory.record(
-            session_id,
-            user_id,
-            role="assistant",
-            content=str(result.get("summary") or result.get("error")),
-            task_id=thread_id,
-        )
-    return {"status": "completed", "error": result.get("error"), "summary": result.get("summary")}
 
 
 def _serialize_batch(record) -> dict:
@@ -319,38 +327,38 @@ def create_app(
                 result = await app.state.graph.ainvoke(
                     SupervisorState(request=body.request, thread_id=thread_id, context=context), _config(thread_id)
                 )
+            if "__interrupt__" in result:
+                await update_task_row(thread_id=thread_id, status="interrupted")
+                await app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})
+                return {"thread_id": thread_id, "status": "interrupted"}
+            status = "failed" if result.get("error") else "completed"
+            await update_task_row(
+                thread_id=thread_id,
+                status=status,
+                slice_plan=_plan_payload(result.get("plan")),
+                result={"summary": result.get("summary"), "error": result.get("error")},
+            )
+            await app.state.emitter.emit(
+                f"task.{status}", {"threadId": thread_id, "status": status, "error": result.get("error")}
+            )
+            if result.get("summary") or result.get("error"):
+                await app.state.memory.record(
+                    session_id,
+                    user_id,
+                    role="assistant",
+                    content=str(result.get("summary") or result.get("error")),
+                    task_id=thread_id,
+                )
+            return {
+                "thread_id": thread_id,
+                "status": status,
+                "error": result.get("error"),
+                "summary": result.get("summary"),
+            }
         except Exception as error:
-            # 未预期异常兜底(issue #10):行 failed + task.failed 广播后原样上抛(500 保留观测)
+            # 图执行与其后簿记任一步抛错都兜底收敛(issue #10):行 failed + task.failed 后原样上抛
             await _converge_failed_task(thread_id, app.state.emitter, error)
             raise
-        if "__interrupt__" in result:
-            await update_task_row(thread_id=thread_id, status="interrupted")
-            await app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})
-            return {"thread_id": thread_id, "status": "interrupted"}
-        status = "failed" if result.get("error") else "completed"
-        await update_task_row(
-            thread_id=thread_id,
-            status=status,
-            slice_plan=_plan_payload(result.get("plan")),
-            result={"summary": result.get("summary"), "error": result.get("error")},
-        )
-        await app.state.emitter.emit(
-            f"task.{status}", {"threadId": thread_id, "status": status, "error": result.get("error")}
-        )
-        if result.get("summary") or result.get("error"):
-            await app.state.memory.record(
-                session_id,
-                user_id,
-                role="assistant",
-                content=str(result.get("summary") or result.get("error")),
-                task_id=thread_id,
-            )
-        return {
-            "thread_id": thread_id,
-            "status": status,
-            "error": result.get("error"),
-            "summary": result.get("summary"),
-        }
 
     @app.post("/api/drafting")
     async def drafting(body: DraftingRequest) -> dict:

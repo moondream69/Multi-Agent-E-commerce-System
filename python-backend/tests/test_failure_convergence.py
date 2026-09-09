@@ -65,10 +65,22 @@ def _two_slice_plan() -> SlicePlan:
     )
 
 
+class FailingMemory:
+    """记忆写入失败(仅助手侧):模拟图成功后的簿记失败(端点尾部兜底的注入点)。"""
+
+    async def get_context(self, session_id: str, user_id: int | None) -> str | None:
+        return None
+
+    async def record(self, session_id, user_id, *, role: str, content: str, task_id: str | None = None) -> None:
+        if role == "assistant":
+            raise RuntimeError("记忆写入失败")
+
+
 def _make_client(
     agents: dict,
     *,
     plan: SlicePlan | None = None,
+    memory=None,
     raise_app_exceptions: bool = True,
 ) -> tuple[TestClient, InMemoryApprovalBatchStore, RecordingEmitter]:
     store = InMemoryApprovalBatchStore()
@@ -83,17 +95,19 @@ def _make_client(
         emitter=emitter,
     )
     client = TestClient(
-        create_app(graph=graph, batch_store=store, apply_fn=apply_fn, emitter=emitter, auth_required=False),
+        create_app(
+            graph=graph, batch_store=store, apply_fn=apply_fn, emitter=emitter, memory=memory, auth_required=False
+        ),
         raise_server_exceptions=raise_app_exceptions,
     )
     return client, store, emitter
 
 
-def _start_and_approve(client: TestClient) -> None:
-    """发起两切片任务 → 切片 1 挂审批 → 批准 → 切片 2 在恢复中执行。"""
+def _start_and_approve(client: TestClient):
+    """发起两切片任务 → 切片 1 挂审批 → 批准 → 切片 2 在恢复中执行;返回 resume 响应。"""
     thread_id = client.post("/api/tasks", json={"request": "上架并回复"}).json()["thread_id"]
     batch_id = client.get(f"/api/threads/{thread_id}/approvals").json()["approvals"][0]["batchId"]
-    client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve", "comment": ""}})
+    return client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve", "comment": ""}})
 
 
 # —— 接缝 1:make_agent_runner 单点捕获(三个业务 Agent 共用) ——
@@ -184,7 +198,7 @@ def test_create_task_unexpected_error_converges_then_raises() -> None:
 
 
 def test_resume_llm_failure_converges_and_broadcasts() -> None:
-    """恢复入口:恢复中 LLM 失败同样收敛,广播 task.failed。"""
+    """恢复入口:恢复中 LLM 失败同样收敛,广播 task.failed,响应体 status 如实。"""
     client, _store, emitter = _make_client(
         {
             "order_management": slice_agent([], actions=[PUBLISH]),
@@ -193,10 +207,13 @@ def test_resume_llm_failure_converges_and_broadcasts() -> None:
         plan=_two_slice_plan(),
     )
 
-    _start_and_approve(client)
+    response = _start_and_approve(client)
 
     assert "task.interrupted" in emitter.names()
     assert "task.failed" in emitter.names(), "恢复中失败须广播终态,不留悬挂"
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed", "响应体不得在失败恢复上报 completed(与行/事件一致)"
+    assert "HTTP 400" in response.json()["error"]
 
 
 def test_resume_unexpected_error_converges_then_raises() -> None:
@@ -218,6 +235,21 @@ def test_resume_unexpected_error_converges_then_raises() -> None:
     assert "task.failed" in emitter.names()
 
 
+# —— 接缝 3:图成功后的簿记失败(端点尾部兜底) ——
+
+
+def test_post_graph_bookkeeping_failure_converges_then_raises() -> None:
+    """图跑完后的簿记(记忆落库)失败 → 同样收敛行/广播,端点 500。"""
+    client, _store, emitter = _make_client(
+        {"order_management": slice_agent([], answer="完成")}, memory=FailingMemory(), raise_app_exceptions=False
+    )
+
+    response = client.post("/api/tasks", json={"request": "上架商品"})
+
+    assert response.status_code == 500
+    assert "task.failed" in emitter.names()
+
+
 # —— 任务行收敛(PG 集成;离线秒 skip) ——
 
 
@@ -230,7 +262,13 @@ async def _seed_user() -> tuple[int, str]:
         return user.id, username
 
 
-def _authed_client(agents: dict, *, plan: SlicePlan | None = None, raise_app_exceptions: bool = True) -> AsyncClient:
+def _authed_client(
+    agents: dict,
+    *,
+    plan: SlicePlan | None = None,
+    memory=None,
+    raise_app_exceptions: bool = True,
+) -> AsyncClient:
     store = InMemoryApprovalBatchStore()
     emitter = RecordingEmitter()
     apply_fn = FakeApply()
@@ -244,7 +282,14 @@ def _authed_client(agents: dict, *, plan: SlicePlan | None = None, raise_app_exc
     )
     return AsyncClient(
         transport=ASGITransport(
-            app=create_app(graph=graph, batch_store=store, apply_fn=apply_fn, emitter=emitter, auth_required=True),
+            app=create_app(
+                graph=graph,
+                batch_store=store,
+                apply_fn=apply_fn,
+                emitter=emitter,
+                memory=memory,
+                auth_required=True,
+            ),
             raise_app_exceptions=raise_app_exceptions,
         ),
         base_url="http://test",
@@ -297,6 +342,25 @@ async def test_resume_row_failed_with_reason() -> None:
         detail = await client.get(f"/api/tasks/{thread_id}")
         assert detail.json()["status"] == "failed"
         assert "HTTP 400" in detail.json()["result"]["error"]
+
+
+@pytest.mark.integration
+async def test_task_row_failed_on_post_graph_error() -> None:
+    """图成功后的簿记失败:行同样收敛 failed(不留 in_progress),端点 500。"""
+    _require_postgres()
+    user_id, username = await _seed_user()
+    session = f"fail-post-graph-{uuid.uuid4().hex[:8]}"
+    client = _authed_client(
+        {"order_management": slice_agent([], answer="完成")}, memory=FailingMemory(), raise_app_exceptions=False
+    )
+    client.headers.update({"Authorization": f"Bearer {create_token(username, user_id)}"})
+    async with client:
+        response = await client.post("/api/tasks", json={"request": "上架商品", "session_id": session})
+        assert response.status_code == 500
+
+        listing = await client.get("/api/tasks", params={"session_id": session})
+        tasks = listing.json()["tasks"]
+        assert len(tasks) == 1 and tasks[0]["status"] == "failed"
 
 
 @pytest.mark.integration

@@ -99,7 +99,7 @@ async def test_resume_reject_updates_batch_and_replans() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["status"] == "failed", "冲突终止以 failed 如实呈现(与行/事件一致)"
     batch = await store.get_batch(batch_id=batch_id)
     assert batch is not None
     assert batch.status == "rejected"
@@ -166,7 +166,7 @@ async def test_natural_message_terminate_ends_thread_without_replan() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["status"] == "failed", "终止以 failed 终态如实呈现(与行/事件一致)"
     assert body["error"] == "用户终止任务"
     batch = store.batches[0]
     assert batch.status == "rejected"
