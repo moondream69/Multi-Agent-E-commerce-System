@@ -31,7 +31,11 @@ def make_client(*, shadow_mode: bool = False) -> tuple[TestClient, InMemoryAppro
         shadow_mode=shadow_mode,
         apply_fn=apply_fn,
     )
-    return TestClient(create_app(graph=graph, batch_store=store, apply_fn=apply_fn)), store, apply_fn
+    return (
+        TestClient(create_app(graph=graph, batch_store=store, apply_fn=apply_fn, auth_required=False)),
+        store,
+        apply_fn,
+    )
 
 
 async def test_create_task_interrupts_with_batches() -> None:

@@ -54,7 +54,7 @@ async def test_approval_batch_response_keys_match_contract() -> None:
         checkpointer=InMemorySaver(),
         batch_store=store,
     )
-    client = TestClient(create_app(graph=graph, batch_store=store))
+    client = TestClient(create_app(graph=graph, batch_store=store, auth_required=False))
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
 
     approvals = client.get(f"/api/threads/{thread_id}/approvals").json()["approvals"]
@@ -82,3 +82,42 @@ def test_approval_event_names_present() -> None:
     text = EVENTS_TS.read_text(encoding="utf-8")
     assert "APPROVAL_REQUESTED: 'approval.requested'" in text
     assert "APPROVAL_DECIDED: 'approval.decided'" in text
+
+
+async def test_actions_metadata_matches_contract() -> None:
+    """GET /api/actions 响应键 == ts ActionMeta 接口字段(spec #8 注册表单一化)。"""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(auth_required=False))
+    actions = client.get("/api/actions").json()["actions"]
+    expected = _ts_interface_fields("ActionMeta")
+    assert actions and set(actions[0]) == expected, f"响应键 {set(actions[0])} 应等于契约字段 {expected}"
+
+
+async def test_task_list_matches_contract() -> None:
+    """任务列表契约字段(spec #8 驾驶舱):字段集钉死,防接口意外漂移。
+
+    响应键的真实对照在 test_task_api 集成测试(需 PG 落任务行);此处锁 ts 接口形状。
+    """
+    expected = _ts_interface_fields("TaskListItem")
+    assert expected == {"threadId", "sessionId", "type", "status", "title", "createdAt"}
+
+
+async def test_drafting_response_matches_contract() -> None:
+    """POST /api/drafting 响应键 == ts DraftingResponse 接口字段(spec #8 B11)。"""
+    from fastapi.testclient import TestClient
+
+    from python_backend.core.drafting import DraftingService
+    from tests.conftest import FakeLlm
+
+    client = TestClient(create_app(auth_required=False, drafting=DraftingService(llm=FakeLlm(responses=["草稿"]))))
+    body = client.post("/api/drafting", json={"message": "你好", "locale": "zh"}).json()
+    expected = _ts_interface_fields("DraftingResponse")
+    assert set(body) == expected, f"响应键 {set(body)} 应等于契约字段 {expected}"
+    assert set(body["evidence"]) == _ts_interface_fields("DraftingEvidence")
+
+
+async def test_login_response_matches_contract() -> None:
+    """登录响应键 == ts LoginResponse 接口字段(spec #8 A1)。"""
+    expected = _ts_interface_fields("LoginResponse")
+    assert expected == {"token", "username"}

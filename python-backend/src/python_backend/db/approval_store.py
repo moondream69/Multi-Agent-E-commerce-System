@@ -127,3 +127,13 @@ class PostgresApprovalBatchStore(ApprovalBatchStore):
                 )
             ).scalars()
             return [_to_record(row) for row in rows]
+
+    async def list_by_thread(self, thread_id: str) -> list[ApprovalBatchRecord]:
+        """某线程全部批次(驾驶舱任务详情数据源,spec #8)。"""
+        async with SessionFactory() as session:
+            rows = (
+                await session.execute(
+                    select(ApprovalBatch).where(ApprovalBatch.thread_id == thread_id).order_by(ApprovalBatch.created_at)
+                )
+            ).scalars()
+            return [_to_record(row) for row in rows]

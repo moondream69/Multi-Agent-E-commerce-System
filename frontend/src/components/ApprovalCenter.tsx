@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   decideBatches,
   executeShadowBatch,
+  fetchActionMetadata,
   fetchOpenApprovals,
 } from '../services/approvals';
 import { useApprovalEvents } from '../hooks/useApprovalEvents';
@@ -12,16 +13,8 @@ import {
 } from '../types/events';
 import { theme } from '../theme';
 
-// —— 动作/参数/状态的台账标签(系统术语 → 中文台账口径)——
-
-const ACTION_LABELS: Record<string, string> = {
-  'product.publish': '上架',
-  'product.unpublish': '下架',
-  'product.update_price': '改价',
-  'product.delete': '删除',
-  'order.transition': '订单流转',
-  'order.cancel': '取消订单',
-};
+// —— 参数/状态的台账标签(系统术语 → 中文台账口径)——
+// 动作标签由 GET /api/actions 提供(spec #8 注册表单一化,不再硬编码)。
 
 const PARAM_LABELS: Record<string, string> = {
   product_id: '商品',
@@ -55,8 +48,8 @@ const STATUS_LABELS: Record<ApprovalBatchStatus, string> = {
   executed: '已执行',
 };
 
-function actionLabel(action: string): string {
-  return ACTION_LABELS[action] ?? action;
+function actionLabel(action: string, labels: Record<string, string>): string {
+  return labels[action] ?? action;
 }
 
 function paramLabel(key: string): string {
@@ -86,7 +79,13 @@ function displayValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function ActionRow({ item }: { item: ApprovalActionSnapshot }) {
+function ActionRow({
+  item,
+  labels,
+}: {
+  item: ApprovalActionSnapshot;
+  labels: Record<string, string>;
+}) {
   const params = Object.entries(item.params ?? {});
   const snapshot = item.snapshot ?? {};
   const target =
@@ -115,7 +114,7 @@ function ActionRow({ item }: { item: ApprovalActionSnapshot }) {
         <span
           style={{ fontSize: 13, color: theme.color.text, fontWeight: 500 }}
         >
-          {title ?? actionLabel(item.action)}
+          {title ?? actionLabel(item.action, labels)}
         </span>
         <span
           style={{
@@ -148,6 +147,7 @@ function BatchCard({
   decision,
   comment,
   busy,
+  labels,
   onDecision,
   onComment,
   onExecute,
@@ -156,6 +156,7 @@ function BatchCard({
   decision: Decision | null;
   comment: string;
   busy: boolean;
+  labels: Record<string, string>;
   onDecision: (d: Decision) => void;
   onComment: (c: string) => void;
   onExecute: () => void;
@@ -212,7 +213,7 @@ function BatchCard({
               color: isShadow ? theme.color.warning : theme.color.brand,
             }}
           >
-            {actionLabel(batch.actionType)}
+            {actionLabel(batch.actionType, labels)}
           </span>
           {isShadow && (
             <span style={{ fontSize: 11, color: theme.color.warning }}>
@@ -230,7 +231,11 @@ function BatchCard({
           </span>
         </div>
         {batch.actions.map((item, index) => (
-          <ActionRow key={`${batch.batchId}-${index}`} item={item} />
+          <ActionRow
+            key={`${batch.batchId}-${index}`}
+            item={item}
+            labels={labels}
+          />
         ))}
         <div
           style={{
@@ -325,11 +330,26 @@ function BatchCard({
 export function ApprovalCenter() {
   const [batches, setBatches] = useState<ApprovalBatch[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [actionLabels, setActionLabels] = useState<Record<string, string>>({});
   const [decisions, setDecisions] = useState<
     Record<string, { decision: Decision; comment: string }>
   >({});
   const [busyThread, setBusyThread] = useState<string | null>(null);
   const [busyBatch, setBusyBatch] = useState<string | null>(null);
+
+  // 动作标签来自 GET /api/actions(spec #8 注册表单一化);加载失败不阻断审批中心,
+  // actionLabel 兜底显示原始动作标识。
+  useEffect(() => {
+    fetchActionMetadata()
+      .then((rows) => {
+        setActionLabels(
+          Object.fromEntries(rows.map((row) => [row.action, row.label])),
+        );
+      })
+      .catch(() => {
+        /* 标签加载失败:降级原始标识,审批中心仍可用 */
+      });
+  }, []);
 
   const refresh = useCallback(() => {
     fetchOpenApprovals()
@@ -576,6 +596,7 @@ export function ApprovalCenter() {
                     busy={
                       busyBatch === batch.batchId || busyThread === threadId
                     }
+                    labels={actionLabels}
                     onDecision={(d) => setDecision(batch.batchId, d)}
                     onComment={(c) =>
                       setDecisions((prev) => ({

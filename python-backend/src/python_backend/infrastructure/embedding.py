@@ -7,9 +7,17 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import httpx
 
 from python_backend.settings import get_settings
+
+
+class EmbeddingClient(Protocol):
+    """向量化协议:executor/drafting 共享的注入接缝(测试假实现)。"""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
 class EmbeddingService:

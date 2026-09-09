@@ -99,18 +99,23 @@ class InMemoryApprovalBatchStore:
     async def list_open(self) -> list[ApprovalBatchRecord]:
         return [r for r in self._by_id.values() if r.status in ("pending", "shadow")]
 
+    async def list_by_thread(self, thread_id: str) -> list[ApprovalBatchRecord]:
+        return [r for r in self._by_id.values() if r.thread_id == thread_id]
+
 
 class StubPlanner:
-    """规划器桩:固定计划(默认单审批切片),捕获每次规划收到的请求文本。"""
+    """规划器桩:固定计划(默认单审批切片),捕获每次规划收到的请求文本与上下文。"""
 
     def __init__(self, plan: SlicePlan | None = None) -> None:
         self._plan = plan or SlicePlan(
             slices=[Slice(no=1, agent="order_management", description="上架商品", approval_points=["上架审批"])]
         )
         self.requests: list[str] = []
+        self.contexts: list[str | None] = []
 
-    async def plan(self, request: str) -> SlicePlan:
+    async def plan(self, request: str, context: str | None = None) -> SlicePlan:
         self.requests.append(request)
+        self.contexts.append(context)
         return self._plan
 
 

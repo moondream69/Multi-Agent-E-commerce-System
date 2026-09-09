@@ -12,15 +12,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Protocol
+from typing import Protocol
 
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 
+from python_backend.agents.registry import REGISTRY
 from python_backend.db.models import (
     ApprovalBatch,
     ApprovalStatus,
@@ -32,8 +35,10 @@ from python_backend.db.models import (
     Ticket,
 )
 from python_backend.db.session import SessionFactory
-from python_backend.infrastructure.embedding import EmbeddingService
+from python_backend.infrastructure.embedding import EmbeddingClient, EmbeddingService
+from python_backend.infrastructure.fx import CNY, FxService, FxUnavailableError
 from python_backend.infrastructure.llm import LlmClient, LlmService
+from python_backend.settings import get_settings
 from python_backend.vector_repo.base import VectorRepository
 
 # 工具名 → 动作标识:仅草稿与对外状态变更动作用 dotted 标识(增量 3 钉死),
@@ -47,6 +52,7 @@ _ACTION_IDS = {
     "product_delete": "product.delete",
     "order_transition": "order.transition",
     "order_cancel": "order.cancel",
+    "order_create": "order.create",
 }
 
 
@@ -81,18 +87,103 @@ class ApplyResult:
 ApplyFunction = Callable[[str, list[dict]], Awaitable[ApplyResult]]
 
 
+class OrderCreationError(Exception):
+    """下单参数非法(商品不存在/金额非法/汇率不可用包装层之外)。"""
+
+
+class InsufficientStockError(OrderCreationError):
+    """库存不足(负数防护):下单入口 409 如实报错;apply 侧包装为 ApplyConflict。"""
+
+
+class FxProvider(Protocol):
+    """汇率提供者协议(下单/apply 依赖的子集):测试注入假实现。"""
+
+    async def get_rate_cny(self, currency: str) -> Decimal: ...
+
+
+# 默认汇率服务:按事件循环惰性缓存(llm 并发闸同款模式,单进程模型下各 loop 独立)。
+_fx_services: dict[asyncio.AbstractEventLoop, FxService] = {}
+
+
+def default_fx() -> FxService:
+    """默认汇率服务(真实 API + 设置中 Redis 缓存):apply 与下单入口的缺省实现。"""
+    loop = asyncio.get_running_loop()
+    service = _fx_services.get(loop)
+    if service is None:
+        # redis.asyncio.Redis 的 get 泛型与 FxCache 协议结构不完全对齐(运行时合法)
+        service = _fx_services[loop] = FxService(
+            redis=Redis(host=get_settings().redis_host, port=get_settings().redis_port)  # ty: ignore[invalid-argument-type]
+        )
+    return service
+
+
+def _deduct_and_build_order(product: Product, params: dict, fx_rate: Decimal) -> Order:
+    """「金额校验 → 库存校验 → 扣减 → Order 构造」共享核心(spec #8 B9:单一数据路径)。
+
+    商品行须已由调用方加锁;校验失败抛 OrderCreationError/InsufficientStockError,
+    由入口透传(409)或 apply 侧包装为 ApplyConflict(整批不执行)。
+    """
+    try:
+        amount = Decimal(str(params["total_amount"]))
+    except InvalidOperation as error:
+        raise OrderCreationError(f"订单金额非法:{params['total_amount']!r}") from error
+    if amount <= 0:
+        raise OrderCreationError(f"订单金额非法:{params['total_amount']!r}")
+    if product.stock < 1:
+        raise InsufficientStockError(f"商品 {product.id} 库存不足")
+    product.stock -= 1
+    return Order(
+        product_id=product.id,
+        customer_id=params.get("customer_id"),
+        status=OrderStatus.PENDING,
+        total_amount=amount,
+        currency=params.get("currency") or "USD",
+        fx_rate=fx_rate,
+        fx_base_currency=CNY,
+        platform=params.get("platform"),
+        reference=params.get("reference"),
+    )
+
+
+async def create_order_with_stock(
+    *,
+    product_id: int,
+    total_amount: Decimal | str,
+    currency: str = "USD",
+    customer_id: int | None = None,
+    platform: str | None = None,
+    reference: str | None = None,
+    fx_service: FxProvider | None = None,
+) -> dict:
+    """「创建订单 + 扣减库存」共享服务(spec #8 B9):REST 下单与直接入口共用同一数据路径。
+
+    汇率快照在行锁外获取(网络调用不持锁);事务内行锁商品 → 库存校验(负数防护)
+    → 扣减 → 订单落库(快照基准 CNY)。stock<1 抛 InsufficientStockError,由入口映射 409。
+    """
+    rate = await (fx_service or default_fx()).get_rate_cny(currency)
+    async with SessionFactory() as session, session.begin():
+        product = await session.get(Product, product_id, with_for_update=True)
+        if product is None:
+            raise OrderCreationError(f"商品 {product_id} 不存在")
+        params = {
+            "total_amount": total_amount,
+            "currency": currency,
+            "customer_id": customer_id,
+            "platform": platform,
+            "reference": reference,
+        }
+        order = _deduct_and_build_order(product, params, rate)  # 与 apply 同一数据路径
+        session.add(order)
+        await session.flush()  # 取得自增 id(退出事务时提交)
+        return _order_to_dict(order)
+
+
 class Executor(Protocol):
     """工具执行器协议:子图依赖此协议而非具体实现(测试注入假执行器)。"""
 
     async def execute(self, action: str, params: dict) -> dict: ...
 
     async def capture(self, action: str, params: dict) -> dict: ...
-
-
-class EmbeddingClient(Protocol):
-    """向量化协议(与 infrastructure.embedding.EmbeddingService 结构一致,测试注入假实现)。"""
-
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
 class ToolExecutor:
@@ -109,13 +200,13 @@ class ToolExecutor:
         self._vector = vector
         self._embedding = embedding or EmbeddingService()
 
-    # —— execute:auto 动作直行 ——
+    # —— execute:auto 动作直行(分发读动作注册表)——
 
     async def execute(self, action: str, params: dict) -> dict:
-        handler = _EXECUTE_HANDLERS.get(action)
-        if handler is None:
+        spec = REGISTRY.get(action)
+        if spec is None or spec.execute is None:
             raise ValueError(f"未知动作:{action}")
-        return await handler(self, params)
+        return await spec.execute(self, params)
 
     async def _execute_translate(self, params: dict) -> dict:
         text, locale = params["text"], params["target_locale"]
@@ -205,14 +296,14 @@ class ToolExecutor:
     async def _execute_faq_search(self, params: dict) -> dict:
         return await self._execute_search("faq", params["query"])
 
-    # —— capture:approval 动作现状快照(apply 漂移比对基准)——
+    # —— capture:approval 动作现状快照(apply 漂移比对基准;分发读动作注册表)——
 
     async def capture(self, action: str, params: dict) -> dict:
-        handler = _CAPTURE_HANDLERS.get(action)
-        if handler is None:
+        spec = REGISTRY.get(action)
+        if spec is None or spec.capture is None:
             raise ValueError(f"动作 {action} 无快照处理(非法审批动作)")
         async with SessionFactory() as session:
-            return await handler(session, params)
+            return await spec.capture(session, params)
 
     # —— apply:事务内执行已批动作 ——
 
@@ -238,24 +329,29 @@ async def _capture_order(session, params: dict) -> dict:
     return {"exists": True, "status": order.status.value, "product_id": order.product_id}
 
 
-_CAPTURE_HANDLERS: dict[str, Any] = {
-    "product.publish": _capture_product,
-    "product.unpublish": _capture_product,
-    "product.delete": _capture_product,
-    "product.update_price": _capture_price,
-    "order.transition": _capture_order,
-    "order.cancel": _capture_order,
-}
+async def _capture_order_create(session, params: dict) -> dict:
+    """order.create 快照:商品现状(stock 供人类可读,apply 只校验存在与库存充足性)。"""
+    product = await session.get(Product, params["product_id"])
+    if product is None:
+        return {"exists": False}
+    return {"exists": True, "stock": product.stock, "title": product.title, "price": str(product.price)}
 
 
-async def apply_batch_actions(batch_id: str, actions: list[dict]) -> ApplyResult:
+async def apply_batch_actions(batch_id: str, actions: list[dict], *, fx: FxProvider | None = None) -> ApplyResult:
     """事务内执行一批已批/待补执行动作:全部成功才提交,任一漂移/非法整批回滚(批内同进同退,B18)。
 
     批次落 executed 与效果同事务(无中间窗口):durable 重放时批次已 executed → 幂等跳过,
     不会因重放再次执行或误报漂移冲突。状态为 shadow 的批次(演练补执行)同样可执行。
+    order.create 的汇率快照在行锁外预取(网络不持锁);API 失效且缓存为空 → 整批不执行、
+    如实上报(与 REST 下单同一降级语义)。fx 可注入(测试假实现)。
     """
     if not actions:
         return ApplyResult(applied=True)
+    try:
+        fx_rates = await _prefetch_fx_rates(actions, fx)
+    except FxUnavailableError as error:
+        await _record_apply_failure(batch_id, str(error))
+        return ApplyResult(applied=False, reason=str(error))
     try:
         async with SessionFactory() as session, session.begin():
             row = (
@@ -268,14 +364,26 @@ async def apply_batch_actions(batch_id: str, actions: list[dict]) -> ApplyResult
             if row.status not in ("approved", "shadow"):
                 raise ApplyConflict(f"批次 {batch_id} 状态非法({row.status}),不可执行")
             await _lock_targets(session, actions)
-            for item in actions:
-                await _apply_one(session, item["action"], item["params"], item["snapshot"])
+            for index, item in enumerate(actions):
+                await _apply_one(session, item["action"], item["params"], item["snapshot"], fx_rates[index])
             row.status = ApprovalStatus.EXECUTED
             row.result = {"applied": True}
     except ApplyConflict as error:
         await _record_apply_failure(batch_id, str(error))
         return ApplyResult(applied=False, reason=str(error))
     return ApplyResult(applied=True)
+
+
+async def _prefetch_fx_rates(actions: list[dict], fx: FxProvider | None) -> list[Decimal | None]:
+    """order.create 动作的汇率快照预取(行锁外):非该动作占位 None,索引与 actions 对齐。"""
+    rates: list[Decimal | None] = [None] * len(actions)
+    if not any(item["action"] == "order.create" for item in actions):
+        return rates
+    service = fx or default_fx()
+    for index, item in enumerate(actions):
+        if item["action"] == "order.create":
+            rates[index] = await service.get_rate_cny(item["params"].get("currency") or "USD")
+    return rates
 
 
 async def _record_apply_failure(batch_id: str, reason: str) -> None:
@@ -291,7 +399,8 @@ async def _record_apply_failure(batch_id: str, reason: str) -> None:
 
 
 def _lock_key(action: str) -> str:
-    return "product" if action.startswith("product") else "order"
+    # order.create 扣商品库存,锁目标是商品行(与订单流转/取消锁订单行不同)
+    return "product" if action.startswith("product") or action == "order.create" else "order"
 
 
 def _lock_id(action: str, params: dict) -> str:
@@ -302,7 +411,7 @@ async def _lock_targets(session, actions: list[dict]) -> None:
     """行锁(串行化并发任务对同一行的操作),按 (表, id) 排序加锁防死锁。"""
     for item in sorted(actions, key=lambda a: (_lock_key(a["action"]), _lock_id(a["action"], a["params"]))):
         action = item["action"]
-        if action.startswith("product"):
+        if action.startswith("product") or action == "order.create":
             await session.execute(
                 select(Product.id).where(Product.id == item["params"]["product_id"]).with_for_update()
             )
@@ -310,8 +419,11 @@ async def _lock_targets(session, actions: list[dict]) -> None:
             await session.execute(select(Order.id).where(Order.id == item["params"]["order_id"]).with_for_update())
 
 
-async def _apply_one(session, action: str, params: dict, snapshot: dict) -> None:
-    await _APPLY_HANDLERS[action](session, params, snapshot)
+async def _apply_one(session, action: str, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
+    spec = REGISTRY.get(action)
+    if spec is None or spec.apply is None:
+        raise ApplyConflict(f"动作 {action} 无 apply 处理(非法审批动作)")
+    await spec.apply(session, params, snapshot, fx_rate)  # 非 order.create 处理器忽略该参数
 
 
 async def _locked_product(session, params: dict) -> Product:
@@ -328,7 +440,7 @@ async def _locked_order(session, params: dict) -> Order:
     return order
 
 
-async def _apply_publish(session, params: dict, snapshot: dict) -> None:
+async def _apply_publish(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
     product = await _locked_product(session, params)
     if product.status.value != snapshot["status"]:
         raise ApplyConflict(
@@ -337,7 +449,7 @@ async def _apply_publish(session, params: dict, snapshot: dict) -> None:
     product.status = ProductStatus.ACTIVE
 
 
-async def _apply_unpublish(session, params: dict, snapshot: dict) -> None:
+async def _apply_unpublish(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
     product = await _locked_product(session, params)
     if product.status.value != snapshot["status"]:
         raise ApplyConflict(
@@ -346,7 +458,7 @@ async def _apply_unpublish(session, params: dict, snapshot: dict) -> None:
     product.status = ProductStatus.INACTIVE
 
 
-async def _apply_update_price(session, params: dict, snapshot: dict) -> None:
+async def _apply_update_price(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
     product = await _locked_product(session, params)
     if str(product.price) != snapshot["price"]:
         raise ApplyConflict(f"商品 {params['product_id']} 价格已变化(快照 {snapshot['price']} → 当前 {product.price})")
@@ -356,7 +468,7 @@ async def _apply_update_price(session, params: dict, snapshot: dict) -> None:
         raise ApplyConflict(f"新价格非法:{params['new_price']!r}") from error
 
 
-async def _apply_delete(session, params: dict, snapshot: dict) -> None:
+async def _apply_delete(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
     product = await _locked_product(session, params)
     if product.status.value != snapshot["status"]:
         raise ApplyConflict(
@@ -370,7 +482,7 @@ async def _apply_delete(session, params: dict, snapshot: dict) -> None:
     await session.delete(product)
 
 
-async def _apply_transition(session, params: dict, snapshot: dict) -> None:
+async def _apply_transition(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
     order = await _locked_order(session, params)
     current = order.status
     if current.value != snapshot["status"]:
@@ -381,7 +493,7 @@ async def _apply_transition(session, params: dict, snapshot: dict) -> None:
     order.status = target
 
 
-async def _apply_cancel(session, params: dict, snapshot: dict) -> None:
+async def _apply_cancel(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
     order = await _locked_order(session, params)
     if order.status.value != snapshot["status"]:
         raise ApplyConflict(
@@ -392,19 +504,47 @@ async def _apply_cancel(session, params: dict, snapshot: dict) -> None:
     order.status = OrderStatus.CANCELLED
 
 
-_APPLY_HANDLERS: dict[str, Any] = {
-    "product.publish": _apply_publish,
-    "product.unpublish": _apply_unpublish,
-    "product.update_price": _apply_update_price,
-    "product.delete": _apply_delete,
-    "order.transition": _apply_transition,
-    "order.cancel": _apply_cancel,
-}
+async def _apply_order_create(session, params: dict, snapshot: dict, fx_rate: Decimal | None) -> None:
+    """order.create 效果后置执行:行锁商品 → 快照比对(库存漂移=B18 冲突)→ 共享核心扣减落单。
+
+    与 REST 下单共享 _deduct_and_build_order(spec #8:单一数据路径,不三处复制);
+    领域校验错误包装为 ApplyConflict(批内同进同退,整批不执行)。
+    """
+    product = await _locked_product(session, params)  # 商品不存在 → ApplyConflict
+    if product.stock != snapshot.get("stock"):
+        raise ApplyConflict(
+            f"商品 {params['product_id']} 库存已变化(快照 {snapshot.get('stock')} → 当前 {product.stock})"
+        )
+    if fx_rate is None:
+        raise ApplyConflict("order.create 缺汇率快照(预取失败)")  # 防御:_prefetch 已保证,除非调用方绕过
+    try:
+        order = _deduct_and_build_order(product, params, fx_rate)
+    except (OrderCreationError, InsufficientStockError) as error:
+        raise ApplyConflict(str(error)) from error
+    session.add(order)
+
+
+# —— 动作注册表(spec #8:分类/capture/apply/前端标签一处维护;labels 供 GET /api/actions 渲染)——
+
+# 审批动作(一切对外状态变更):capture 快照 + apply 事务执行
+REGISTRY.register("product.publish", risk="approval", label="上架商品", capture=_capture_product, apply=_apply_publish)
+REGISTRY.register(
+    "product.unpublish", risk="approval", label="下架商品", capture=_capture_product, apply=_apply_unpublish
+)
+REGISTRY.register(
+    "product.update_price", risk="approval", label="修改价格", capture=_capture_price, apply=_apply_update_price
+)
+REGISTRY.register("product.delete", risk="approval", label="删除商品", capture=_capture_product, apply=_apply_delete)
+REGISTRY.register(
+    "order.transition", risk="approval", label="订单流转", capture=_capture_order, apply=_apply_transition
+)
+REGISTRY.register("order.cancel", risk="approval", label="取消订单", capture=_capture_order, apply=_apply_cancel)
+REGISTRY.register(
+    "order.create", risk="approval", label="创建订单", capture=_capture_order_create, apply=_apply_order_create
+)
 
 
 # —— DB auto 工具(模块级:依赖 SessionFactory,不经 ToolExecutor 方法分发)——
-
-_EXECUTE_HANDLERS: dict[str, Any] = {}
 
 
 async def _execute_detect_anomalies(executor: ToolExecutor, params: dict) -> dict:
@@ -483,11 +623,14 @@ async def _execute_list_orders(executor: ToolExecutor, params: dict) -> list[dic
 def _order_to_dict(order: Order) -> dict:
     return {
         "id": order.id,
+        "reference": order.reference,
         "product_id": order.product_id,
         "customer_id": order.customer_id,
         "status": order.status.value,
         "total_amount": str(order.total_amount),
         "currency": order.currency,
+        "fx_rate": str(order.fx_rate) if order.fx_rate is not None else None,
+        "fx_base_currency": order.fx_base_currency,
         "created_at": order.created_at.isoformat() if order.created_at else None,
     }
 
@@ -605,22 +748,23 @@ async def _execute_manage_template(executor: ToolExecutor, params: dict) -> dict
         raise ValueError(f"manage_template 未知 action:{action}")
 
 
-_EXECUTE_HANDLERS = {
-    "trend_query": ToolExecutor._execute_trend_query,
-    "competitor_analysis": ToolExecutor._execute_competitor_analysis,
-    "scoring": ToolExecutor._execute_scoring,
-    "generate_report": ToolExecutor._execute_generate_report,
-    "draft.create": _execute_draft_create,
-    "draft.edit": _execute_draft_edit,
-    "list_orders": _execute_list_orders,
-    "check_inventory": _execute_check_inventory,
-    "detect_anomalies": _execute_detect_anomalies,
-    "list_approvals": _execute_list_approvals,
-    "faq_search": ToolExecutor._execute_faq_search,
-    "order_lookup": _execute_order_lookup,
-    "translate": ToolExecutor._execute_translate,
-    "sentiment_analysis": ToolExecutor._execute_sentiment_analysis,
-    "manage_template": _execute_manage_template,
-    "escalate_ticket": _execute_escalate_ticket,
-    "generate_draft": ToolExecutor._execute_generate_draft,
-}
+# 免审动作(draft 内部编辑 + 只读/纯函数工具):execute 直行
+REGISTRY.register("trend_query", risk="auto", label="市场趋势查询", execute=ToolExecutor._execute_trend_query)
+REGISTRY.register(
+    "competitor_analysis", risk="auto", label="竞品分析", execute=ToolExecutor._execute_competitor_analysis
+)
+REGISTRY.register("scoring", risk="auto", label="选品评分", execute=ToolExecutor._execute_scoring)
+REGISTRY.register("generate_report", risk="auto", label="生成选品报告", execute=ToolExecutor._execute_generate_report)
+REGISTRY.register("draft.create", risk="auto", label="创建商品草稿", execute=_execute_draft_create)
+REGISTRY.register("draft.edit", risk="auto", label="编辑商品草稿", execute=_execute_draft_edit)
+REGISTRY.register("list_orders", risk="auto", label="订单列表", execute=_execute_list_orders)
+REGISTRY.register("check_inventory", risk="auto", label="库存检查", execute=_execute_check_inventory)
+REGISTRY.register("detect_anomalies", risk="auto", label="异常检测", execute=_execute_detect_anomalies)
+REGISTRY.register("list_approvals", risk="auto", label="审批批次列表", execute=_execute_list_approvals)
+REGISTRY.register("faq_search", risk="auto", label="FAQ 检索", execute=ToolExecutor._execute_faq_search)
+REGISTRY.register("order_lookup", risk="auto", label="订单查询", execute=_execute_order_lookup)
+REGISTRY.register("translate", risk="auto", label="翻译", execute=ToolExecutor._execute_translate)
+REGISTRY.register("sentiment_analysis", risk="auto", label="情感分析", execute=ToolExecutor._execute_sentiment_analysis)
+REGISTRY.register("manage_template", risk="auto", label="回复模板管理", execute=_execute_manage_template)
+REGISTRY.register("escalate_ticket", risk="auto", label="升级工单", execute=_execute_escalate_ticket)
+REGISTRY.register("generate_draft", risk="auto", label="生成回复草稿", execute=ToolExecutor._execute_generate_draft)

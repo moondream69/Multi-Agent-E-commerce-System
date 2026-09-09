@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import threading
 
 import httpx
@@ -48,12 +49,22 @@ def server_url():
         apply_fn=FakeApply(),
         emitter=emitter,
     )
-    app = create_app(graph=graph, batch_store=store, apply_fn=FakeApply(), emitter=emitter)
+    app = create_app(graph=graph, batch_store=store, apply_fn=FakeApply(), emitter=emitter, auth_required=False)
     wrapped = wrap_with_socketio(app, sio)
 
     port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(wrapped, host="127.0.0.1", port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
+    # loop="none":让 asyncio.run 按线程内设置的 Selector 策略建循环
+    # (新版 uvicorn 在 win32 默认强制 Proactor 策略,psycopg 异步不可用)
+    server = uvicorn.Server(uvicorn.Config(wrapped, host="127.0.0.1", port=port, log_level="warning", loop="none"))
+
+    def run() -> None:
+        # 服务线程自建事件循环:psycopg 异步处理器要求 Selector(与 run.py 同策略;
+        # pytest-asyncio 在主线程设置了 Proactor 策略,须在此覆盖回 Selector)
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        server.run()
+
+    thread = threading.Thread(target=run, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True

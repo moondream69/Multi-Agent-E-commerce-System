@@ -37,7 +37,9 @@ def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore, RecordingTask
         apply_fn=FakeApply(),
         tracer=tracer,
     )
-    client = TestClient(create_app(graph=graph, batch_store=store, apply_fn=FakeApply(), tracer=tracer))
+    client = TestClient(
+        create_app(graph=graph, batch_store=store, apply_fn=FakeApply(), tracer=tracer, auth_required=False)
+    )
     return client, store, tracer
 
 
@@ -70,7 +72,9 @@ async def test_task_trace_spans_and_approval_events_recorded() -> None:
         "decision": "approve",
         "comment": "没问题",
     }
-    assert tracer.traces.count(thread_id) == 2, "resume 阶段同样开启任务 trace(同名新 trace,增量 5 优化合并)"
+    assert tracer.traces.count(thread_id) == 2, (
+        "resume 阶段同样开启任务 trace(协议层两次调用,Langfuse 层经确定性 trace_id 合并)"
+    )
 
 
 async def test_null_tracer_is_safe_noop() -> None:
@@ -124,18 +128,20 @@ class FakeLangfuseClient:
 
 
 def test_langfuse_tracer_enabled_path_uses_context_manager_api() -> None:
-    """启用路径(B14):trace/span 走 start_as_current_observation(上下文管理器 API),
-    record_event 走 start_observation + end;langfuse 4.x 的 start_observation 返回值不是上下文管理器。"""
+    """启用路径(B14 + spec #8 resume_trace):trace/span 走 start_as_current_observation(上下文管理器 API),
+    trace_id 由 thread_id 确定性派生(跨 resume 合并同一 trace);record_event 走 start_observation + end;
+    langfuse 4.x 的 start_observation 返回值不是上下文管理器。"""
     client = FakeLangfuseClient()
     tracer = LangfuseTaskTracer(client=client)
 
     with tracer.trace("t1"), tracer.span("manager.plan", input={"request": "x"}):
         tracer.record_event("approval.requested", {"batchIds": ["b1"]})
+    with tracer.trace("t1"):  # 第二阶段(resume):同一 trace_id,不分裂
+        pass
 
     assert client.current_observations == [
-        {"name": "task:t1", "as_type": "span"},
+        {"name": "task:t1", "as_type": "span", "trace_id": "task-t1"},
         {"name": "manager.plan", "as_type": "span", "input": {"request": "x"}},
+        {"name": "task:t1", "as_type": "span", "trace_id": "task-t1"},
     ]
-    assert client.observations == [
-        {"name": "approval.requested", "as_type": "span", "output": {"batchIds": ["b1"]}}
-    ]
+    assert client.observations == [{"name": "approval.requested", "as_type": "span", "output": {"batchIds": ["b1"]}}]

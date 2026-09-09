@@ -30,6 +30,7 @@ from python_backend.agents.executor import ApplyFunction, apply_batch_actions
 from python_backend.core.approvals import ApprovalBatchStore
 from python_backend.core.events import EventEmitter, NullEmitter
 from python_backend.core.planning import ManagerPlanner, PlanFailed, Planner, Slice, SlicePlan
+from python_backend.db.audit_store import AuditWriter, NullAuditWriter
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
 
@@ -65,6 +66,7 @@ class BatchPayload(TypedDict):
 class SupervisorState(TypedDict, total=False):
     request: str
     thread_id: str
+    context: str | None  # 会话记忆上下文(B16:短上下文+摘要,经 create_task 注入)
     plan: SlicePlan | PlanFailed | None
     layers: list[list[int]]
     current_layer: int
@@ -116,6 +118,9 @@ def _manager_node(planner: Planner, tracer: TaskTracer) -> Callable[[SupervisorS
         results = state.get("results", {})
         with tracer.span("manager.plan", input={"request": state["request"]}):
             if not any(r.get("rejected") for r in results.values()):
+                context = state.get("context")
+                if context:
+                    return {"plan": await planner.plan(state["request"], context)}
                 return {"plan": await planner.plan(state["request"])}
 
             # 重规划路径:携拒因 + 已完成上下文;超限强制终止;切片号冲突强制终止
@@ -185,6 +190,7 @@ async def _execute_slice(
     apply_fn: ApplyFunction,
     emitter: EventEmitter,
     tracer: TaskTracer,
+    audit: AuditWriter,
 ) -> dict:
     """执行切片(spec #7):子图运行 → 审批动作按类型打包(真实参数快照)→ 边界 interrupt → apply。
 
@@ -206,7 +212,25 @@ async def _execute_slice(
     else:
         runner = agents.get(slice_.agent, _default_agent)
         with tracer.span(f"slice.{slice_.agent}", input={"description": slice_.description}):
-            run = await runner(slice_)
+            try:
+                run = await runner(slice_)
+            except Exception:
+                await audit.record(
+                    thread_id=thread_id,
+                    agent_id=slice_.agent,
+                    type_="slice",
+                    status="failed",
+                    input={"description": slice_.description},
+                )
+                raise
+        await audit.record(
+            thread_id=thread_id,
+            agent_id=slice_.agent,
+            type_="slice",
+            status="completed",
+            input={"description": slice_.description},
+            output={"answer": run.get("answer"), "executed": run.get("executed")},
+        )
         actions = run.get("actions") or []
         run_output = {"answer": run.get("answer"), "executed": run.get("executed")}
         if actions:
@@ -378,19 +402,21 @@ def build_supervisor(
     apply_fn: ApplyFunction | None = None,
     emitter: EventEmitter | None = None,
     tracer: TaskTracer | None = None,
+    audit: AuditWriter | None = None,
 ):
     """构建监督图:manager → prepare → 逐层 Send 扇出 → check_layer → … → aggregate。
 
     checkpointer 为 None 时不持久化(interrupt 会如实报错);生产装配挂 PostgresSaver(spec #6 D1)。
-    apply_fn/emitter/tracer 默认生产实现或 no-op(spec #7 接缝),测试注入假实现。
+    apply_fn/emitter/tracer/audit 默认生产实现或 no-op(spec #7/#8 接缝),测试注入假实现。
     """
     agents = agents or {}
     apply_fn = apply_fn or apply_batch_actions
     emitter = emitter or NullEmitter()
     tracer = tracer or NullTaskTracer()
+    audit = audit or NullAuditWriter()
 
     async def execute_slice(state: SupervisorState) -> dict:
-        return await _execute_slice(state, agents, batch_store, shadow_mode, apply_fn, emitter, tracer)
+        return await _execute_slice(state, agents, batch_store, shadow_mode, apply_fn, emitter, tracer, audit)
 
     # langgraph 的 StateLike/_Node 泛型上界在静态检查下对具体 TypedDict 与
     # 逆变节点函数必然报 invalid-argument-type(运行时合法且为官方文档模式),故精确忽略。
@@ -422,10 +448,11 @@ def default_supervisor(
     agents: dict[str, AgentRunner] | None = None,
     emitter: EventEmitter | None = None,
     tracer: TaskTracer | None = None,
+    audit: AuditWriter | None = None,
 ) -> CompiledStateGraph:
     """生产装配入口:真实 ManagerPlanner + 注入的业务子图 runner(spec #7 挂接)。
 
-    checkpointer/batch_store/shadow_mode/emitter/tracer 由装配方注入(spec #6 D1 / spec #7)。
+    checkpointer/batch_store/shadow_mode/emitter/tracer/audit 由装配方注入(spec #6 D1 / #7 / #8)。
     """
     return build_supervisor(
         ManagerPlanner(),
@@ -435,4 +462,5 @@ def default_supervisor(
         shadow_mode=shadow_mode,
         emitter=emitter,
         tracer=tracer,
+        audit=audit,
     )

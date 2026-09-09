@@ -25,8 +25,11 @@ from python_backend.agents.order_management.agent import build_order_agent
 from python_backend.agents.product_research.agent import build_product_agent
 from python_backend.api.app import create_app
 from python_backend.api.ws import SocketEmitter, build_socketio, wrap_with_socketio
+from python_backend.core.auth import ensure_admin_user
+from python_backend.core.drafting import DraftingService
 from python_backend.core.graph import default_supervisor, supervisor_serde
 from python_backend.db.approval_store import PostgresApprovalBatchStore
+from python_backend.db.audit_store import PgAuditWriter
 from python_backend.db.session import engine
 from python_backend.infrastructure.llm import LlmService
 from python_backend.infrastructure.tracing import LangfuseTaskTracer
@@ -62,6 +65,7 @@ def build_app() -> socketio.ASGIApp:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await ensure_admin_user()  # A1:初始管理员懒 seed(幂等;未配置凭据则跳过)
         # AsyncPostgresSaver 必须在事件循环内构造(内部绑定 running loop)
         # autocommit=True:setup() 建索引用 CREATE INDEX CONCURRENTLY(不能在事务块内)
         conn = await psycopg.AsyncConnection.connect(conninfo=settings.postgres_dsn, connect_timeout=5, autocommit=True)
@@ -70,6 +74,7 @@ def build_app() -> socketio.ASGIApp:
         await saver.setup()  # checkpoint 表自建(不入 Alembic)
 
         batch_store = PostgresApprovalBatchStore()
+        audit = PgAuditWriter()
         graph = default_supervisor(
             checkpointer=saver,
             batch_store=batch_store,
@@ -77,16 +82,19 @@ def build_app() -> socketio.ASGIApp:
             agents=build_agents(),
             emitter=emitter,
             tracer=LangfuseTaskTracer(),
+            audit=audit,
         )
         app.state.graph = graph
         app.state.batch_store = batch_store
         app.state.emitter = emitter
+        app.state.audit = audit
         logger.info("启动:environment=%s shadow_mode=%s", settings.environment, settings.shadow_mode)
         yield
         await conn.close()
         await engine.dispose()
 
-    app = create_app(emitter=emitter)
+    # drafting 接真实向量仓库:查证优先硬约束的生产装配(spec #8 B11)
+    app = create_app(emitter=emitter, drafting=DraftingService(vector=MilvusVectorRepository()))
     app.router.lifespan_context = lifespan
 
     @app.get("/health")

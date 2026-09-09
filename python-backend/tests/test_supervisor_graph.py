@@ -12,7 +12,7 @@ class StubPlanner:
     def __init__(self, plan: SlicePlan | PlanFailed) -> None:
         self._plan = plan
 
-    async def plan(self, request: str) -> SlicePlan | PlanFailed:
+    async def plan(self, request: str, context: str | None = None) -> SlicePlan | PlanFailed:
         return self._plan
 
 

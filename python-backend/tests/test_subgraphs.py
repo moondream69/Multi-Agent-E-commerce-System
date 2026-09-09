@@ -242,7 +242,7 @@ async def test_order_agent_exposes_approval_tools() -> None:
     names = [t.name for t in reg.visible_for("agent")]
     assert "product_publish" in names
     assert "order_transition" in names
-    assert "order_create" not in names, "order.create 留增量 5,不暴露"
+    assert "order_create" in names  # spec #8:order.create 审批工具(扣真实库存,批准后 apply)
 
 
 async def test_action_of_mapping_is_deterministic() -> None:

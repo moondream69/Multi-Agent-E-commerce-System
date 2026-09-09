@@ -51,7 +51,7 @@ async def make_assemblage(product_id: int | None = None):
         batch_store=store,
         shadow_mode=False,  # B4/B5 验收审批语义(prod 行为);影子路径由图级单测覆盖
     )
-    app = create_app(graph=graph, batch_store=store)
+    app = create_app(graph=graph, batch_store=store, auth_required=False)
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test"), store
 
 

@@ -1,8 +1,8 @@
-"""订单管理 Agent 工具清单(spec #7)。
+"""订单管理 Agent 工具清单(spec #7 + spec #8)。
 
 免审(直行):只读查询、异常检测、draft 内部编辑;
-审批(收集打包):一切对外状态变更——上架/下架/改价/删除/订单流转/取消。
-order.create 留增量 5(与 CSV/REST 数据入口一起,spec #7 Out of Scope),不暴露。
+审批(收集打包):一切对外状态变更——上架/下架/改价/删除/订单流转/取消,
+以及 order.create(创建订单,扣真实库存——LLM 渠道进护栏,批准后 apply 扣减)。
 """
 
 from python_backend.domain.tools import ToolDefinition
@@ -108,5 +108,19 @@ ORDER_TOOLS = [
         name="order_cancel",
         description="取消订单(审批动作:调用后登记待人工批准;仅 pending/confirmed 可取消)",
         parameters=_object(order_id={"type": "integer", "description": "订单 ID"}),
+    ),
+    ToolDefinition(
+        name="order_create",
+        description=(
+            "创建订单并扣减真实库存(审批动作:调用后登记待人工批准,批准前不生效)。库存不足时批次会被拒绝;订单金额>0"
+        ),
+        parameters=_object(
+            product_id={"type": "integer", "description": "商品 ID"},
+            total_amount={"type": "number", "description": "订单金额(币种默认 USD)"},
+            customer_id={"type": "integer", "description": "买家 ID(可选)"},
+            currency={"type": "string", "description": "订单币种,ISO 3 位码,默认 USD(可选)"},
+            platform={"type": "string", "description": "销售平台标记(可选)"},
+            reference={"type": "string", "description": "外部渠道单号,幂等去重键(可选)"},
+        ),
     ),
 ]

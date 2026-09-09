@@ -171,9 +171,12 @@ def fallback_route(text: str) -> SlicePlan:
 
 
 class Planner(Protocol):
-    """规划器协议:监督图依赖此协议,测试注入 StubPlanner。"""
+    """规划器协议:监督图依赖此协议,测试注入 StubPlanner。
 
-    async def plan(self, request: str) -> SlicePlan | PlanFailed: ...
+    context = 会话记忆上下文(B16:短上下文+摘要),无历史时为 None。
+    """
+
+    async def plan(self, request: str, context: str | None = None) -> SlicePlan | PlanFailed: ...
 
 
 class ManagerPlanner:
@@ -182,9 +185,9 @@ class ManagerPlanner:
     def __init__(self, llm: LlmClient | None = None) -> None:
         self._llm = llm or LlmService()
 
-    async def plan(self, request: str) -> SlicePlan | PlanFailed:
+    async def plan(self, request: str, context: str | None = None) -> SlicePlan | PlanFailed:
         try:
-            data, reason = await self._llm_plan_with_validation(request)
+            data, reason = await self._llm_plan_with_validation(request, context)
         except LlmFailure:  # 仅 LLM 调用失败/超时 → fallback 安全网(B13);编程错误继续上抛(永不静默吞错)
             return fallback_route(request)
 
@@ -192,15 +195,17 @@ class ManagerPlanner:
             return PlanFailed(f"规划失败:{reason}")
         return SlicePlan.from_dict(data)
 
-    async def _llm_plan_with_validation(self, request: str) -> tuple[dict | None, str]:
+    async def _llm_plan_with_validation(self, request: str, context: str | None) -> tuple[dict | None, str]:
         """LLM 生成 + 校验重试:上限 VALIDATION_RETRY_LIMIT 次,返回最终数据或失败原因。
 
         校验失败携错误重试:把失败原因作为用户消息反馈给 LLM,提高重试恢复率。
+        会话记忆(B16):有历史上下文时注入用户消息前缀,Manager 携上下文规划。
         """
         last_reason = ""
+        user_content = f"会话历史:\n{context}\n\n当前需求:{request}" if context else request
         messages: list[dict] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": request},
+            {"role": "user", "content": user_content},
         ]
         for _attempt in range(VALIDATION_RETRY_LIMIT + 1):
             raw = await self._llm.complete(messages, json_mode=True)

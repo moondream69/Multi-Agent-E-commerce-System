@@ -41,7 +41,7 @@ class ScriptedPlanner:
         self._plans = list(plans)
         self.requests: list[str] = []
 
-    async def plan(self, request: str) -> SlicePlan:
+    async def plan(self, request: str, context: str | None = None) -> SlicePlan:
         self.requests.append(request)
         return self._plans.pop(0) if self._plans else self._plans[-1]
 

@@ -242,3 +242,75 @@ export interface TaskLifecyclePayload {
   status: 'created' | 'interrupted' | 'completed' | 'failed';
   error?: string | null;
 }
+
+// —— 动作元数据(spec #8:GET /api/actions,前端标签不再硬编码)——
+
+export interface ActionMeta {
+  action: string;
+  risk: 'auto' | 'approval';
+  label: string;
+}
+
+// —— 认证(spec #8 A1:POST /api/auth/login)——
+
+export interface LoginResponse {
+  token: string;
+  username: string;
+}
+
+// —— 驾驶舱(spec #8:任务列表/详情端点)——
+
+export interface TaskListItem {
+  threadId: string;
+  sessionId: string;
+  type: string;
+  status: string;
+  title: string;
+  createdAt: string | null;
+}
+
+export interface SlicePlanSlice {
+  no: number;
+  agent: string;
+  description: string;
+  depends_on: number[];
+  approval_points: string[];
+}
+
+export interface TaskDetail {
+  threadId: string;
+  sessionId: string;
+  type: string;
+  status: string;
+  request: string | null;
+  plan: { slices: SlicePlanSlice[] } | null;
+  results: Record<string, unknown> | null;
+  result: { summary?: string; error?: string } | null;
+  batches: ApprovalBatch[];
+  createdAt: string | null;
+}
+
+// —— 起草工作台(spec #8 B11/B19:POST /api/drafting)——
+
+export interface DraftingEvidence {
+  faq_hits: Array<{
+    id: string;
+    score: number;
+    payload: Record<string, unknown>;
+  }>;
+  order: Record<string, unknown> | null;
+  order_id: number | null;
+}
+
+export interface DraftingResponse {
+  draft: string;
+  evidence: DraftingEvidence;
+}
+
+// —— CSV 导入(spec #8 B8:POST /api/import/products|orders)——
+
+export interface ImportReport {
+  created: number;
+  skipped: number;
+  errors: Array<{ row: number; reason: string }>;
+}

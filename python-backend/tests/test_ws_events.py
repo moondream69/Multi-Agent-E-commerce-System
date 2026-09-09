@@ -73,7 +73,15 @@ def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore, FakeApply, Re
         apply_fn=apply_fn,
         emitter=emitter,
     )
-    client = TestClient(create_app(graph=graph, batch_store=store, apply_fn=apply_fn, emitter=emitter))
+    client = TestClient(
+        create_app(
+            graph=graph,
+            batch_store=store,
+            apply_fn=apply_fn,
+            emitter=emitter,
+            auth_required=False,
+        )
+    )
     return client, store, apply_fn, emitter
 
 
@@ -132,7 +140,15 @@ async def test_shadow_mode_emits_requested_without_interrupt() -> None:
         emitter=emitter,
         shadow_mode=True,
     )
-    client = TestClient(create_app(graph=graph, batch_store=store, apply_fn=FakeApply(), emitter=emitter))
+    client = TestClient(
+        create_app(
+            graph=graph,
+            batch_store=store,
+            apply_fn=FakeApply(),
+            emitter=emitter,
+            auth_required=False,
+        )
+    )
     client.post("/api/tasks", json={"request": "上架商品"})
     assert "approval.requested" in emitter.names()
     assert "task.interrupted" not in emitter.names()

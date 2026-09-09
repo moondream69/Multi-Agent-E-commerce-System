@@ -122,6 +122,7 @@ class Order(Base):
     __tablename__ = "orders"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    reference: Mapped[str | None] = mapped_column(String(64))  # CSV 导入幂等去重键(可选,partial unique)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
     status: Mapped[OrderStatus] = mapped_column(default=OrderStatus.PENDING, server_default="pending")

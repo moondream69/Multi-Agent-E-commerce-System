@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from python_backend.agents.registry import REGISTRY
+
 
 @dataclass
 class ApprovalBatchRecord:
@@ -44,55 +46,11 @@ def decided_status(decision: str) -> str:
 
 
 # 三层风险分类(宪章:免审=draft 内部编辑;审批=一切对外状态变更;禁做=不暴露)。
-# 增量 4(spec #7):auto 层扩展为全部已暴露的只读/内部安全工具动作;
-# 审批层 6 动作语义不变(增量 3 钉死);未知动作默认 forbidden(禁做工具不存在)。
-_AUTO_ACTIONS = frozenset(
-    {
-        # 免审写:draft 内部编辑
-        "draft.edit",
-        "draft.create",
-        # 只读/纯函数工具(选品)
-        "trend_query",
-        "competitor_analysis",
-        "scoring",
-        "generate_report",
-        # 只读/纯函数工具(订单)
-        "list_orders",
-        "check_inventory",
-        "detect_anomalies",
-        "list_approvals",
-        # 只读/内部安全工具(客服)
-        "faq_search",
-        "order_lookup",
-        "translate",
-        "sentiment_analysis",
-        "manage_template",
-        "escalate_ticket",
-        "generate_draft",
-    }
-)
-_APPROVAL_ACTIONS = frozenset(
-    {
-        "product.publish",
-        "product.unpublish",
-        "product.update_price",
-        "product.delete",
-        "order.transition",
-        "order.cancel",
-    }
-)
-
-
+# 分类/capture/apply/前端标签已收敛为动作注册表一处维护(spec #8:agents/registry.py),
+# 未知动作默认 forbidden(禁做工具不存在,B7)。
 def classify_action(action: str) -> str:
-    """三层风险分类:auto(免审)/ approval(进护栏)/ forbidden(禁做)。
-
-    未知动作默认 forbidden——约束前移到 LLM 看见工具之前(B7:禁做工具不存在)。
-    """
-    if action in _AUTO_ACTIONS:
-        return "auto"
-    if action in _APPROVAL_ACTIONS:
-        return "approval"
-    return "forbidden"
+    """三层风险分类:auto(免审)/ approval(进护栏)/ forbidden(禁做)。"""
+    return REGISTRY.classify(action)
 
 
 class ApprovalBatchStore(Protocol):
@@ -126,6 +84,10 @@ class ApprovalBatchStore(Protocol):
 
     async def list_open(self) -> list[ApprovalBatchRecord]:
         """全量未决批次(pending + shadow):审批中心数据源(spec #7)。"""
+        ...
+
+    async def list_by_thread(self, thread_id: str) -> list[ApprovalBatchRecord]:
+        """某线程全部批次(驾驶舱任务详情数据源,spec #8)。"""
         ...
 
 
