@@ -224,16 +224,21 @@ async def _execute_slice(
                     input={"description": slice_.description},
                 )
                 raise
+        run_output = {
+            "answer": run.get("answer"),
+            "executed": run.get("executed"),
+            "incomplete": run.get("incomplete"),  # durable 重放须恢复未完成语义(与审计同一份记录)
+        }
         await audit.record(
             thread_id=thread_id,
             agent_id=slice_.agent,
             type_="slice",
-            status="completed",
+            # 未完成切片(步数超限/子图 LLM 失败)如实记 failed,不得因捕获而误记为 completed
+            status="failed" if run.get("incomplete") else "completed",
             input={"description": slice_.description},
-            output={"answer": run.get("answer"), "executed": run.get("executed")},
+            output=run_output,
         )
         actions = run.get("actions") or []
-        run_output = {"answer": run.get("answer"), "executed": run.get("executed")}
         if actions:
             if batch_store is None:
                 raise RuntimeError("审批批次存储未注入(build_supervisor 需传 batch_store)")
@@ -276,6 +281,9 @@ async def _execute_slice(
         merged["answer"] = run["answer"]
     if run.get("executed"):
         merged["executed"] = True
+    if run.get("incomplete"):
+        # 未完成如实上报(B17 步数超限 / issue #10 子图 LLM 失败),由 _aggregate 转 error
+        merged["incomplete"] = run["incomplete"]
 
     if batches:
         assert batch_store is not None  # 有批次必有存储(创建/重放路径都经 store)

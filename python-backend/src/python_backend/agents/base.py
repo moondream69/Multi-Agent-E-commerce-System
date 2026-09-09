@@ -18,7 +18,7 @@ from python_backend.agents.executor import Executor, action_of
 from python_backend.core.approvals import classify_action
 from python_backend.core.planning import Slice
 from python_backend.domain.tools import ToolRegistry
-from python_backend.infrastructure.llm import LlmClient, ToolCallResult
+from python_backend.infrastructure.llm import LlmClient, LlmFailure, ToolCallResult
 
 
 class ToolCallingLlmClient(LlmClient, Protocol):
@@ -191,10 +191,17 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
     """把编译好的业务子图包装为监督图的 AgentRunner(spec #7 挂接点)。
 
     返回 {"actions": 收集的审批动作参数快照, "answer": 最终答复, "incomplete": 未完成原因|None}。
+
+    子图内 LLM 失败(issue #10)在此单点收敛(三个业务 Agent 一次覆盖):与工具失败同策略,
+    切片如实产出「未完成+原因」,不穿透为 REST 500、不触发重规划(重规划仅由人工拒绝触发);
+    已收集的审批动作快照随之丢弃(切片判未完成,重新发起即可);编程错误继续上抛。
     """
 
     async def run(slice_: Slice) -> dict:
-        final = await graph.ainvoke(AgentState(slice_description=slice_.description))
+        try:
+            final = await graph.ainvoke(AgentState(slice_description=slice_.description))
+        except LlmFailure as error:
+            return {"actions": [], "answer": None, "incomplete": str(error)}
         return {
             "actions": final.get("collected", []),
             "answer": final.get("answer"),

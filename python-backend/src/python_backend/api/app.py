@@ -124,6 +124,16 @@ async def _pending_interrupts(graph: CompiledStateGraph, thread_id: str) -> list
     return [(t.interrupts[0].id, t.interrupts[0].value) for t in snapshot.tasks if t.interrupts]
 
 
+async def _converge_failed_task(thread_id: str, emitter: EventEmitter, error: Exception) -> None:
+    """未预期异常兜底(issue #10):任务行收敛 failed + 广播 task.failed,不留悬挂 in_progress。
+
+    调用方随后原样上抛——编程错误保留 500 观测,不许静默吞掉。
+    """
+    reason = f"{type(error).__name__}: {error}"
+    await update_task_row(thread_id=thread_id, status="failed", result={"summary": None, "error": reason})
+    await emitter.emit("task.failed", {"threadId": thread_id, "status": "failed", "error": reason})
+
+
 async def _resume(
     graph: CompiledStateGraph,
     resume_map: dict[str, dict],
@@ -134,9 +144,16 @@ async def _resume(
     session_id: str | None = None,
     user_id: int | None = None,
 ) -> dict:
-    """组装好的 resume_map 驱动图恢复,统一响应形状;完成后广播任务终态事件。"""
-    with tracer.trace(thread_id):
-        result = await graph.ainvoke(Command(resume=resume_map), _config(thread_id))
+    """组装好的 resume_map 驱动图恢复,统一响应形状;完成后广播任务终态事件。
+
+    恢复中的任何未预期异常同样收敛(issue #10):行 failed + task.failed 广播后原样上抛。
+    """
+    try:
+        with tracer.trace(thread_id):
+            result = await graph.ainvoke(Command(resume=resume_map), _config(thread_id))
+    except Exception as error:
+        await _converge_failed_task(thread_id, emitter, error)
+        raise
     if "__interrupt__" in result:
         # 下一层切片又挂起:如实广播(多层切片任务不只一次中断)
         await emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})
@@ -297,10 +314,15 @@ def create_app(
             thread_id=thread_id, user_id=user_id, session_id=session_id, type_="chat", request=body.request
         )
         await app.state.emitter.emit("task.created", {"threadId": thread_id, "status": "created"})
-        with app.state.tracer.trace(thread_id):
-            result = await app.state.graph.ainvoke(
-                SupervisorState(request=body.request, thread_id=thread_id, context=context), _config(thread_id)
-            )
+        try:
+            with app.state.tracer.trace(thread_id):
+                result = await app.state.graph.ainvoke(
+                    SupervisorState(request=body.request, thread_id=thread_id, context=context), _config(thread_id)
+                )
+        except Exception as error:
+            # 未预期异常兜底(issue #10):行 failed + task.failed 广播后原样上抛(500 保留观测)
+            await _converge_failed_task(thread_id, app.state.emitter, error)
+            raise
         if "__interrupt__" in result:
             await update_task_row(thread_id=thread_id, status="interrupted")
             await app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})

@@ -189,6 +189,25 @@ class RecordingTaskTracer:
         self.events.append((name, output))
 
 
+class RecordingAudit:
+    """记录审计调用(图/REST 共享接缝):captured 按序收集 record 参数。"""
+
+    def __init__(self) -> None:
+        self.captured: list[dict] = []
+
+    async def record(self, *, thread_id: str, agent_id: str, type_: str, status: str, input=None, output=None) -> None:
+        self.captured.append(
+            {
+                "thread_id": thread_id,
+                "agent_id": agent_id,
+                "type": type_,
+                "status": status,
+                "input": input,
+                "output": output,
+            }
+        )
+
+
 # —— 增量 4(spec #7):子图与执行器共享夹具 ——
 
 

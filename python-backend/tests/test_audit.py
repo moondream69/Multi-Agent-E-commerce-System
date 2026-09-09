@@ -26,6 +26,7 @@ from python_backend.settings import get_settings
 from tests.conftest import (
     FakeApply,
     InMemoryApprovalBatchStore,
+    RecordingAudit,
     StubPlanner,
     postgres_reachable,
     slice_agent,
@@ -36,25 +37,6 @@ PUBLISH = {
     "params": {"product_id": 1},
     "snapshot": {"exists": True, "status": "draft"},
 }
-
-
-class RecordingAudit:
-    """审计记录器:captured 收集全部 record 调用。"""
-
-    def __init__(self) -> None:
-        self.captured: list[dict] = []
-
-    async def record(self, *, thread_id: str, agent_id: str, type_: str, status: str, input=None, output=None) -> None:
-        self.captured.append(
-            {
-                "thread_id": thread_id,
-                "agent_id": agent_id,
-                "type": type_,
-                "status": status,
-                "input": input,
-                "output": output,
-            }
-        )
 
 
 def _client(audit: RecordingAudit) -> AsyncClient:
