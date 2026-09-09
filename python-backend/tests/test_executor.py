@@ -184,6 +184,58 @@ async def test_execute_draft_edit_non_draft_raises(product: Product) -> None:
         await make_executor().execute("draft.edit", {"product_id": product.id, "title": "非法编辑"})
 
 
+async def test_execute_draft_create_with_alert_threshold(product: Product) -> None:
+    """spec #9:草稿创建可带库存告警阈值(缺省取默认 10)。"""
+    _pg_guard()
+    executor = make_executor()
+    with_threshold = await executor.execute(
+        "draft.create",
+        {
+            "sku": f"SKU-{uuid.uuid4().hex[:8]}",
+            "title": "带阈值草稿",
+            "price": "19.9",
+            "category": "宠物",
+            "alert_threshold": 3,
+        },
+    )
+    default_threshold = await executor.execute(
+        "draft.create",
+        {"sku": f"SKU-{uuid.uuid4().hex[:8]}", "title": "缺省阈值草稿", "price": "9.9", "category": "宠物"},
+    )
+    async with SessionFactory() as session:
+        first = await session.get(Product, int(with_threshold["product_id"]))
+        second = await session.get(Product, int(default_threshold["product_id"]))
+        assert first is not None and first.alert_threshold == 3
+        assert second is not None and second.alert_threshold == 10
+
+
+async def test_execute_draft_create_invalid_alert_threshold_raises(product: Product) -> None:
+    """非法阈值(0/负数/非整数)如实报错,不静默替换。"""
+    _pg_guard()
+    for bad in (0, -1, "abc"):
+        with pytest.raises(ValueError, match="告警阈值"):
+            await make_executor().execute(
+                "draft.create",
+                {
+                    "sku": f"SKU-{uuid.uuid4().hex[:8]}",
+                    "title": "坏阈值",
+                    "price": "1.0",
+                    "category": "宠物",
+                    "alert_threshold": bad,
+                },
+            )
+
+
+async def test_execute_draft_edit_updates_alert_threshold(product: Product) -> None:
+    """spec #9:草稿编辑可改库存告警阈值(免审,草稿内部编辑)。"""
+    _pg_guard()
+    result = await make_executor().execute("draft.edit", {"product_id": product.id, "alert_threshold": 7})
+    assert result["alert_threshold"] == 7
+    async with SessionFactory() as session:
+        row = await session.get(Product, product.id)
+        assert row is not None and row.alert_threshold == 7
+
+
 async def test_execute_check_inventory_reads_real_stock(product: Product) -> None:
     """A7:库存检查读库(不再 LLM 自报),五档告警文案。"""
     _pg_guard()
@@ -210,6 +262,22 @@ async def test_execute_check_inventory_five_tiers(product: Product) -> None:
             await session.commit()
             result = await executor.execute("check_inventory", {"product_id": product.id, "threshold": 5})
             assert expected in result["message"], (stock, result["message"])
+
+
+async def test_execute_check_inventory_uses_product_threshold_by_default(product: Product) -> None:
+    """A9:阈值参数缺省 → 读商品自身 alert_threshold(消除 LLM 自报阈值残余)。"""
+    _pg_guard()
+    async with SessionFactory() as session:
+        row = await session.get(Product, product.id)
+        assert row is not None
+        row.stock = 2
+        row.alert_threshold = 8
+        await session.commit()
+    executor = make_executor()
+    result = await executor.execute("check_inventory", {"product_id": product.id})
+    assert result["threshold"] == 8
+    assert result["alert"] is True
+    assert "安全线: 8" in result["message"]
 
 
 async def test_execute_list_orders_and_lookup(product: Product) -> None:
@@ -397,6 +465,8 @@ async def test_apply_transition_valid(product: Product) -> None:
     ]
     result = await apply_batch_actions(await _approved_batch("order.transition", actions), actions)
     assert result.applied is True
+    # 效果描述(spec #9):提交后供调用方组装通知
+    assert result.effects == [{"type": "order_status", "order_id": order_id, "from": "pending", "to": "confirmed"}]
     async with SessionFactory() as session:
         row = await session.get(Order, order_id)
         assert row is not None and row.status == OrderStatus.CONFIRMED
@@ -460,6 +530,7 @@ async def test_apply_cancel_from_pending(product: Product) -> None:
     actions = [{"action": "order.cancel", "params": {"order_id": order_id}, "snapshot": snapshot}]
     result = await apply_batch_actions(await _approved_batch("order.cancel", actions), actions)
     assert result.applied is True
+    assert result.effects == [{"type": "order_status", "order_id": order_id, "from": "pending", "to": "cancelled"}]
     async with SessionFactory() as session:
         row = await session.get(Order, order_id)
         assert row is not None and row.status == OrderStatus.CANCELLED

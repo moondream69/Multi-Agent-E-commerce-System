@@ -21,9 +21,10 @@ export async function createTask(
   };
 }
 
-/** 任务列表(驾驶舱数据源)。 */
-export async function fetchTasks(): Promise<TaskListItem[]> {
-  const res = await apiFetch(`${BASE}/tasks`);
+/** 任务列表(驾驶舱数据源);sessionId 给定时只取该会话的任务(A2 历史隔离)。 */
+export async function fetchTasks(sessionId?: string): Promise<TaskListItem[]> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  const res = await apiFetch(`${BASE}/tasks${query}`);
   if (!res.ok) throw new Error(await res.text());
   const body = (await res.json()) as { tasks: TaskListItem[] };
   return body.tasks;

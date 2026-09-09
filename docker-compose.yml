@@ -233,6 +233,21 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ---- 演练环境专属:模拟流量(spec #9 重建;走真 HTTP 入口,需 app 已启动)----
+
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mae_simulator
+    profiles: ["sim"]
+    env_file: .env
+    command: python -m python_backend.simulator --loop 300 --base-url http://app:3000
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ---- 演练环境专属:本地 Embedding(bge-m3)----
 
   ollama:

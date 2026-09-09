@@ -78,6 +78,23 @@ def test_parse_products_row_level_errors_do_not_block_others() -> None:
     assert rows[1]["currency"] == "USD"  # 缺省
 
 
+def test_parse_products_alert_threshold_optional_column() -> None:
+    """spec #9:alert_threshold 可选列——缺省取默认 10,非法值行级报错不阻断其他行。"""
+    csv_text = (
+        "sku,title,price,category,alert_threshold\n"
+        "SKU-A,带阈值,19.99,数码,3\n"  # 第 2 行:显式阈值
+        "SKU-B,缺省阈值,9.99,数码,\n"  # 第 3 行:空 → 默认
+        "SKU-C,坏阈值,9.99,数码,abc\n"  # 第 4 行:非法
+        "SKU-D,零阈值,9.99,数码,0\n"  # 第 5 行:非正 → 非法
+    )
+    rows, errors = parse_products_csv(csv_text)
+    assert [r["sku"] for r in rows] == ["SKU-A", "SKU-B"]
+    assert rows[0]["alert_threshold"] == 3
+    assert rows[1]["alert_threshold"] == 10  # DEFAULT_ALERT_THRESHOLD
+    assert [e["row"] for e in errors] == [4, 5]
+    assert all("告警阈值非法" in e["reason"] for e in errors)
+
+
 async def test_parse_orders_validation_and_defaults() -> None:
     rows, errors = parse_orders_csv(_orders_csv("SKU-A"))
     assert errors == []
@@ -112,6 +129,7 @@ async def test_import_products_creates_drafts_skips_existing() -> None:
         product = (await session.execute(select(Product).where(Product.sku == sku_a))).scalar_one()
         assert product.status == ProductStatus.DRAFT
         assert product.stock == 10
+        assert product.alert_threshold == 10  # 缺省阈值(spec #9)
 
     again = await import_products(rows)
     assert again.created == 0 and again.skipped == 2

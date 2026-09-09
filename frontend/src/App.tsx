@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ApprovalCenter } from './components/ApprovalCenter';
 import { Cockpit } from './components/Cockpit';
 import { DraftingWorkbench } from './components/DraftingWorkbench';
+import { NotificationBell } from './components/NotificationBell';
 import {
   clearSession,
   getToken,
@@ -9,6 +10,7 @@ import {
   login,
   storeSession,
 } from './services/auth';
+import { clearCurrentSessionId } from './services/session';
 import { theme } from './theme';
 
 type View = 'cockpit' | 'drafting' | 'approvals';
@@ -198,6 +200,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         >
           {getUsername()}
         </span>
+        <NotificationBell />
         <button
           onClick={onLogout}
           style={{
@@ -243,6 +246,7 @@ export default function App() {
     <Shell
       onLogout={() => {
         clearSession();
+        clearCurrentSessionId(); // 登录新开:登出即放弃当前会话(A2)
         setToken(null);
       }}
     />

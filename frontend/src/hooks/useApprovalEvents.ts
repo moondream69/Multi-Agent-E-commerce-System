@@ -1,25 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { useCallback } from 'react';
+import { EventType } from '../types/events';
+import { useSocket } from './useSocket';
+
+// 模块级常量数组:useSocket 依赖引用稳定,避免每次渲染重连
+const APPROVAL_EVENTS = [
+  EventType.APPROVAL_REQUESTED,
+  EventType.APPROVAL_DECIDED,
+  EventType.TASK_COMPLETED,
+  EventType.TASK_FAILED,
+];
 
 /** 审批实时通道:审批/任务事件到达时触发刷新回调,返回连接状态。 */
 export function useApprovalEvents(onChange: () => void): boolean {
-  const [connected, setConnected] = useState(false);
-  const callbackRef = useRef(onChange);
-  callbackRef.current = onChange;
-
-  useEffect(() => {
-    const socket: Socket = io({ path: '/socket.io' });
-    const refresh = () => callbackRef.current();
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('approval.requested', refresh);
-    socket.on('approval.decided', refresh);
-    socket.on('task.completed', refresh);
-    socket.on('task.failed', refresh);
-    return () => {
-      socket.disconnect();
-    };
-  }, []);
-
-  return connected;
+  const onEvent = useCallback(() => onChange(), [onChange]);
+  return useSocket(APPROVAL_EVENTS, onEvent);
 }

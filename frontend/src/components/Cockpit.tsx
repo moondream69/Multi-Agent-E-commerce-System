@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { EventWall } from './EventWall';
+import { SessionBar } from './SessionBar';
+import { useSessions } from '../hooks/useSessions';
 import { createTask, fetchTaskDetail, fetchTasks } from '../services/tasks';
 import { importCsv } from '../services/imports';
 import {
@@ -407,6 +409,15 @@ function CsvImportCard() {
 }
 
 export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
+  const {
+    sessionId,
+    conversations,
+    error: sessionError,
+    refresh: refreshConversations,
+    select: switchSession,
+    startNew,
+    remove: removeSession,
+  } = useSessions();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<TaskDetail | null>(null);
@@ -415,7 +426,7 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
   const refreshTasks = useCallback(() => {
-    fetchTasks()
+    fetchTasks(sessionId)
       .then((rows) => {
         setTasks(rows);
         setError(null);
@@ -423,9 +434,11 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : String(reason));
       });
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
+    setSelected(null);
+    setDetail(null);
     refreshTasks();
   }, [refreshTasks]);
 
@@ -446,9 +459,10 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const created = await createTask(input.trim());
+      const created = await createTask(input.trim(), sessionId);
       setInput('');
       refreshTasks();
+      refreshConversations(); // 首条消息后会话惰性落库,列表补上标题
       setSelected(created.threadId);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -471,6 +485,14 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
           background: theme.color.surface,
         }}
       >
+        <SessionBar
+          current={sessionId}
+          conversations={conversations}
+          onSelect={switchSession}
+          onNew={startNew}
+          onDelete={(target) => void removeSession(target)}
+          error={sessionError}
+        />
         <div
           style={{
             padding: '12px 14px',

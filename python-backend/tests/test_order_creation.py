@@ -24,7 +24,7 @@ from python_backend.db.models import Order, Product, ProductStatus
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.fx import FxUnavailableError
 from python_backend.settings import get_settings
-from tests.conftest import postgres_reachable
+from tests.conftest import RecordingEmitter, postgres_reachable
 
 pytestmark = pytest.mark.integration
 
@@ -52,7 +52,8 @@ def _require_postgres() -> None:
         pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
 
 
-async def _make_product(stock: int = 5) -> Product:
+async def _make_product(stock: int = 5, *, alert_threshold: int = 1) -> Product:
+    """测试商品:阈值默认 1(即默认不触发库存告警,告警断言显式传阈值)。"""
     async with SessionFactory() as session:
         product = Product(
             sku=f"SKU-{uuid.uuid4().hex[:8]}",
@@ -61,6 +62,7 @@ async def _make_product(stock: int = 5) -> Product:
             category="测试",
             stock=stock,
             status=ProductStatus.ACTIVE,
+            alert_threshold=alert_threshold,
         )
         session.add(product)
         await session.commit()
@@ -81,9 +83,10 @@ async def _stock_of(product_id: int) -> int:
         return product.stock
 
 
-def _client(fx: FakeFxService) -> AsyncClient:
+def _client(fx: FakeFxService, *, emitter: RecordingEmitter | None = None) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=create_app(fx_service=fx, auth_required=False)), base_url="http://test"
+        transport=ASGITransport(app=create_app(fx_service=fx, emitter=emitter, auth_required=False)),
+        base_url="http://test",
     )
 
 
@@ -125,15 +128,66 @@ async def test_rest_order_invalid_amount_404() -> None:
     assert await _stock_of(product.id) == 5
 
 
-async def test_rest_order_fx_unavailable_409() -> None:
-    """B10 暂态:汇率 API 失效且缓存为空 → 409 拒单,不落无快照订单(spec #8 字面)。"""
+async def test_rest_order_fx_unavailable_leaves_blank_and_notifies() -> None:
+    """B10 演进(spec #9):汇率 API 失效且缓存为空 → 照常落单,fx_rate 留空 + fx_missing 通知。
+
+    增量 5 的「409 拒单」暂态已到期升级(留空 + 人工可见),不再拒单。
+    """
     fx = FakeFxService(fail=True)
+    emitter = RecordingEmitter()
     product = await _make_product(stock=5)
-    async with _client(fx) as client:
+    async with _client(fx, emitter=emitter) as client:
         response = await client.post("/api/orders", json={"product_id": product.id, "total_amount": 9.99})
-    assert response.status_code == 409
-    assert await _stock_of(product.id) == 5
-    assert await _order_count(product.id) == 0
+    assert response.status_code == 201
+    order = response.json()["order"]
+    assert order["fx_rate"] is None
+    assert order["fx_base_currency"] == "CNY"
+    assert await _stock_of(product.id) == 4
+    assert await _order_count(product.id) == 1
+    kinds = [payload["kind"] for _event, payload in emitter.events]
+    assert "fx_missing" in kinds  # 人工可见:汇率缺失通知
+    assert "order_status" in kinds  # 订单创建通知
+
+
+async def test_rest_order_notifies_created_status() -> None:
+    """A8:下单成功后广播 order_status 通知(状态映射表文案,零 LLM)。"""
+    fx = FakeFxService()
+    emitter = RecordingEmitter()
+    product = await _make_product(stock=5)
+    async with _client(fx, emitter=emitter) as client:
+        response = await client.post("/api/orders", json={"product_id": product.id, "total_amount": 9.99})
+    assert response.status_code == 201
+    assert [event for event, _payload in emitter.events] == ["notification.created"]
+    payload = emitter.events[0][1]
+    assert payload["kind"] == "order_status"
+    assert "已提交" in payload["message"]
+    assert payload["orderId"] == response.json()["order"]["id"]
+
+
+async def test_rest_order_triggers_inventory_alert_below_product_threshold() -> None:
+    """A9:扣减后低于商品自身阈值 → 五档库存告警通知(阈值按商品,非全局)。"""
+    fx = FakeFxService()
+    emitter = RecordingEmitter()
+    product = await _make_product(stock=2, alert_threshold=10)
+    async with _client(fx, emitter=emitter) as client:
+        response = await client.post("/api/orders", json={"product_id": product.id, "total_amount": 9.99})
+    assert response.status_code == 201
+    kinds = [payload["kind"] for _event, payload in emitter.events]
+    assert kinds == ["order_status", "inventory_alert"]
+    alert = next(payload for _event, payload in emitter.events if payload["kind"] == "inventory_alert")
+    assert "库存严重不足" in alert["message"]  # 1/10 = 0.1 → 严重不足档
+    assert alert["orderId"] is None
+
+
+async def test_rest_order_no_inventory_alert_above_threshold() -> None:
+    """库存仍高于商品阈值时不发告警(不噪声)。"""
+    fx = FakeFxService()
+    emitter = RecordingEmitter()
+    product = await _make_product(stock=3, alert_threshold=2)
+    async with _client(fx, emitter=emitter) as client:
+        response = await client.post("/api/orders", json={"product_id": product.id, "total_amount": 9.99})
+    assert response.status_code == 201
+    assert [payload["kind"] for _event, payload in emitter.events] == ["order_status"]
 
 
 async def test_concurrent_orders_no_oversell() -> None:
@@ -246,8 +300,8 @@ async def test_order_create_apply_stock_drift_conflict() -> None:
     assert await _order_count(product.id) == 0  # 未落单
 
 
-async def test_order_create_apply_fx_unavailable_batch_fails() -> None:
-    """apply 时汇率不可用:整批不执行,如实上报(B10 降级语义与 REST 一致)。"""
+async def test_order_create_apply_fx_unavailable_leaves_blank() -> None:
+    """apply 时汇率不可用(spec #9):留空落单 + fx_missing 效果,不再整批不执行。"""
     fx = FakeFxService(fail=True)
     product = await _make_product(stock=3)
     store = PostgresApprovalBatchStore()
@@ -270,7 +324,10 @@ async def test_order_create_apply_fx_unavailable_batch_fails() -> None:
     record = await store.get_batch(batch_id=batch_id)
     assert record is not None
     outcome = await apply_batch_actions(batch_id, [record.actions[0]], fx=fx)
-    assert outcome.applied is False
-    assert "汇率" in (outcome.reason or "")
-    assert await _stock_of(product.id) == 3
-    assert await _order_count(product.id) == 0
+    assert outcome.applied is True
+    assert {effect["type"] for effect in outcome.effects} == {"order_status", "fx_missing"}
+    assert await _stock_of(product.id) == 2
+    async with SessionFactory() as session:
+        order = (await session.execute(select(Order).where(Order.product_id == product.id))).scalar_one()
+        assert order.fx_rate is None
+        assert order.fx_base_currency == "CNY"

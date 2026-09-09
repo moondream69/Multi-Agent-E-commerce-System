@@ -8,10 +8,11 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
+from python_backend.agents.executor import ApplyResult
 from python_backend.api.app import create_app
 from python_backend.core.approvals import parse_decision_intent
 from python_backend.core.graph import build_supervisor
-from tests.conftest import FakeApply, InMemoryApprovalBatchStore, StubPlanner, slice_agent
+from tests.conftest import FakeApply, InMemoryApprovalBatchStore, RecordingEmitter, StubPlanner, slice_agent
 
 PUBLISH = {
     "action": "product.publish",
@@ -202,6 +203,42 @@ async def test_shadow_execute_unknown_batch_is_404() -> None:
     client, _store, _apply = make_client()
     response = client.post("/api/threads/whatever/shadow-batches/no-such/execute")
     assert response.status_code == 404
+
+
+async def test_shadow_batch_execute_emits_notifications() -> None:
+    """spec #9:影子补执行提交后按 apply 效果广播通知(与切片 apply 同一语义)。"""
+
+    class EffectApply:
+        async def __call__(self, batch_id: str, actions: list[dict]) -> ApplyResult:
+            return ApplyResult(
+                applied=True,
+                effects=[{"type": "order_status", "order_id": 9, "from": "pending", "to": "confirmed"}],
+            )
+
+    store = InMemoryApprovalBatchStore()
+    emitter = RecordingEmitter()
+    apply_fn = EffectApply()
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent(actions=[PUBLISH], answer="已登记")},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        shadow_mode=True,
+        apply_fn=apply_fn,
+    )
+    client = TestClient(
+        create_app(graph=graph, batch_store=store, apply_fn=apply_fn, emitter=emitter, auth_required=False)
+    )
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    batch = (await store.list_open())[0]
+
+    response = client.post(f"/api/threads/{thread_id}/shadow-batches/{batch.batch_id}/execute")
+
+    assert response.status_code == 200
+    notifications = [payload for event, payload in emitter.events if event == "notification.created"]
+    assert len(notifications) == 1
+    assert notifications[0]["kind"] == "order_status"
+    assert "#9" in notifications[0]["message"]
 
 
 def test_parse_decision_intent_priority() -> None:

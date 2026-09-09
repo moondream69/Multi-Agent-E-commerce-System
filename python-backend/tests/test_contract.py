@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -77,11 +78,52 @@ def test_approval_batch_status_values_match_contract() -> None:
     assert backend == contract, f"后端六态 {backend} 应等于契约 {contract}"
 
 
-def test_approval_event_names_present() -> None:
-    """审批事件名(approval.requested / approval.decided)在契约中保留。"""
+def test_ws_event_names_present() -> None:
+    """WS 事件名(审批/任务/通知)在契约中保留(spec #9:旧系统事件名已清理)。"""
     text = EVENTS_TS.read_text(encoding="utf-8")
     assert "APPROVAL_REQUESTED: 'approval.requested'" in text
     assert "APPROVAL_DECIDED: 'approval.decided'" in text
+    assert "NOTIFICATION_CREATED: 'notification.created'" in text
+    assert "TASK_INTERRUPTED: 'task.interrupted'" in text
+
+
+def test_legacy_event_types_removed() -> None:
+    """契约清理(spec #9):旧系统死类型不再出现在真源(前后端零引用的 chat:response 等)。"""
+    text = EVENTS_TS.read_text(encoding="utf-8")
+    for legacy in ("chat:response", "agent:event", "chat:notification", "agent.status_changed", "report.generated"):
+        assert legacy not in text, f"旧事件类型 {legacy} 应已清理"
+
+
+async def test_notification_message_matches_contract() -> None:
+    """通知信封字段 == ts NotificationMessage(spec #9 A8/A9/A14)。"""
+    from python_backend.core.notifications import build_notifications
+
+    payload = build_notifications([{"type": "order_status", "order_id": 1, "to": "shipped"}])[0]
+    expected = _ts_interface_fields("NotificationMessage")
+    assert set(payload) == expected, f"通知载荷键 {set(payload)} 应等于契约字段 {expected}"
+
+
+async def test_conversation_meta_matches_contract() -> None:
+    """会话列表字段 == ts ConversationMeta(spec #9 A2)。"""
+    expected = _ts_interface_fields("ConversationMeta")
+    assert expected == {"sessionId", "title", "updatedAt", "messageCount"}
+
+
+async def test_product_list_item_matches_contract() -> None:
+    """GET /api/products 响应键 == ts ProductListItem(spec #9:模拟流量发现商品)。"""
+    from fastapi.testclient import TestClient
+
+    from python_backend.settings import get_settings
+    from tests.conftest import postgres_reachable
+
+    if not postgres_reachable(get_settings().database_url):
+        pytest.skip("Postgres 离线:商品列表形状由序列化函数保证")
+    client = TestClient(create_app(auth_required=False))
+    products = client.get("/api/products").json()["products"]
+    expected = _ts_interface_fields("ProductListItem")
+    if not products:
+        pytest.skip("测试库无商品:形状由接口序列化保证")
+    assert set(products[0]) == expected, f"响应键 {set(products[0])} 应等于契约字段 {expected}"
 
 
 async def test_actions_metadata_matches_contract() -> None:

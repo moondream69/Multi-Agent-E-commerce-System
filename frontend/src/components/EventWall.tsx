@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { useCallback, useState } from 'react';
+import { useSocket } from '../hooks/useSocket';
+import { EventType } from '../types/events';
 import { theme } from '../theme';
 
-// —— 事件流实况墙(A13):WS 五事件,语义配色 + 中文标签,与切片时间线分工共存 ——
+// —— 事件流实况墙(A13):WS 六事件(任务/审批),语义配色 + 中文标签,与切片时间线分工共存 ——
 
 interface WallEvent {
   id: string;
@@ -12,23 +13,23 @@ interface WallEvent {
 }
 
 const EVENT_LABELS: Record<string, string> = {
-  'task.created': '任务已创建',
-  'task.interrupted': '任务挂起',
-  'task.completed': '任务完成',
-  'task.failed': '任务失败',
-  'approval.requested': '审批请求',
-  'approval.decided': '审批已决定',
+  [EventType.TASK_CREATED]: '任务已创建',
+  [EventType.TASK_INTERRUPTED]: '任务挂起',
+  [EventType.TASK_COMPLETED]: '任务完成',
+  [EventType.TASK_FAILED]: '任务失败',
+  [EventType.APPROVAL_REQUESTED]: '审批请求',
+  [EventType.APPROVAL_DECIDED]: '审批已决定',
 };
 
 function eventColor(event: string): string {
   switch (event) {
-    case 'task.completed':
-    case 'approval.decided':
+    case EventType.TASK_COMPLETED:
+    case EventType.APPROVAL_DECIDED:
       return theme.color.success;
-    case 'task.interrupted':
-    case 'approval.requested':
+    case EventType.TASK_INTERRUPTED:
+    case EventType.APPROVAL_REQUESTED:
       return theme.color.warning;
-    case 'task.failed':
+    case EventType.TASK_FAILED:
       return theme.color.danger;
     default:
       return theme.color.textSecondary;
@@ -45,14 +46,10 @@ function shortId(id: unknown): string {
 }
 
 export function EventWall() {
-  const [connected, setConnected] = useState(false);
   const [events, setEvents] = useState<WallEvent[]>([]);
 
-  useEffect(() => {
-    const socket: Socket = io({ path: '/socket.io' });
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    const push = (event: string) => (payload: Record<string, unknown>) => {
+  const onEvent = useCallback(
+    (event: string, payload: Record<string, unknown>) => {
       setEvents((prev) =>
         [
           ...prev,
@@ -64,14 +61,10 @@ export function EventWall() {
           },
         ].slice(-MAX_EVENTS),
       );
-    };
-    for (const name of EVENT_NAMES) {
-      socket.on(name, push(name));
-    }
-    return () => {
-      socket.disconnect();
-    };
-  }, []);
+    },
+    [],
+  );
+  const connected = useSocket(EVENT_NAMES, onEvent);
 
   return (
     <div

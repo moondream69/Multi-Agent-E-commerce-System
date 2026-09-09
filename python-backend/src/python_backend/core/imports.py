@@ -16,7 +16,14 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 
-from python_backend.db.models import Customer, Order, OrderStatus, Product, ProductStatus
+from python_backend.db.models import (
+    DEFAULT_ALERT_THRESHOLD,
+    Customer,
+    Order,
+    OrderStatus,
+    Product,
+    ProductStatus,
+)
 from python_backend.db.session import SessionFactory
 
 
@@ -67,14 +74,14 @@ def _rows_from_csv(text: str, *, required: set[str], optional: set[str]) -> tupl
 
 
 def parse_products_csv(text: str) -> tuple[list[dict], list[dict]]:
-    """商品 CSV 解析:sku/title/price/category 必填;currency/platform/stock/description 可选。
+    """商品 CSV 解析:sku/title/price/category 必填;currency/platform/stock/description/alert_threshold 可选。
 
-    行级校验:price>0(Decimal)、stock≥0 整数、currency 3 位字母。
+    行级校验:price>0(Decimal)、stock≥0 整数、currency 3 位字母、alert_threshold>0 整数。
     """
     rows, errors = _rows_from_csv(
         text,
         required={"sku", "title", "price", "category"},
-        optional={"currency", "platform", "stock", "description"},
+        optional={"currency", "platform", "stock", "description", "alert_threshold"},
     )
     validated: list[dict] = []
     for entry in rows:
@@ -98,6 +105,16 @@ def parse_products_csv(text: str) -> tuple[list[dict], list[dict]]:
         if len(currency) != 3 or not currency.isalpha():
             errors.append({"row": row, "reason": f"币种非法:{data.get('currency')!r}(ISO 3 位码)"})
             continue
+        threshold_raw = data.get("alert_threshold")
+        threshold = DEFAULT_ALERT_THRESHOLD
+        if threshold_raw:
+            try:
+                threshold = int(threshold_raw)
+                if threshold <= 0:
+                    raise ValueError
+            except ValueError:
+                errors.append({"row": row, "reason": f"告警阈值非法:{threshold_raw!r}(须为正整数)"})
+                continue
         validated.append(
             {
                 "row": row,
@@ -109,6 +126,7 @@ def parse_products_csv(text: str) -> tuple[list[dict], list[dict]]:
                 "platform": data.get("platform") or "amazon",
                 "stock": stock_value,
                 "description": data.get("description") or None,
+                "alert_threshold": threshold,
             }
         )
     return validated, errors
@@ -178,6 +196,7 @@ async def import_products(rows: list[dict]) -> ImportReport:
                     stock=row["stock"],
                     description=row["description"],
                     status=ProductStatus.DRAFT,
+                    alert_threshold=row["alert_threshold"],
                 )
             )
             report.created += 1

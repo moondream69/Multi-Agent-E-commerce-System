@@ -27,10 +27,10 @@ ORDER_TOOLS = [
     ),
     ToolDefinition(
         name="check_inventory",
-        description="检查商品真实库存(读库,非自报):低于安全线给出五档告警文案",
+        description="检查商品真实库存(读库,非自报):低于安全线给出五档告警文案;阈值缺省读商品自身设置",
         parameters=_object(
             product_id={"type": "integer", "description": "商品 ID"},
-            threshold={"type": "integer", "description": "安全库存阈值"},
+            threshold={"type": "integer", "description": "安全库存阈值,缺省用商品自身阈值(可选)"},
         ),
     ),
     ToolDefinition(
@@ -55,6 +55,7 @@ ORDER_TOOLS = [
             price={"type": "number", "description": "商品价格"},
             category={"type": "string", "description": "品类名称"},
             description={"type": "string", "description": "商品描述(可选)"},
+            alert_threshold={"type": "integer", "description": "库存告警阈值,缺省 10(可选)"},
         ),
     ),
     ToolDefinition(
@@ -66,6 +67,7 @@ ORDER_TOOLS = [
             price={"type": "number", "description": "新价格(可选)"},
             category={"type": "string", "description": "新品类(可选)"},
             description={"type": "string", "description": "新描述(可选)"},
+            alert_threshold={"type": "integer", "description": "新库存告警阈值(可选)"},
         ),
     ),
     # —— 审批:对外状态变更(调用后登记待人工批准,不会立即生效)——

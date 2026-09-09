@@ -10,10 +10,11 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from python_backend.agents.executor import ApplyResult
 from python_backend.core.approvals import BatchAlreadyDecidedError, classify_action
 from python_backend.core.graph import SupervisorState, build_supervisor
 from python_backend.core.planning import Slice, SlicePlan
-from tests.conftest import FakeApply, InMemoryApprovalBatchStore, StubPlanner, slice_agent
+from tests.conftest import FakeApply, InMemoryApprovalBatchStore, RecordingEmitter, StubPlanner, slice_agent
 
 PUBLISH = {
     "action": "product.publish",
@@ -74,6 +75,60 @@ async def test_actions_batched_by_type_then_interrupt() -> None:
 
     assert len(store.batches) == 2
     assert executed == [1], "方案 B:子图先运行收集,边界打包挂起"
+
+
+async def test_approve_emits_notifications_from_effects() -> None:
+    """spec #9:apply 提交后按效果广播 notification.created(效果在事务内产生、提交后 emit)。"""
+    store = InMemoryApprovalBatchStore()
+    emitter = RecordingEmitter()
+
+    async def apply_fn(batch_id: str, actions: list[dict]) -> ApplyResult:
+        return ApplyResult(
+            applied=True,
+            effects=[{"type": "order_status", "order_id": 42, "from": "pending", "to": "shipped"}],
+        )
+
+    graph = build_supervisor(
+        StubPlanner(plan_with_actions()),
+        agents={"order_management": slice_agent([], actions=[PUBLISH])},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        apply_fn=apply_fn,
+        emitter=emitter,
+    )
+    config = {"configurable": {"thread_id": "notify-effects"}}
+    await graph.ainvoke(SupervisorState(request="上架商品", thread_id="notify-effects"), config)
+    iid, value = await _pending_interrupt(graph, config)
+    await graph.ainvoke(Command(resume={iid: _decisions(value, "approve")}), config)
+
+    notifications = [payload for event, payload in emitter.events if event == "notification.created"]
+    assert len(notifications) == 1
+    assert notifications[0]["kind"] == "order_status"
+    assert "#42" in notifications[0]["message"]
+
+
+async def test_reject_emits_no_notification() -> None:
+    """拒绝不 apply、不广播业务通知(只有审批决定事件)。"""
+    store = InMemoryApprovalBatchStore()
+    emitter = RecordingEmitter()
+
+    async def apply_fn(batch_id: str, actions: list[dict]) -> ApplyResult:
+        raise AssertionError("拒绝不应调用 apply")
+
+    graph = build_supervisor(
+        StubPlanner(plan_with_actions()),
+        agents={"order_management": slice_agent([], actions=[PUBLISH])},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        apply_fn=apply_fn,
+        emitter=emitter,
+    )
+    config = {"configurable": {"thread_id": "reject-no-notify"}}
+    await graph.ainvoke(SupervisorState(request="上架商品", thread_id="reject-no-notify"), config)
+    iid, value = await _pending_interrupt(graph, config)
+    await graph.ainvoke(Command(resume={iid: _decisions(value, "reject", "不要上架")}), config)
+
+    assert [event for event, _payload in emitter.events if event == "notification.created"] == []
 
 
 async def test_shadow_mode_records_batches_without_interrupt() -> None:

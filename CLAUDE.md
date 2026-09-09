@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 当前状态:推翻式重构期
 
-旧系统冻结在 main(880b62d);**rebuild 分支按 ADR-0005 重写中**(增量 1-5 已落地,下会话增量 6,交接见 `docs/handoffs/`)。业务决策唯一约束 = @docs/adr/0005-architecture-rebuild-production-charter.md;验收基线 = @docs/acceptance-scenarios.md;术语表(目标态,以它为准)= @CONTEXT.md。旧系统术语/类名只在被取代的决策记录中保留,不得当作现行架构。
+旧系统冻结在 main(880b62d);**rebuild 分支按 ADR-0005 重写中**(增量 1-6 已落地,下会话增量 7,交接见 `docs/handoffs/`)。业务决策唯一约束 = @docs/adr/0005-architecture-rebuild-production-charter.md;验收基线 = @docs/acceptance-scenarios.md;术语表(目标态,以它为准)= @CONTEXT.md。旧系统术语/类名只在被取代的决策记录中保留,不得当作现行架构。
 
 ## 开发命令
 
@@ -27,6 +27,10 @@ cd frontend && npm run dev                           # Vite (5173)
 cd frontend && npm run lint / lint:fix               # ESLint 检查/自动修复 (前端,无 --fix 不改写)
 cd frontend && npm run format / format:check         # Prettier 格式化/只检查
 cd frontend && npm run build                         # 前端构建 (tsc + vite)
+
+# 模拟流量 (需后端已启动;容器内为 docker compose --profile sim up -d)
+cd python-backend && uv run python -m python_backend.simulator --once             # 冒烟一轮
+cd python-backend && uv run python -m python_backend.simulator --loop 300         # 每 300 秒一轮
 ```
 
 > ⚠️ `npm run lint` 只检查、不自动改写——需要自动修复时用 `npm run lint:fix`。
@@ -56,7 +60,8 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 | `ToolExecutor` | `agents/executor.py` | auto 直行 / approval 收集参数快照 / `apply_batch_actions`(事务+行锁+快照比对,漂移整批回滚,B18) |
 | 审批批次 | `core/approvals.py` + `db/approval_store.py` | 三层风险分类、`ApprovalBatchStore` 协议(create/decide 幂等,重放安全)、PG 实现 |
 | `VectorRepository` | `vector_repo/base.py` | 向量访问抽象(Milvus 实现,pgvector 可切换) |
-| 事件与观测 | `core/events.py` / `infrastructure/tracing.py` | `EventEmitter`(WS 五事件)/ `TaskTracer`(Langfuse 层级,B14) |
+| 事件与观测 | `core/events.py` / `infrastructure/tracing.py` | `EventEmitter`(WS 事件)/ `TaskTracer`(Langfuse 层级,B14) |
+| 通知组装 | `core/notifications.py` | 效果描述→通知载荷(状态映射表 7 文案 + 五档库存文案,零 LLM);`notification.created` 由 apply/REST **提交后** emit |
 | `LlmService` | `infrastructure/llm.py` | `complete()` + `completeWithTools()`(function calling);失败统一包装 `LlmFailure`(fallback 只承接它) |
 
 ### Agent 模式
@@ -74,7 +79,7 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 1. `agents/<name>/tools.py`:定义 `ToolDefinition` 清单(OpenAI function 形状;工具名与动作标识经 `action_of` 显式映射)
 2. `agents/<name>/agent.py`:`build_<name>_agent(executor, llm)` 返回 (编译子图, ToolRegistry);结构化图直接手绘节点
 3. 挂接:`core/planning.py` 的 `AGENTS` 元组 + Manager 提示词领域路由;`main.py` 的 `build_agents()`
-4. 新动作一处注册:`agents/registry.py` 的 REGISTRY.register(风险分类/中文标签/处理函数);前端标签经 GET /api/actions 渲染,不再硬编码
+4. 新动作一处注册:`agents/registry.py` 的 REGISTRY.register(风险分类/中文标签/处理函数);前端标签经 GET /api/actions 渲染,不再硬编码。审批动作的 `apply` 若产生对外可见效果,**返回效果描述**(`core/notifications.py` 的 `EFFECT_*`),由调用方在事务提交后组装通知——不要在事务内 emit
 
 ## 环境配置
 

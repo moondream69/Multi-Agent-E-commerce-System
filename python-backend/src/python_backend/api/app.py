@@ -48,11 +48,12 @@ from python_backend.core.imports import (
     parse_products_csv,
 )
 from python_backend.core.memory import PostgresSessionMemory, SessionMemory
+from python_backend.core.notifications import emit_notifications
 from python_backend.db.audit_store import AuditWriter, NullAuditWriter
-from python_backend.db.models import User
+from python_backend.db.conversation_store import delete_conversation, list_conversations, session_has_pending_batches
+from python_backend.db.models import Product, User
 from python_backend.db.session import SessionFactory
 from python_backend.db.task_store import create_task_row, get_task, list_tasks, task_session, update_task_row
-from python_backend.infrastructure.fx import FxUnavailableError
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
 
@@ -185,6 +186,21 @@ def _serialize_batch(record) -> dict:
         "comment": record.comment,
         "result": record.result,
         "runOutput": record.run_output,
+    }
+
+
+def _product_payload(product: Product) -> dict:
+    """商品序列化(驼峰,与契约 events.ts ProductListItem 字段一一对应)。"""
+    return {
+        "id": product.id,
+        "sku": product.sku,
+        "title": product.title,
+        "price": str(product.price),
+        "currency": product.currency,
+        "category": product.category,
+        "status": product.status.value,
+        "stock": product.stock,
+        "alertThreshold": product.alert_threshold,
     }
 
 
@@ -326,10 +342,11 @@ def create_app(
     async def create_order(body: OrderCreateRequest) -> dict:
         """买家侧模拟下单(spec #8 B9):扣真实库存(负数防护),汇率快照随订单落库。
 
-        直接入口(不经 LLM)免审批护栏;库存不足 409、汇率不可用 409(spec #8:拒单如实报错)。
+        直接入口(不经 LLM)免审批护栏;库存不足 409。汇率不可用时不再拒单(spec #9):
+        fx_rate 留空落库 + fx_missing 通知(人工可见待核)。
         """
         try:
-            order = await create_order_with_stock(
+            result = await create_order_with_stock(
                 product_id=body.product_id,
                 customer_id=body.customer_id,
                 total_amount=body.total_amount,
@@ -342,9 +359,9 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error)) from error
         except OrderCreationError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        except FxUnavailableError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        return {"order": order}
+        # 提交后组装通知(spec #9 A8/A9):订单创建 + 汇率缺失 + 库存跌破阈值
+        await emit_notifications(app.state.emitter, result.effects)
+        return {"order": result.order}
 
     @app.post("/api/import/products")
     async def import_products_csv(request: Request) -> dict:
@@ -371,9 +388,12 @@ def create_app(
         return {"report": report.as_dict()}
 
     @app.get("/api/tasks")
-    async def list_task_rows() -> dict:
-        """任务列表(驾驶舱数据源,spec #8):最新在前,标题取请求前 20 字(A2 截断语义)。"""
-        rows = await list_tasks()
+    async def list_task_rows(session_id: str | None = None) -> dict:
+        """任务列表(驾驶舱数据源,spec #8):最新在前,标题取请求前 20 字(A2 截断语义)。
+
+        session_id 给定时只返回该会话的任务(spec #9 A2:切换会话即切换历史视图)。
+        """
+        rows = await list_tasks(session_id=session_id)
         return {
             "tasks": [
                 {
@@ -417,6 +437,33 @@ def create_app(
             "batches": batches,
             "createdAt": row.created_at.isoformat() if row.created_at else None,
         }
+
+    @app.get("/api/products")
+    async def list_products() -> dict:
+        """商品列表(只读,spec #9):模拟流量发现商品 + 运营总览数据源。"""
+        async with SessionFactory() as session:
+            rows = (await session.execute(select(Product).order_by(Product.created_at.desc()))).scalars().all()
+        return {"products": [_product_payload(product) for product in rows]}
+
+    @app.get("/api/conversations")
+    async def list_user_conversations(request: Request) -> dict:
+        """会话列表(spec #9 A2):当前用户的会话,updated_at 倒序。"""
+        user_id = _current_user_id(request)
+        if user_id is None:
+            return {"conversations": []}
+        return {"conversations": await list_conversations(user_id)}
+
+    @app.delete("/api/conversations/{session_id}")
+    async def remove_conversation(session_id: str, request: Request) -> dict:
+        """删除会话(spec #9 A2):有挂起审批批次 → 409(先决定再删);不存在 → 404。"""
+        user_id = _current_user_id(request)
+        if user_id is None:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        if await session_has_pending_batches(user_id, session_id):
+            raise HTTPException(status_code=409, detail="该会话仍有挂起审批,请先处理后再删除")
+        if not await delete_conversation(user_id, session_id):
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        return {"deleted": True}
 
     @app.get("/api/actions")
     async def list_actions() -> dict:
@@ -553,6 +600,7 @@ def create_app(
         outcome = await app.state.apply_fn(batch_id, record.actions)
         if not outcome.applied:
             raise HTTPException(status_code=409, detail=outcome.reason)
+        await emit_notifications(app.state.emitter, outcome.effects)  # 提交后通知(spec #9)
         return {"status": "executed", "result": {"applied": True}}
 
     return app

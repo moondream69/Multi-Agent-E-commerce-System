@@ -45,6 +45,10 @@ class ProductStatus(enum.StrEnum):
     INACTIVE = "inactive"
 
 
+# 库存告警阈值默认值(spec #9):迁移 0004 server_default、工具与 CSV 缺省共用同一常量
+DEFAULT_ALERT_THRESHOLD = 10
+
+
 class TaskStatus(enum.StrEnum):
     """任务状态:interrupted = 切片挂起等待人工环节(durable interrupt)。"""
 
@@ -97,6 +101,10 @@ class Product(Base):
     category: Mapped[str] = mapped_column(String(50))
     status: Mapped[ProductStatus] = mapped_column(default=ProductStatus.DRAFT, server_default="draft")
     stock: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 库存告警阈值(商品级,spec #9 A9):扣减后低于该值发五档告警通知
+    alert_threshold: Mapped[int] = mapped_column(
+        Integer, default=DEFAULT_ALERT_THRESHOLD, server_default=str(DEFAULT_ALERT_THRESHOLD)
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

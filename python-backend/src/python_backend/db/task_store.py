@@ -57,10 +57,13 @@ async def task_session(thread_id: str) -> tuple[str, int] | None:
         return row.session_id, row.user_id
 
 
-async def list_tasks() -> list[Task]:
-    """任务列表(驾驶舱数据源):最新在前。"""
+async def list_tasks(*, session_id: str | None = None) -> list[Task]:
+    """任务列表(驾驶舱数据源):最新在前;session_id 给定时只返回该会话的任务(A2 历史隔离)。"""
     async with SessionFactory() as session:
-        rows = (await session.execute(select(Task).order_by(Task.created_at.desc()))).scalars().all()
+        statement = select(Task).order_by(Task.created_at.desc())
+        if session_id:
+            statement = statement.where(Task.session_id == session_id)
+        rows = (await session.execute(statement)).scalars().all()
         return list(rows)
 
 

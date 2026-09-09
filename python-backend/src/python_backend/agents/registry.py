@@ -23,7 +23,8 @@ class ActionSpec:
     label: str
     execute: Callable[..., Awaitable[Any]] | None = None  # auto:直行处理(executor, params)
     capture: Callable[..., Awaitable[dict]] | None = None  # approval:现状快照(session, params)
-    apply: Callable[..., Awaitable[None]] | None = None  # approval:事务内执行(session, params, snapshot)
+    # approval:事务内执行(session, params, snapshot, fx_rate);返回效果描述 list[dict](spec #9 通知源)
+    apply: Callable[..., Awaitable[list[dict] | None]] | None = None
 
 
 class ActionRegistry:
@@ -40,7 +41,7 @@ class ActionRegistry:
         label: str,
         execute: Callable[..., Awaitable[Any]] | None = None,
         capture: Callable[..., Awaitable[dict]] | None = None,
-        apply: Callable[..., Awaitable[None]] | None = None,
+        apply: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         if action in self._specs:
             raise ValueError(f"动作 {action} 重复注册")

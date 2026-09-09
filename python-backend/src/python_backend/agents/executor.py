@@ -16,7 +16,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
@@ -24,7 +24,14 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select
 
 from python_backend.agents.registry import REGISTRY
+from python_backend.core.notifications import (
+    EFFECT_FX_MISSING,
+    EFFECT_INVENTORY_LOW,
+    EFFECT_ORDER_STATUS,
+    inventory_alert_message,
+)
 from python_backend.db.models import (
+    DEFAULT_ALERT_THRESHOLD,
     ApprovalBatch,
     ApprovalStatus,
     Order,
@@ -79,8 +86,19 @@ class ApplyConflict(Exception):
 
 @dataclass
 class ApplyResult:
+    """apply 结果:effects 为效果描述(纯数据,spec #9)——由调用方在提交后组装通知。"""
+
     applied: bool
     reason: str | None = None
+    effects: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class OrderCreationResult:
+    """下单结果(spec #9):订单载荷 + 效果描述(通知由入口在提交后组装)。"""
+
+    order: dict
+    effects: list[dict] = field(default_factory=list)
 
 
 # apply 函数注入接缝(spec #7):生产 apply_batch_actions(事务+快照比对),测试注入假实现
@@ -117,11 +135,12 @@ def default_fx() -> FxService:
     return service
 
 
-def _deduct_and_build_order(product: Product, params: dict, fx_rate: Decimal) -> Order:
+def _deduct_and_build_order(product: Product, params: dict, fx_rate: Decimal | None) -> Order:
     """「金额校验 → 库存校验 → 扣减 → Order 构造」共享核心(spec #8 B9:单一数据路径)。
 
     商品行须已由调用方加锁;校验失败抛 OrderCreationError/InsufficientStockError,
     由入口透传(409)或 apply 侧包装为 ApplyConflict(整批不执行)。
+    fx_rate 为 None 表示汇率不可用(spec #9:留空落库 + 人工可见,不再拒单)。
     """
     try:
         amount = Decimal(str(params["total_amount"]))
@@ -145,6 +164,35 @@ def _deduct_and_build_order(product: Product, params: dict, fx_rate: Decimal) ->
     )
 
 
+def inventory_effect(product: Product) -> dict | None:
+    """扣减后低于商品自身阈值 → 库存告警效果(spec #9 A9);未跌破 → None。
+
+    共享核心与 apply 侧共用同一比对(两处不复制阈值逻辑)。
+    """
+    if product.stock < product.alert_threshold:
+        return {
+            "type": EFFECT_INVENTORY_LOW,
+            "product_id": product.id,
+            "title": product.title,
+            "stock": product.stock,
+            "threshold": product.alert_threshold,
+        }
+    return None
+
+
+def _order_created_effects(order: Order, product: Product, *, fx_missing: bool) -> list[dict]:
+    """订单创建的效果描述(下单两路共用):状态 pending + 汇率缺失(如有)+ 库存告警(如有)。"""
+    effects: list[dict] = [
+        {"type": EFFECT_ORDER_STATUS, "order_id": order.id, "from": None, "to": OrderStatus.PENDING.value}
+    ]
+    if fx_missing:
+        effects.append({"type": EFFECT_FX_MISSING, "order_id": order.id})
+    low = inventory_effect(product)
+    if low is not None:
+        effects.append(low)
+    return effects
+
+
 async def create_order_with_stock(
     *,
     product_id: int,
@@ -154,13 +202,18 @@ async def create_order_with_stock(
     platform: str | None = None,
     reference: str | None = None,
     fx_service: FxProvider | None = None,
-) -> dict:
+) -> OrderCreationResult:
     """「创建订单 + 扣减库存」共享服务(spec #8 B9):REST 下单与直接入口共用同一数据路径。
 
     汇率快照在行锁外获取(网络调用不持锁);事务内行锁商品 → 库存校验(负数防护)
     → 扣减 → 订单落库(快照基准 CNY)。stock<1 抛 InsufficientStockError,由入口映射 409。
+    汇率不可用(spec #9):不再拒单——fx_rate 留空落库 + fx_missing 效果(人工可见)。
     """
-    rate = await (fx_service or default_fx()).get_rate_cny(currency)
+    fx_missing = False
+    try:
+        rate: Decimal | None = await (fx_service or default_fx()).get_rate_cny(currency)
+    except FxUnavailableError:
+        rate, fx_missing = None, True
     async with SessionFactory() as session, session.begin():
         product = await session.get(Product, product_id, with_for_update=True)
         if product is None:
@@ -175,7 +228,8 @@ async def create_order_with_stock(
         order = _deduct_and_build_order(product, params, rate)  # 与 apply 同一数据路径
         session.add(order)
         await session.flush()  # 取得自增 id(退出事务时提交)
-        return _order_to_dict(order)
+        effects = _order_created_effects(order, product, fx_missing=fx_missing)
+        return OrderCreationResult(order=_order_to_dict(order), effects=effects)
 
 
 class Executor(Protocol):
@@ -342,8 +396,8 @@ async def apply_batch_actions(batch_id: str, actions: list[dict], *, fx: FxProvi
 
     批次落 executed 与效果同事务(无中间窗口):durable 重放时批次已 executed → 幂等跳过,
     不会因重放再次执行或误报漂移冲突。状态为 shadow 的批次(演练补执行)同样可执行。
-    order.create 的汇率快照在行锁外预取(网络不持锁);API 失效且缓存为空 → 整批不执行、
-    如实上报(与 REST 下单同一降级语义)。fx 可注入(测试假实现)。
+    order.create 的汇率快照在行锁外预取(网络不持锁);汇率不可用 → 留空落单 + fx_missing
+    效果(spec #9:不再整批不执行)。effects 只在提交成功后返回(调用方据此组装通知)。
     """
     if not actions:
         return ApplyResult(applied=True)
@@ -352,6 +406,7 @@ async def apply_batch_actions(batch_id: str, actions: list[dict], *, fx: FxProvi
     except FxUnavailableError as error:
         await _record_apply_failure(batch_id, str(error))
         return ApplyResult(applied=False, reason=str(error))
+    effects: list[dict] = []
     try:
         async with SessionFactory() as session, session.begin():
             row = (
@@ -365,24 +420,32 @@ async def apply_batch_actions(batch_id: str, actions: list[dict], *, fx: FxProvi
                 raise ApplyConflict(f"批次 {batch_id} 状态非法({row.status}),不可执行")
             await _lock_targets(session, actions)
             for index, item in enumerate(actions):
-                await _apply_one(session, item["action"], item["params"], item["snapshot"], fx_rates[index])
+                effects.extend(
+                    await _apply_one(session, item["action"], item["params"], item["snapshot"], fx_rates[index])
+                )
             row.status = ApprovalStatus.EXECUTED
             row.result = {"applied": True}
     except ApplyConflict as error:
         await _record_apply_failure(batch_id, str(error))
         return ApplyResult(applied=False, reason=str(error))
-    return ApplyResult(applied=True)
+    return ApplyResult(applied=True, effects=effects)
 
 
 async def _prefetch_fx_rates(actions: list[dict], fx: FxProvider | None) -> list[Decimal | None]:
-    """order.create 动作的汇率快照预取(行锁外):非该动作占位 None,索引与 actions 对齐。"""
+    """order.create 动作的汇率快照预取(行锁外):非该动作占位 None,索引与 actions 对齐。
+
+    单动作汇率不可用 → 该动作 None(spec #9:留空落单 + fx_missing 效果,不拖垮整批)。
+    """
     rates: list[Decimal | None] = [None] * len(actions)
     if not any(item["action"] == "order.create" for item in actions):
         return rates
     service = fx or default_fx()
     for index, item in enumerate(actions):
         if item["action"] == "order.create":
-            rates[index] = await service.get_rate_cny(item["params"].get("currency") or "USD")
+            try:
+                rates[index] = await service.get_rate_cny(item["params"].get("currency") or "USD")
+            except FxUnavailableError:
+                rates[index] = None  # 留空:apply 侧记 fx_missing 效果
     return rates
 
 
@@ -419,11 +482,12 @@ async def _lock_targets(session, actions: list[dict]) -> None:
             await session.execute(select(Order.id).where(Order.id == item["params"]["order_id"]).with_for_update())
 
 
-async def _apply_one(session, action: str, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
+async def _apply_one(session, action: str, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> list[dict]:
     spec = REGISTRY.get(action)
     if spec is None or spec.apply is None:
         raise ApplyConflict(f"动作 {action} 无 apply 处理(非法审批动作)")
-    await spec.apply(session, params, snapshot, fx_rate)  # 非 order.create 处理器忽略该参数
+    effects = await spec.apply(session, params, snapshot, fx_rate)  # 非 order.create 处理器忽略该参数
+    return effects or []  # 效果描述(spec #9):无效果的处理器返回 None
 
 
 async def _locked_product(session, params: dict) -> Product:
@@ -482,7 +546,7 @@ async def _apply_delete(session, params: dict, snapshot: dict, fx_rate: Decimal 
     await session.delete(product)
 
 
-async def _apply_transition(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
+async def _apply_transition(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> list[dict]:
     order = await _locked_order(session, params)
     current = order.status
     if current.value != snapshot["status"]:
@@ -491,9 +555,10 @@ async def _apply_transition(session, params: dict, snapshot: dict, fx_rate: Deci
     if target not in VALID_TRANSITIONS[current]:
         raise ApplyConflict(f"订单状态不可从 {current.value} 变更为 {target.value}")
     order.status = target
+    return [{"type": EFFECT_ORDER_STATUS, "order_id": order.id, "from": current.value, "to": target.value}]
 
 
-async def _apply_cancel(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> None:
+async def _apply_cancel(session, params: dict, snapshot: dict, fx_rate: Decimal | None = None) -> list[dict]:
     order = await _locked_order(session, params)
     if order.status.value != snapshot["status"]:
         raise ApplyConflict(
@@ -501,27 +566,32 @@ async def _apply_cancel(session, params: dict, snapshot: dict, fx_rate: Decimal 
         )
     if order.status not in (OrderStatus.PENDING, OrderStatus.CONFIRMED):
         raise ApplyConflict(f"订单 {order.status.value} 态不可取消")
+    previous = order.status
     order.status = OrderStatus.CANCELLED
+    return [
+        {"type": EFFECT_ORDER_STATUS, "order_id": order.id, "from": previous.value, "to": OrderStatus.CANCELLED.value}
+    ]
 
 
-async def _apply_order_create(session, params: dict, snapshot: dict, fx_rate: Decimal | None) -> None:
+async def _apply_order_create(session, params: dict, snapshot: dict, fx_rate: Decimal | None) -> list[dict]:
     """order.create 效果后置执行:行锁商品 → 快照比对(库存漂移=B18 冲突)→ 共享核心扣减落单。
 
     与 REST 下单共享 _deduct_and_build_order(spec #8:单一数据路径,不三处复制);
     领域校验错误包装为 ApplyConflict(批内同进同退,整批不执行)。
+    汇率不可用(fx_rate None,spec #9)→ 留空落单 + fx_missing 效果,不再整批不执行。
     """
     product = await _locked_product(session, params)  # 商品不存在 → ApplyConflict
     if product.stock != snapshot.get("stock"):
         raise ApplyConflict(
             f"商品 {params['product_id']} 库存已变化(快照 {snapshot.get('stock')} → 当前 {product.stock})"
         )
-    if fx_rate is None:
-        raise ApplyConflict("order.create 缺汇率快照(预取失败)")  # 防御:_prefetch 已保证,除非调用方绕过
     try:
         order = _deduct_and_build_order(product, params, fx_rate)
     except (OrderCreationError, InsufficientStockError) as error:
         raise ApplyConflict(str(error)) from error
     session.add(order)
+    await session.flush()  # 取 id 供效果描述(事务内,回滚则效果一并丢弃)
+    return _order_created_effects(order, product, fx_missing=fx_rate is None)
 
 
 # —— 动作注册表(spec #8:分类/capture/apply/前端标签一处维护;labels 供 GET /api/actions 渲染)——
@@ -553,6 +623,19 @@ async def _execute_detect_anomalies(executor: ToolExecutor, params: dict) -> dic
     return {"anomaly": len(matched) > 0, "reason": f"订单包含异常关键词: {', '.join(matched)}" if matched else "正常"}
 
 
+def _positive_threshold(value) -> int | None:
+    """库存告警阈值校验(spec #9):正整数;None/缺省 → None(调用方取默认 10)。"""
+    if value is None:
+        return None
+    try:
+        threshold = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"库存告警阈值非法:{value!r}") from error
+    if threshold <= 0:
+        raise ValueError(f"库存告警阈值须为正整数:{value!r}")
+    return threshold
+
+
 async def _execute_draft_create(executor: ToolExecutor, params: dict) -> dict:
     async with SessionFactory() as session:
         existing = (await session.execute(select(Product.id).where(Product.sku == params["sku"]))).scalar_one_or_none()
@@ -565,6 +648,7 @@ async def _execute_draft_create(executor: ToolExecutor, params: dict) -> dict:
             category=params["category"],
             description=params.get("description"),
             status=ProductStatus.DRAFT,
+            alert_threshold=_positive_threshold(params.get("alert_threshold")) or DEFAULT_ALERT_THRESHOLD,
         )
         session.add(product)
         await session.commit()
@@ -587,12 +671,18 @@ async def _execute_draft_edit(executor: ToolExecutor, params: dict) -> dict:
             product.category = params["category"]
         if "description" in params:
             product.description = params["description"]
+        if "alert_threshold" in params:
+            threshold = _positive_threshold(params["alert_threshold"])
+            if threshold is None:
+                raise ValueError("库存告警阈值不可为空")
+            product.alert_threshold = threshold
         await session.commit()
         return {
             "product_id": product.id,
             "title": product.title,
             "price": str(product.price),
             "category": product.category,
+            "alert_threshold": product.alert_threshold,
         }
 
 
@@ -636,28 +726,27 @@ def _order_to_dict(order: Order) -> dict:
 
 
 async def _execute_check_inventory(executor: ToolExecutor, params: dict) -> dict:
-    """A7:库存检查读真实 stock 字段(五档告警),不再是 LLM 自报。"""
+    """A7/A9:库存检查读真实 stock 字段(五档告警),不再是 LLM 自报。
+
+    阈值缺省读商品自身 alert_threshold(spec #9:消除 LLM 自报阈值残余);传入时以传入值为准。
+    """
     async with SessionFactory() as session:
         product = await session.get(Product, params["product_id"])
         if product is None:
             raise ValueError(f"商品 {params['product_id']} 未找到")
         current_stock = product.stock
         title = product.title
-    threshold = params["threshold"]
+        # 缺省读商品阈值;显式传值(含非法 0/负数)以传入值为准并如实报错(不静默替换)
+        threshold = params["threshold"] if params.get("threshold") is not None else product.alert_threshold
     if threshold <= 0:
         raise ValueError(f"库存阈值非法:{threshold!r}")
-    ratio = current_stock / threshold
-    if ratio <= 0:
-        message = f"🔴 {title} 已售罄!请立即补货。"
-    elif ratio < 0.3:
-        message = f"🟠 {title} 库存严重不足 (当前: {current_stock}, 安全线: {threshold})。建议3天内补货。"
-    elif ratio < 0.6:
-        message = f"🟡 {title} 库存偏低 (当前: {current_stock}, 安全线: {threshold})。建议7天内补货。"
-    elif ratio < 1:
-        message = f"🔵 {title} 库存接近安全线 (当前: {current_stock})。关注销量趋势。"
-    else:
-        message = f"✅ {title} 库存充足 (当前: {current_stock})。"
-    return {"alert": ratio < 1, "message": message, "current_stock": current_stock, "product_title": title}
+    return {
+        "alert": current_stock < threshold,
+        "message": inventory_alert_message(title, current_stock, threshold),
+        "current_stock": current_stock,
+        "product_title": title,
+        "threshold": threshold,
+    }
 
 
 async def _execute_list_approvals(executor: ToolExecutor, params: dict) -> list[dict]:

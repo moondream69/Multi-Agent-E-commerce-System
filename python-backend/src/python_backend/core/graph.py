@@ -29,6 +29,7 @@ from langgraph.types import Send, interrupt
 from python_backend.agents.executor import ApplyFunction, apply_batch_actions
 from python_backend.core.approvals import ApprovalBatchStore
 from python_backend.core.events import EventEmitter, NullEmitter
+from python_backend.core.notifications import emit_notifications
 from python_backend.core.planning import ManagerPlanner, PlanFailed, Planner, Slice, SlicePlan
 from python_backend.db.audit_store import AuditWriter, NullAuditWriter
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
@@ -319,6 +320,9 @@ async def _execute_slice(
                 outcome = await apply_fn(batch_id, batch["actions"])
                 if not outcome.applied:
                     conflicts.append(f"{batch['action_type']}:{outcome.reason}")
+                else:
+                    # 提交后组装通知(spec #9 A8/A9):效果已落库才广播,回滚不误报
+                    await emit_notifications(emitter, outcome.effects)
             else:
                 rejected_comments.append(comment_value or "")
         if rejected_comments:
