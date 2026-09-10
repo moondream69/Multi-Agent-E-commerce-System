@@ -64,7 +64,7 @@ from python_backend.db.customer_store import list_customers
 from python_backend.db.models import Product, User
 from python_backend.db.report_store import build_summary
 from python_backend.db.session import SessionFactory
-from python_backend.db.task_store import create_task_row, get_task, list_tasks, task_session, update_task_row
+from python_backend.db.task_store import PostgresTaskStore, TaskStore
 from python_backend.db.ticket_store import close_ticket, list_tickets
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
@@ -150,7 +150,7 @@ async def _pending_interrupts(graph: CompiledStateGraph, thread_id: str) -> list
     return [(t.interrupts[0].id, t.interrupts[0].value) for t in snapshot.tasks if t.interrupts]
 
 
-async def _converge_failed_task(thread_id: str, emitter: EventEmitter, error: Exception) -> None:
+async def _converge_failed_task(task_store: TaskStore, thread_id: str, emitter: EventEmitter, error: Exception) -> None:
     """未预期异常兜底(issue #10):任务行收敛 failed + 广播 task.failed,不留悬挂 in_progress。
 
     调用方随后原样上抛——编程错误保留 500 观测,不许静默吞掉。
@@ -158,18 +158,20 @@ async def _converge_failed_task(thread_id: str, emitter: EventEmitter, error: Ex
     """
     reason = f"{type(error).__name__}: {error}"
     try:
-        await update_task_row(thread_id=thread_id, status="failed", result={"summary": None, "error": reason})
+        await task_store.update_task_row(
+            thread_id=thread_id, status="failed", result={"summary": None, "error": reason}
+        )
         await emitter.emit("task.failed", {"threadId": thread_id, "status": "failed", "error": reason})
     except Exception:
         logger.exception("任务 %s 失败兜底未完成(原始异常仍上抛)", thread_id)
 
 
-async def _update_row_or_converge(thread_id: str, emitter: EventEmitter, **fields) -> None:
+async def _update_row_or_converge(task_store: TaskStore, thread_id: str, emitter: EventEmitter, **fields) -> None:
     """任务行写入(关键簿记,spec #11 分类收敛):失败 → 行收敛 failed + 原样上抛(禁止悬挂/自相矛盾)。"""
     try:
-        await update_task_row(thread_id=thread_id, **fields)
+        await task_store.update_task_row(thread_id=thread_id, **fields)
     except Exception as error:
-        await _converge_failed_task(thread_id, emitter, error)
+        await _converge_failed_task(task_store, thread_id, emitter, error)
         raise
 
 
@@ -191,6 +193,7 @@ async def _resume(
     thread_id: str,
     emitter: EventEmitter,
     tracer: TaskTracer,
+    task_store: TaskStore,
     memory: SessionMemory | None = None,
     session_id: str | None = None,
     user_id: int | None = None,
@@ -204,7 +207,7 @@ async def _resume(
         with tracer.trace(thread_id):
             result = await graph.ainvoke(Command(resume=resume_map), _config(thread_id))
     except Exception as error:
-        await _converge_failed_task(thread_id, emitter, error)
+        await _converge_failed_task(task_store, thread_id, emitter, error)
         raise
     if "__interrupt__" in result:
         # 下一层切片又挂起:如实广播(多层切片任务不只一次中断)
@@ -222,6 +225,7 @@ async def _resume(
     except Exception:
         logger.exception("任务 %s 切片计划刷新失败(辅助簿记,不改任务行)", thread_id)
     await _update_row_or_converge(
+        task_store,
         thread_id,
         emitter,
         status=status,
@@ -331,15 +335,17 @@ def create_app(
     memory: SessionMemory | None = None,
     drafting: DraftingService | None = None,
     audit: AuditWriter | None = None,
+    task_store: TaskStore | None = None,
 ) -> FastAPI:
-    """构建 API 应用:graph/batch_store/apply_fn/emitter/tracer/fx_service/memory/drafting/audit
+    """构建 API 应用:graph/batch_store/apply_fn/emitter/tracer/fx_service/memory/drafting/audit/task_store
     可注入(测试)或由 lifespan 装配(生产)。
 
     apply_fn 默认真实 apply_batch_actions;emitter/tracer/audit 默认 no-op(spec #7/#8 接缝);
     fx_service 默认由下单端点惰性解析(spec #8 接缝,测试注入假实现);
     auth_required 默认开(spec #8 A1 全门禁),非认证行为的测试显式关闭;
     memory 默认 PG 会话记忆(spec #8 B16 接缝,测试注入内存实现);
-    drafting 默认真实起草服务(spec #8 B11 接缝,测试注入假实现)。
+    drafting 默认真实起草服务(spec #8 B11 接缝,测试注入假实现);
+    task_store 默认 PG 任务行存储(issue #13 接缝,测试注入内存实现——端点流程离线可跑)。
     """
     app = FastAPI(title="Multi-Agent E-commerce System(切片式人工环节)", version="0.1.0")
     app.state.graph = graph
@@ -352,6 +358,7 @@ def create_app(
     app.state.memory = memory or PostgresSessionMemory()
     app.state.drafting = drafting or DraftingService()
     app.state.audit = audit or NullAuditWriter()
+    app.state.task_store = task_store or PostgresTaskStore()
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
@@ -379,7 +386,7 @@ def create_app(
             app.state.memory.record(session_id, user_id, role="user", content=body.request, task_id=thread_id),
             "用户消息落库",
         )
-        await create_task_row(
+        await app.state.task_store.create_task_row(
             thread_id=thread_id, user_id=user_id, session_id=session_id, type_="chat", request=body.request
         )
         await _ancillary(
@@ -392,10 +399,10 @@ def create_app(
                 )
         except Exception as error:
             # 图执行失败(spec #11 分类 ①):行收敛 failed + task.failed 后原样上抛 500
-            await _converge_failed_task(thread_id, app.state.emitter, error)
+            await _converge_failed_task(app.state.task_store, thread_id, app.state.emitter, error)
             raise
         if "__interrupt__" in result:
-            await _update_row_or_converge(thread_id, app.state.emitter, status="interrupted")
+            await _update_row_or_converge(app.state.task_store, thread_id, app.state.emitter, status="interrupted")
             await _ancillary(
                 app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"}),
                 "task.interrupted 广播",
@@ -404,6 +411,7 @@ def create_app(
         status = "failed" if result.get("error") else "completed"
         # 任务行写入失败(spec #11 分类 ②)→ 收敛 failed + 500;其后广播/记忆失败(分类 ③)不翻行、响应如实
         await _update_row_or_converge(
+            app.state.task_store,
             thread_id,
             app.state.emitter,
             status=status,
@@ -509,7 +517,7 @@ def create_app(
 
         session_id 给定时只返回该会话的任务(spec #9 A2:切换会话即切换历史视图)。
         """
-        rows = await list_tasks(session_id=session_id)
+        rows = await app.state.task_store.list_tasks(session_id=session_id)
         return {
             "tasks": [
                 {
@@ -527,7 +535,7 @@ def create_app(
     @app.get("/api/tasks/{thread_id}")
     async def get_task_detail(thread_id: str) -> dict:
         """任务详情(驾驶舱时间线数据源,spec #8):任务行 + 切片结果(图状态)+ 全部批次。"""
-        row = await get_task(thread_id)
+        row = await app.state.task_store.get_task(thread_id)
         if row is None:
             raise HTTPException(status_code=404, detail=f"任务 {thread_id} 不存在")
         results = None
@@ -681,14 +689,15 @@ def create_app(
                     status=decided["decision"],
                     input={"batch_id": batch_id, "comment": decided["comment"]},
                 )
-        session = await task_session(thread_id)
-        await update_task_row(thread_id=thread_id, status="in_progress")
+        session = await app.state.task_store.task_session(thread_id)
+        await app.state.task_store.update_task_row(thread_id=thread_id, status="in_progress")
         return await _resume(
             app.state.graph,
             resume_map,
             thread_id,
             app.state.emitter,
             app.state.tracer,
+            app.state.task_store,
             memory=app.state.memory,
             session_id=session[0] if session else None,
             user_id=session[1] if session else None,
@@ -729,14 +738,15 @@ def create_app(
                     status=decision,
                     input={"batch_id": batch_id, "comment": body.text},
                 )
-        session = await task_session(thread_id)
-        await update_task_row(thread_id=thread_id, status="in_progress")
+        session = await app.state.task_store.task_session(thread_id)
+        await app.state.task_store.update_task_row(thread_id=thread_id, status="in_progress")
         return await _resume(
             app.state.graph,
             resume_map,
             thread_id,
             app.state.emitter,
             app.state.tracer,
+            app.state.task_store,
             memory=app.state.memory,
             session_id=session[0] if session else None,
             user_id=session[1] if session else None,

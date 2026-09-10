@@ -1,12 +1,11 @@
 """REST 端点(spec #7):任务发起/全量与按线程批次列表/多批一次决定/自然消息/影子补执行。
 
-接缝:HTTP 接口(create_app 注入图与批次存储)与意图判定纯函数。
-⚠️ 归 integration:端点自身写任务行(db/task_store,PG)且无注入缝——离线不可跑(issue #13)。
+接缝:HTTP 接口(create_app 注入图/批次存储/任务行存储)与意图判定纯函数;
+任务行注入 InMemoryTaskStore,离线快速套件可跑(issue #13 缝)。
 """
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -18,12 +17,11 @@ from tests.conftest import (
     FakeApply,
     InMemoryApprovalBatchStore,
     InMemorySessionMemory,
+    InMemoryTaskStore,
     RecordingEmitter,
     StubPlanner,
     slice_agent,
 )
-
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("requires_postgres")]
 
 PUBLISH = {
     "action": "product.publish",
@@ -50,6 +48,7 @@ def make_client(*, shadow_mode: bool = False) -> tuple[TestClient, InMemoryAppro
                 batch_store=store,
                 apply_fn=apply_fn,
                 memory=InMemorySessionMemory(),  # 默认件是 PG 记忆;离线快速套件须注入内存实现
+                task_store=InMemoryTaskStore(),  # 默认件是 PG 任务行存储;同上(issue #13)
                 auth_required=False,
             )
         ),
@@ -252,6 +251,7 @@ async def test_shadow_batch_execute_emits_notifications() -> None:
             apply_fn=apply_fn,
             emitter=emitter,
             memory=InMemorySessionMemory(),  # 同上:避免默认 PG 记忆触库
+            task_store=InMemoryTaskStore(),  # 同上:避免默认 PG 任务行存储触库
             auth_required=False,
         )
     )

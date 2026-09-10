@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -15,6 +14,7 @@ from python_backend.infrastructure.tracing import LangfuseTaskTracer, NullTaskTr
 from tests.conftest import (
     FakeApply,
     InMemoryApprovalBatchStore,
+    InMemoryTaskStore,
     RecordingTaskTracer,
     StubPlanner,
     slice_agent,
@@ -39,13 +39,18 @@ def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore, RecordingTask
         tracer=tracer,
     )
     client = TestClient(
-        create_app(graph=graph, batch_store=store, apply_fn=FakeApply(), tracer=tracer, auth_required=False)
+        create_app(
+            graph=graph,
+            batch_store=store,
+            apply_fn=FakeApply(),
+            tracer=tracer,
+            task_store=InMemoryTaskStore(),  # issue #13 缝:端点流程离线不触 PG
+            auth_required=False,
+        )
     )
     return client, store, tracer
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 async def test_task_trace_spans_and_approval_events_recorded() -> None:
     """B14:任务 trace 内记录 manager 规划 span、切片 span、approval.requested 事件(带 batchId 互链)。"""
     client, store, tracer = make_client()

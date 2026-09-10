@@ -18,7 +18,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from python_backend.agents.base import make_agent_runner
 from python_backend.agents.customer_service.agent import build_customer_agent
-from python_backend.api import app as app_module
 from python_backend.api.app import create_app
 from python_backend.core.auth import create_token, hash_password
 from python_backend.core.graph import SupervisorState, build_supervisor
@@ -31,6 +30,7 @@ from tests.conftest import (
     FakeExecutor,
     FakeLlm,
     InMemoryApprovalBatchStore,
+    InMemoryTaskStore,
     RecordingAudit,
     RecordingEmitter,
     StubPlanner,
@@ -85,6 +85,7 @@ def _make_client(
     *,
     plan: SlicePlan | None = None,
     memory=None,
+    task_store=None,
     raise_app_exceptions: bool = True,
 ) -> tuple[TestClient, InMemoryApprovalBatchStore, RecordingEmitter]:
     store = InMemoryApprovalBatchStore()
@@ -100,7 +101,13 @@ def _make_client(
     )
     client = TestClient(
         create_app(
-            graph=graph, batch_store=store, apply_fn=apply_fn, emitter=emitter, memory=memory, auth_required=False
+            graph=graph,
+            batch_store=store,
+            apply_fn=apply_fn,
+            emitter=emitter,
+            memory=memory,
+            task_store=task_store or InMemoryTaskStore(),  # issue #13 缝:端点流程离线不触 PG
+            auth_required=False,
         ),
         raise_server_exceptions=raise_app_exceptions,
     )
@@ -168,8 +175,6 @@ async def test_supervisor_aggregates_llm_failure_without_apply() -> None:
 # —— 接缝 3:发起入口 ——
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 def test_create_task_llm_failure_returns_failed_and_broadcasts() -> None:
     """LLM 失败走「如实未完成」通道:201 + status=failed + error;广播 task.failed(不挂起)。"""
     client, _store, emitter = _make_client(
@@ -186,8 +191,6 @@ def test_create_task_llm_failure_returns_failed_and_broadcasts() -> None:
     assert "task.interrupted" not in emitter.names()
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 def test_create_task_unexpected_error_converges_then_raises() -> None:
     """编程错误:行收敛 failed + 广播 task.failed,端点仍 500(异常原样上抛)。"""
 
@@ -205,8 +208,6 @@ def test_create_task_unexpected_error_converges_then_raises() -> None:
 # —— 接缝 3:恢复入口(恢复过程中子图失败) ——
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 def test_resume_llm_failure_converges_and_broadcasts() -> None:
     """恢复入口:恢复中 LLM 失败同样收敛,广播 task.failed,响应体 status 如实。"""
     client, _store, emitter = _make_client(
@@ -226,8 +227,6 @@ def test_resume_llm_failure_converges_and_broadcasts() -> None:
     assert "HTTP 400" in response.json()["error"]
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 def test_resume_unexpected_error_converges_then_raises() -> None:
     """恢复入口:编程错误 → 行收敛 failed + 广播 task.failed,端点仍 500。"""
 
@@ -250,8 +249,6 @@ def test_resume_unexpected_error_converges_then_raises() -> None:
 # —— 接缝 4:辅助簿记失败(分类收敛,spec #11 §3.3) ——
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 def test_post_graph_bookkeeping_failure_keeps_task_completed() -> None:
     """图成功、仅辅助簿记(记忆落库)失败 → 端点如实成功,不翻 failed、不广播 task.failed。"""
     client, _store, emitter = _make_client({"order_management": slice_agent([], answer="完成")}, memory=FailingMemory())
@@ -264,8 +261,6 @@ def test_post_graph_bookkeeping_failure_keeps_task_completed() -> None:
     assert "task.failed" not in emitter.names(), "辅助簿记失败不得把已成功的任务谎报为失败"
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 def test_user_message_memory_failure_does_not_block_task() -> None:
     """图前的用户消息落库失败同属辅助簿记:任务照常执行并如实成功。"""
     client, _store, _emitter = _make_client(
@@ -278,8 +273,6 @@ def test_user_message_memory_failure_does_not_block_task() -> None:
     assert response.json()["status"] == "completed"
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 def test_resume_bookkeeping_failure_keeps_task_completed() -> None:
     """恢复入口:图成功、仅辅助簿记失败 → 响应 status 如实 completed,不广播 task.failed。"""
     client, _store, emitter = _make_client(
@@ -299,22 +292,29 @@ def test_resume_bookkeeping_failure_keeps_task_completed() -> None:
     assert "task.failed" not in emitter.names()
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
-def test_task_row_write_failure_converges_then_raises(monkeypatch) -> None:
-    """任务行写入(关键簿记)失败 → 收敛 failed + 广播 task.failed,端点仍 500(不悬挂/不谎报)。"""
-    real = app_module.update_task_row
-    calls = {"n": 0}
+class FlakyUpdateTaskStore(InMemoryTaskStore):
+    """update 首次失败、其后委托内存实现:关键簿记失败的注入点(经接缝注入,不再猴补模块内部)。"""
 
-    async def flaky_update(**kwargs) -> None:
-        calls["n"] += 1
-        if calls["n"] == 1:
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def update_task_row(
+        self, *, thread_id: str, status: str, slice_plan: dict | None = None, result: dict | None = None
+    ) -> None:
+        self.calls += 1
+        if self.calls == 1:
             raise RuntimeError("行写入失败")
-        await real(**kwargs)
+        await super().update_task_row(thread_id=thread_id, status=status, slice_plan=slice_plan, result=result)
 
-    monkeypatch.setattr(app_module, "update_task_row", flaky_update)
+
+def test_task_row_write_failure_converges_then_raises() -> None:
+    """任务行写入(关键簿记)失败 → 收敛 failed + 广播 task.failed,端点仍 500(不悬挂/不谎报)。"""
+    task_store = FlakyUpdateTaskStore()
     client, _store, emitter = _make_client(
-        {"order_management": slice_agent([], answer="完成")}, raise_app_exceptions=False
+        {"order_management": slice_agent([], answer="完成")},
+        task_store=task_store,
+        raise_app_exceptions=False,
     )
 
     response = client.post("/api/tasks", json={"request": "上架商品"})

@@ -21,7 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from python_backend.api.app import create_app
 from python_backend.api.ws import SocketEmitter, build_socketio, wrap_with_socketio
 from python_backend.core.graph import build_supervisor
-from tests.conftest import FakeApply, InMemoryApprovalBatchStore, StubPlanner, slice_agent
+from tests.conftest import FakeApply, InMemoryApprovalBatchStore, InMemoryTaskStore, StubPlanner, slice_agent
 
 PUBLISH = {
     "action": "product.publish",
@@ -50,7 +50,14 @@ def server_url():
         apply_fn=FakeApply(),
         emitter=emitter,
     )
-    app = create_app(graph=graph, batch_store=store, apply_fn=FakeApply(), emitter=emitter, auth_required=False)
+    app = create_app(
+        graph=graph,
+        batch_store=store,
+        apply_fn=FakeApply(),
+        emitter=emitter,
+        task_store=InMemoryTaskStore(),  # issue #13 缝:端点流程离线不触 PG
+        auth_required=False,
+    )
     wrapped = wrap_with_socketio(app, sio)
 
     port = _free_port()
@@ -77,8 +84,6 @@ def server_url():
     thread.join(timeout=5)
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 async def test_socketio_client_receives_approval_requested(server_url: str) -> None:
     """e2e:REST 发起任务 → WS 广播 approval.requested 到达真实 socket.io 客户端。"""
     received: list[dict] = []

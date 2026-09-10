@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import socket
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
@@ -17,6 +18,7 @@ from python_backend.core.approvals import (
     initial_status,
 )
 from python_backend.core.planning import Slice, SlicePlan
+from python_backend.db.models import Task, TaskStatus
 from python_backend.infrastructure.llm import ToolCallResult
 from python_backend.settings import get_settings
 from python_backend.vector_repo.base import SearchHit, VectorRecord, VectorRepository
@@ -72,6 +74,56 @@ class InMemorySessionMemory:
         self.records.append(
             {"session_id": session_id, "user_id": user_id, "role": role, "content": content, "task_id": task_id}
         )
+
+
+class InMemoryTaskStore:
+    """任务行存储内存实现(issue #13 接缝;端点流程用例离线可跑,不触 PG)。
+
+    复现生产可见语义:未认证(user_id None)create 跳过、update 缺行静默跳过、
+    列表按创建时间倒序且支持 session_id 过滤、task_session 反查 (session_id, user_id)。
+    created_at 由本实现填充(PG 侧为 server_default);顺序按插入倒排,确定且等价「最新在前」。
+    """
+
+    def __init__(self) -> None:
+        self._by_thread: dict[str, Task] = {}
+
+    async def create_task_row(
+        self, *, thread_id: str, user_id: int | None, session_id: str, type_: str, request: str
+    ) -> None:
+        if user_id is None:
+            return
+        self._by_thread[thread_id] = Task(
+            thread_id=thread_id,
+            user_id=user_id,
+            session_id=session_id,
+            type=type_,
+            status=TaskStatus.IN_PROGRESS,
+            input={"request": request},
+            created_at=datetime.now(UTC),
+        )
+
+    async def update_task_row(
+        self, *, thread_id: str, status: str, slice_plan: dict | None = None, result: dict | None = None
+    ) -> None:
+        row = self._by_thread.get(thread_id)
+        if row is None:
+            return
+        row.status = TaskStatus(status)
+        if slice_plan is not None:
+            row.slice_plan = slice_plan
+        if result is not None:
+            row.result = result
+
+    async def task_session(self, thread_id: str) -> tuple[str, int] | None:
+        row = self._by_thread.get(thread_id)
+        return (row.session_id, row.user_id) if row is not None else None
+
+    async def list_tasks(self, *, session_id: str | None = None) -> list[Task]:
+        rows = list(reversed(self._by_thread.values()))  # 插入倒排 = 最新在前(生产按 created_at 降序)
+        return [row for row in rows if not session_id or row.session_id == session_id]
+
+    async def get_task(self, thread_id: str) -> Task | None:
+        return self._by_thread.get(thread_id)
 
 
 class InMemoryApprovalBatchStore:

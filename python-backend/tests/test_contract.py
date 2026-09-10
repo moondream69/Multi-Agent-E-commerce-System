@@ -15,7 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from python_backend.api.app import create_app
 from python_backend.core.graph import build_supervisor
-from tests.conftest import InMemoryApprovalBatchStore, StubPlanner, slice_agent
+from tests.conftest import InMemoryApprovalBatchStore, InMemoryTaskStore, StubPlanner, slice_agent
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EVENTS_TS = REPO_ROOT / "frontend" / "src" / "types" / "events.ts"
@@ -36,8 +36,6 @@ def _ts_union_values(name: str) -> set[str]:
     return set(re.findall(r"'(\w+)'", match.group(1)))
 
 
-@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
-@pytest.mark.usefixtures("requires_postgres")
 async def test_approval_batch_response_keys_match_contract() -> None:
     """GET /approvals 响应键 == ts ApprovalBatch 接口字段(驼峰)。"""
     store = InMemoryApprovalBatchStore()
@@ -57,7 +55,7 @@ async def test_approval_batch_response_keys_match_contract() -> None:
         checkpointer=InMemorySaver(),
         batch_store=store,
     )
-    client = TestClient(create_app(graph=graph, batch_store=store, auth_required=False))
+    client = TestClient(create_app(graph=graph, batch_store=store, task_store=InMemoryTaskStore(), auth_required=False))
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
 
     approvals = client.get(f"/api/threads/{thread_id}/approvals").json()["approvals"]
