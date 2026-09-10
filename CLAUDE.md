@@ -17,7 +17,7 @@ cd python-backend
 uv run python -m python_backend.run                # 启动(端口 3000;Windows 下经 run.py 切 SelectorEventLoop——uvicorn 直接跑 main 会因 psycopg 不支持 Proactor 而启动失败)
 uv run pytest                                      # 全部测试(e2e/integration 需真实服务在线,离线秒 skip)
 uv run pytest -m "not e2e and not integration"     # CI 同款快速套件
-uv run alembic upgrade head                        # 数据库迁移(12 业务表;checkpoint 表由 PostgresSaver 自建,不在 Alembic 内)
+uv run alembic upgrade head                        # 数据库迁移(13 业务表;checkpoint 表由 PostgresSaver 自建,不在 Alembic 内)
 uv run ruff check .                                # Lint (无 --fix,自动修复用 `ruff check . --fix`)
 uv run ruff format .                               # 格式化
 uv run ty check .                                  # 类型检查 (Alembic 迁移已排除)
@@ -67,7 +67,7 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 | 审批批次 | `core/approvals.py` + `db/approval_store.py` | 三层风险分类、`ApprovalBatchStore` 协议(create/decide 幂等,重放安全)、PG 实现 |
 | `VectorRepository` | `vector_repo/base.py` | 向量访问抽象(Milvus 实现,pgvector 可切换) |
 | 事件与观测 | `core/events.py` / `infrastructure/tracing.py` | `EventEmitter`(WS 事件)/ `TaskTracer`(Langfuse 层级,B14) |
-| 通知组装 | `core/notifications.py` | 效果描述→通知载荷(状态映射表 7 文案 + 五档库存文案,零 LLM);`notification.created` 由 apply/REST **提交后** emit |
+| 通知组装与存储 | `core/notifications.py` / `db/notification_store.py` | 效果描述→通知载荷(状态映射表 7 文案 + 五档库存文案,零 LLM),`emit` = 组装→落库→广播;`notification.created` 由 apply/REST **提交后** emit;`NotificationStore` 按用户扇出写 + 回读(每组 50 条服务端截断,未读 = read_at 空),GET / POST read 端点为读路径(poke 提交后广播) |
 | `LlmService` | `infrastructure/llm.py` | `complete()` + `complete_with_tools()`(function calling);失败统一包装 `LlmFailure`(fallback 只承接它) |
 
 ### Agent 模式

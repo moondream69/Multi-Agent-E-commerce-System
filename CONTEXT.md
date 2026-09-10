@@ -130,7 +130,7 @@ _Avoid_: 页面(单页应用三视图切换)
 _Avoid_: 进度条(丢失断点上下文)
 
 **通知铃铛**:
-主动通知的接收 UI:按 kind 分组(order_status 订单状态 / inventory_alert 库存告警 / fx_missing 汇率缺失,未知归「其他通知」组),未读数字徽标(0 隐藏、99+ 封顶),开面板清零,每组最近 50 条,localStorage 持久化。
+主动通知的接收 UI(服务端真源,按用户已读):通知按用户扇出落库,挂载与收到 notification.read poke 时重拉真源;按 kind 分组(order_status 订单状态 / inventory_alert 库存告警 / fx_missing 汇率缺失,未知归「其他通知」组),未读数字徽标取服务端全量未读计数(0 隐藏、99+ 封顶,与每组截断解耦),开面板幂等标记已读(多端由此一致),每组最近 50 条由服务端截断。
 _Avoid_: 推送、弹窗、按 Agent 归卡(旧系统语义,新 UI 无 Agent 卡片)
 
 **经营快照**:
