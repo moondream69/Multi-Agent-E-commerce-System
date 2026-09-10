@@ -7,9 +7,7 @@ uvicorn 以 wrap_with_socketio 的 ASGI 应用为入口(WS 与 REST 同端口)�
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import sys
 from contextlib import asynccontextmanager
 
 import psycopg
@@ -39,10 +37,8 @@ from python_backend.vector_repo.milvus_repo import MilvusVectorRepository
 
 logger = logging.getLogger(__name__)
 
-# Windows:psycopg async 不能跑在 ProactorEventLoop 上(uvicorn 默认 loop),此块为直接以 main
-# 为入口的消费者兜底(正式入口 run.py 已改用 loop_factory);策略 API 自 3.14 弃用,保留原因见 __init__.py。
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # ty: ignore[deprecated]
+# Windows 事件循环策略由包入口 __init__.py 统一设置(psycopg 异步需 SelectorEventLoop;
+# import 本模块必先执行包 __init__,故无需在此重复;正式入口 run.py 用 loop_factory)。
 
 
 def build_agents() -> dict[str, AgentRunner]:

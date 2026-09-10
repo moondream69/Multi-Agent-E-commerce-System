@@ -58,3 +58,12 @@ ignore = ["BLE001", "S110"]
 [tool.ty.src]
 include = ["src", "tests"]
 exclude = ["alembic/versions/**"]
+
+# __init__.py 的 Windows 事件循环策略块:platform 分支在 Linux 目标下被静态剪枝,
+# 其中的 `# ty: ignore[deprecated]` 会被判"未使用"(Windows 目标下则确实在用)——
+# 单条 ignore 无法同时满足两个平台,故仅对该文件关掉 unused-ignore-comment。
+[[tool.ty.overrides]]
+include = ["src/python_backend/__init__.py"]
+
+[tool.ty.overrides.rules]
+unused-ignore-comment = "ignore"
