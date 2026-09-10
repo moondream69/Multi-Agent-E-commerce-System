@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   deleteConversation,
   fetchConversations,
+  renameConversation,
 } from '../services/conversations';
 import {
   getCurrentSessionId,
@@ -18,9 +19,10 @@ export interface Sessions {
   select: (sessionId: string) => void;
   startNew: () => void;
   remove: (sessionId: string) => Promise<void>;
+  rename: (sessionId: string, title: string) => Promise<void>;
 }
 
-/** 会话状态(A2):当前会话 id(localStorage 恢复)+ 列表 + 切换/新建/删除。 */
+/** 会话状态(A2):当前会话 id(localStorage 恢复)+ 列表 + 切换/新建/删除/重命名。 */
 export function useSessions(): Sessions {
   const [sessionId, setSessionId] = useState<string>(getCurrentSessionId);
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
@@ -62,5 +64,27 @@ export function useSessions(): Sessions {
     [refresh, select, sessionId],
   );
 
-  return { sessionId, conversations, error, refresh, select, startNew, remove };
+  const rename = useCallback(
+    async (target: string, title: string) => {
+      setError(null);
+      try {
+        await renameConversation(target, title);
+        refresh();
+      } catch (reason: unknown) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    },
+    [refresh],
+  );
+
+  return {
+    sessionId,
+    conversations,
+    error,
+    refresh,
+    select,
+    startNew,
+    remove,
+    rename,
+  };
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { BusinessSnapshot } from './BusinessSnapshot';
 import { EventWall } from './EventWall';
 import { SessionBar } from './SessionBar';
 import { useSessions } from '../hooks/useSessions';
@@ -315,8 +316,10 @@ function SliceTimeline({
 }
 
 function CsvImportCard() {
-  // CSV 批量导入(spec #8 B8):文件读取后以文本体上传,行级报告 {created, skipped, errors}
-  const [kind, setKind] = useState<'products' | 'orders'>('products');
+  // CSV 批量导入(spec #8 B8 + spec #11):文件读取后以文本体上传,行级报告 {created, skipped, errors}
+  const [kind, setKind] = useState<'products' | 'orders' | 'customers'>(
+    'products',
+  );
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<ImportReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -352,7 +355,7 @@ function CsvImportCard() {
         <select
           value={kind}
           onChange={(event) =>
-            setKind(event.target.value as 'products' | 'orders')
+            setKind(event.target.value as 'products' | 'orders' | 'customers')
           }
           style={{
             padding: '5px 8px',
@@ -364,6 +367,7 @@ function CsvImportCard() {
         >
           <option value="products">商品(sku 幂等,落草稿)</option>
           <option value="orders">订单(reference 去重)</option>
+          <option value="customers">买家(email 幂等,先于订单导入)</option>
         </select>
         <input
           type="file"
@@ -417,6 +421,7 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
     select: switchSession,
     startNew,
     remove: removeSession,
+    rename: renameSession,
   } = useSessions();
   const [tasks, setTasks] = useState<TaskListItem[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -491,6 +496,7 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
           onSelect={switchSession}
           onNew={startNew}
           onDelete={(target) => void removeSession(target)}
+          onRename={(target, title) => void renameSession(target, title)}
           error={sessionError}
         />
         <div
@@ -570,7 +576,7 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         </div>
       </div>
 
-      {/* 中栏:切片时间线 */}
+      {/* 中栏:经营快照 + 切片时间线 */}
       <div
         style={{
           flex: 1,
@@ -579,6 +585,7 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
           flexDirection: 'column',
         }}
       >
+        <BusinessSnapshot />
         <SliceTimeline detail={detail} onOpenApprovals={onOpenApprovals} />
       </div>
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Awaitable
 from decimal import Decimal
 from typing import Literal
 
@@ -43,18 +44,28 @@ from python_backend.core.events import EventEmitter, NullEmitter
 from python_backend.core.graph import SupervisorState
 from python_backend.core.imports import (
     CsvFormatError,
+    import_customers,
     import_orders,
     import_products,
+    parse_customers_csv,
     parse_orders_csv,
     parse_products_csv,
 )
 from python_backend.core.memory import PostgresSessionMemory, SessionMemory
 from python_backend.core.notifications import emit_notifications
 from python_backend.db.audit_store import AuditWriter, NullAuditWriter
-from python_backend.db.conversation_store import delete_conversation, list_conversations, session_has_pending_batches
+from python_backend.db.conversation_store import (
+    delete_conversation,
+    list_conversations,
+    rename_conversation,
+    session_has_pending_batches,
+)
+from python_backend.db.customer_store import list_customers
 from python_backend.db.models import Product, User
+from python_backend.db.report_store import build_summary
 from python_backend.db.session import SessionFactory
 from python_backend.db.task_store import create_task_row, get_task, list_tasks, task_session, update_task_row
+from python_backend.db.ticket_store import close_ticket, list_tickets
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
 logger = logging.getLogger(__name__)
@@ -96,6 +107,18 @@ class DraftingRequest(BaseModel):
     message: str
     locale: str = "zh"
     order_id: int | None = None
+
+
+class TicketCloseRequest(BaseModel):
+    """工单结单(spec #11 A11):唯一合法值 closed(非法值由 pydantic 422 拦截)。"""
+
+    status: Literal["closed"]
+
+
+class ConversationRenameRequest(BaseModel):
+    """会话重命名(spec #11 A2 扩展):trim 后非空且 ≤50 字(端点内校验 422)。"""
+
+    title: str
 
 
 async def _authenticate(body: LoginRequest) -> dict:
@@ -141,6 +164,27 @@ async def _converge_failed_task(thread_id: str, emitter: EventEmitter, error: Ex
         logger.exception("任务 %s 失败兜底未完成(原始异常仍上抛)", thread_id)
 
 
+async def _update_row_or_converge(thread_id: str, emitter: EventEmitter, **fields) -> None:
+    """任务行写入(关键簿记,spec #11 分类收敛):失败 → 行收敛 failed + 原样上抛(禁止悬挂/自相矛盾)。"""
+    try:
+        await update_task_row(thread_id=thread_id, **fields)
+    except Exception as error:
+        await _converge_failed_task(thread_id, emitter, error)
+        raise
+
+
+async def _ancillary(work: Awaitable[None], description: str) -> None:
+    """辅助簿记(记忆落库/事件广播/计划刷新,spec #11 分类收敛):失败仅记日志,不改任务行、不影响响应。
+
+    与关键簿记的区别:这些丢失只降级观测/上下文,不改变任务已产出的事实;
+    失败仍以 logger.exception 上报(可观测,非静默)。
+    """
+    try:
+        await work
+    except Exception:
+        logger.exception("辅助簿记失败(%s):任务行与响应如实保留", description)
+
+
 async def _resume(
     graph: CompiledStateGraph,
     resume_map: dict[str, dict],
@@ -153,39 +197,53 @@ async def _resume(
 ) -> dict:
     """组装好的 resume_map 驱动图恢复,统一响应形状;完成后广播任务终态事件。
 
-    恢复与随后的簿记(刷新计划/落行/记忆)任一步抛错都兜底收敛(issue #10):
-    行 failed + task.failed 广播后原样上抛;响应体 status 与行/事件如实一致。
+    失败分类(spec #11 §3.3):图执行失败 → 收敛 failed + 上抛;任务行写入失败 → 收敛 failed + 上抛;
+    辅助簿记(计划刷新/广播/记忆)失败仅记日志——不改行、响应如实反映任务成果。
     """
     try:
         with tracer.trace(thread_id):
             result = await graph.ainvoke(Command(resume=resume_map), _config(thread_id))
-        if "__interrupt__" in result:
-            # 下一层切片又挂起:如实广播(多层切片任务不只一次中断)
-            await emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})
-            return {"status": "interrupted"}
-        status = "failed" if result.get("error") else "completed"
-        await emitter.emit(f"task.{status}", {"threadId": thread_id, "status": status, "error": result.get("error")})
-        # 图状态为最新规划(含重规划):刷新任务行切片计划,驾驶舱时间线展示重规划后的段
+    except Exception as error:
+        await _converge_failed_task(thread_id, emitter, error)
+        raise
+    if "__interrupt__" in result:
+        # 下一层切片又挂起:如实广播(多层切片任务不只一次中断)
+        await _ancillary(
+            emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"}),
+            "task.interrupted 广播",
+        )
+        return {"status": "interrupted"}
+    status = "failed" if result.get("error") else "completed"
+    # 图状态为最新规划(含重规划):刷新任务行切片计划,驾驶舱时间线展示重规划后的段
+    refreshed_plan = None
+    try:
         snapshot = await graph.aget_state(_config(thread_id))
         refreshed_plan = _plan_payload(snapshot.values.get("plan")) if snapshot.values else None
-        await update_task_row(
-            thread_id=thread_id,
-            status=status,
-            slice_plan=refreshed_plan,
-            result={"summary": result.get("summary"), "error": result.get("error")},
-        )
-        if memory is not None and session_id and (result.get("summary") or result.get("error")):
-            await memory.record(
+    except Exception:
+        logger.exception("任务 %s 切片计划刷新失败(辅助簿记,不改任务行)", thread_id)
+    await _update_row_or_converge(
+        thread_id,
+        emitter,
+        status=status,
+        slice_plan=refreshed_plan,
+        result={"summary": result.get("summary"), "error": result.get("error")},
+    )
+    await _ancillary(
+        emitter.emit(f"task.{status}", {"threadId": thread_id, "status": status, "error": result.get("error")}),
+        f"task.{status} 广播",
+    )
+    if memory is not None and session_id and (result.get("summary") or result.get("error")):
+        await _ancillary(
+            memory.record(
                 session_id,
                 user_id,
                 role="assistant",
                 content=str(result.get("summary") or result.get("error")),
                 task_id=thread_id,
-            )
-        return {"status": status, "error": result.get("error"), "summary": result.get("summary")}
-    except Exception as error:
-        await _converge_failed_task(thread_id, emitter, error)
-        raise
+            ),
+            "助手消息落库",
+        )
+    return {"status": status, "error": result.get("error"), "summary": result.get("summary")}
 
 
 def _serialize_batch(record) -> dict:
@@ -317,48 +375,64 @@ def create_app(
         user_id = _current_user_id(request)
         # B16 会话记忆:携历史上下文入图;用户消息落库(任务行同落,驾驶舱数据源)
         context = await app.state.memory.get_context(session_id, user_id)
-        await app.state.memory.record(session_id, user_id, role="user", content=body.request, task_id=thread_id)
+        await _ancillary(
+            app.state.memory.record(session_id, user_id, role="user", content=body.request, task_id=thread_id),
+            "用户消息落库",
+        )
         await create_task_row(
             thread_id=thread_id, user_id=user_id, session_id=session_id, type_="chat", request=body.request
         )
-        await app.state.emitter.emit("task.created", {"threadId": thread_id, "status": "created"})
+        await _ancillary(
+            app.state.emitter.emit("task.created", {"threadId": thread_id, "status": "created"}), "task.created 广播"
+        )
         try:
             with app.state.tracer.trace(thread_id):
                 result = await app.state.graph.ainvoke(
                     SupervisorState(request=body.request, thread_id=thread_id, context=context), _config(thread_id)
                 )
-            if "__interrupt__" in result:
-                await update_task_row(thread_id=thread_id, status="interrupted")
-                await app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"})
-                return {"thread_id": thread_id, "status": "interrupted"}
-            status = "failed" if result.get("error") else "completed"
-            await update_task_row(
-                thread_id=thread_id,
-                status=status,
-                slice_plan=_plan_payload(result.get("plan")),
-                result={"summary": result.get("summary"), "error": result.get("error")},
+        except Exception as error:
+            # 图执行失败(spec #11 分类 ①):行收敛 failed + task.failed 后原样上抛 500
+            await _converge_failed_task(thread_id, app.state.emitter, error)
+            raise
+        if "__interrupt__" in result:
+            await _update_row_or_converge(thread_id, app.state.emitter, status="interrupted")
+            await _ancillary(
+                app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"}),
+                "task.interrupted 广播",
             )
-            await app.state.emitter.emit(
+            return {"thread_id": thread_id, "status": "interrupted"}
+        status = "failed" if result.get("error") else "completed"
+        # 任务行写入失败(spec #11 分类 ②)→ 收敛 failed + 500;其后广播/记忆失败(分类 ③)不翻行、响应如实
+        await _update_row_or_converge(
+            thread_id,
+            app.state.emitter,
+            status=status,
+            slice_plan=_plan_payload(result.get("plan")),
+            result={"summary": result.get("summary"), "error": result.get("error")},
+        )
+        await _ancillary(
+            app.state.emitter.emit(
                 f"task.{status}", {"threadId": thread_id, "status": status, "error": result.get("error")}
-            )
-            if result.get("summary") or result.get("error"):
-                await app.state.memory.record(
+            ),
+            f"task.{status} 广播",
+        )
+        if result.get("summary") or result.get("error"):
+            await _ancillary(
+                app.state.memory.record(
                     session_id,
                     user_id,
                     role="assistant",
                     content=str(result.get("summary") or result.get("error")),
                     task_id=thread_id,
-                )
-            return {
-                "thread_id": thread_id,
-                "status": status,
-                "error": result.get("error"),
-                "summary": result.get("summary"),
-            }
-        except Exception as error:
-            # 图执行与其后簿记任一步抛错都兜底收敛(issue #10):行 failed + task.failed 后原样上抛
-            await _converge_failed_task(thread_id, app.state.emitter, error)
-            raise
+                ),
+                "助手消息落库",
+            )
+        return {
+            "thread_id": thread_id,
+            "status": status,
+            "error": result.get("error"),
+            "summary": result.get("summary"),
+        }
 
     @app.post("/api/drafting")
     async def drafting(body: DraftingRequest) -> dict:
@@ -414,6 +488,18 @@ def create_app(
         except CsvFormatError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         report = await import_orders(rows)
+        report.errors.extend(parse_errors)
+        return {"report": report.as_dict()}
+
+    @app.post("/api/import/customers")
+    async def import_customers_csv(request: Request) -> dict:
+        """买家 CSV 导入(spec #11):email 幂等;导入顺序 买家→订单(订单按邮箱解析买家)。"""
+        text = await _csv_text(request)
+        try:
+            rows, parse_errors = parse_customers_csv(text)
+        except CsvFormatError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        report = await import_customers(rows)
         report.errors.extend(parse_errors)
         return {"report": report.as_dict()}
 
@@ -475,6 +561,29 @@ def create_app(
             rows = (await session.execute(select(Product).order_by(Product.created_at.desc()))).scalars().all()
         return {"products": [_product_payload(product) for product in rows]}
 
+    @app.get("/api/customers")
+    async def list_customer_rows() -> dict:
+        """买家列表(只读,spec #11):模拟流量买家池 + 运营查询入口。"""
+        return {"customers": await list_customers()}
+
+    @app.get("/api/tickets")
+    async def list_ticket_rows() -> dict:
+        """工单列表(只读,spec #11 A11):客服升级实体化落表后的界面可见面。"""
+        return {"tickets": await list_tickets()}
+
+    @app.patch("/api/tickets/{ticket_id}")
+    async def close_ticket_row(ticket_id: int, body: TicketCloseRequest) -> dict:
+        """工单结单(spec #11 A11):open→closed 记 resolved_at;平权(任何登录者)。"""
+        ticket = await close_ticket(ticket_id)
+        if ticket is None:
+            raise HTTPException(status_code=404, detail=f"工单 {ticket_id} 不存在")
+        return {"ticket": ticket}
+
+    @app.get("/api/reports/summary")
+    async def report_summary() -> dict:
+        """经营快照(spec #11):订单分布 / 近 7 日成交额(CNY 快照口径)/ 低库存 / 未结工单,零 LLM。"""
+        return await build_summary()
+
     @app.get("/api/conversations")
     async def list_user_conversations(request: Request) -> dict:
         """会话列表(spec #9 A2):当前用户的会话,updated_at 倒序。"""
@@ -494,6 +603,22 @@ def create_app(
         if not await delete_conversation(user_id, session_id):
             raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
         return {"deleted": True}
+
+    @app.patch("/api/conversations/{session_id}")
+    async def rename_user_conversation(session_id: str, body: ConversationRenameRequest, request: Request) -> dict:
+        """会话重命名(spec #11 A2 扩展):trim 非空且 ≤50 字(422);不存在/非本人 404。"""
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=422, detail="标题不能为空")
+        if len(title) > 50:
+            raise HTTPException(status_code=422, detail="标题最长 50 字")
+        user_id = _current_user_id(request)
+        if user_id is None:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        conversation = await rename_conversation(user_id, session_id, title)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        return {"conversation": conversation}
 
     @app.get("/api/actions")
     async def list_actions() -> dict:

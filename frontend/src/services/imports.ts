@@ -1,9 +1,9 @@
 import { ImportReport } from '../types/events';
 import { apiFetch } from './auth';
 
-/** CSV 批量导入(spec #8 B8):文本体上传(text/csv),行级报告。 */
+/** CSV 批量导入(spec #8 B8 + spec #11):文本体上传(text/csv),行级报告;买家先于订单导入。 */
 export async function importCsv(
-  kind: 'products' | 'orders',
+  kind: 'products' | 'orders' | 'customers',
   text: string,
 ): Promise<ImportReport> {
   const res = await apiFetch(`/api/import/${kind}`, {

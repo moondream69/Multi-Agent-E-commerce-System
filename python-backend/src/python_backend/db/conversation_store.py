@@ -1,15 +1,27 @@
-"""会话存储(spec #9 A2):会话列表/删除 + 挂起审批检查。
+"""会话存储(spec #9 A2 + spec #11):会话列表/删除/重命名 + 挂起审批检查。
 
 conversations 行由会话记忆在首条消息时惰性创建(memory.record,空白会话不落库);
-本模块只做驾驶舱会话切换条的读与删。
+本模块只做驾驶舱会话切换条的读、删与改名。
 """
 
 from __future__ import annotations
+
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
 from python_backend.db.models import ApprovalBatch, ApprovalStatus, Conversation, Task
 from python_backend.db.session import SessionFactory
+
+
+def _conversation_payload(row: Conversation) -> dict:
+    """会话序列化(驼峰,与契约 events.ts ConversationMeta 字段一一对应)。"""
+    return {
+        "sessionId": row.session_id,
+        "title": row.title or "",
+        "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+        "messageCount": len(row.messages or []),
+    }
 
 
 async def list_conversations(user_id: int) -> list[dict]:
@@ -24,15 +36,27 @@ async def list_conversations(user_id: int) -> list[dict]:
             .scalars()
             .all()
         )
-        return [
-            {
-                "sessionId": row.session_id,
-                "title": row.title or "",
-                "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
-                "messageCount": len(row.messages or []),
-            }
-            for row in rows
-        ]
+        return [_conversation_payload(row) for row in rows]
+
+
+async def rename_conversation(user_id: int, session_id: str, title: str) -> dict | None:
+    """会话改名;不存在/非本人返回 None(端点 404)。
+
+    自动标题只在建行时写(memory.record),手工命名之后不会被覆盖。
+    """
+    async with SessionFactory() as session, session.begin():
+        row = (
+            await session.execute(
+                select(Conversation).where(Conversation.user_id == user_id, Conversation.session_id == session_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        row.title = title
+        # 显式写 updated_at:onupdate 是 SQL 侧表达式,flush 后属性过期,读取会触发同步惰性加载(MissingGreenlet)
+        row.updated_at = datetime.now(UTC)
+        await session.flush()
+        return _conversation_payload(row)
 
 
 async def delete_conversation(user_id: int, session_id: str) -> bool:

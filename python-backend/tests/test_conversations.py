@@ -159,3 +159,42 @@ async def test_products_endpoint_lists_threshold() -> None:
         products = response.json()["products"]
         assert products, "测试库应已有商品(其他测试/seed 累积)"
         assert {"id", "sku", "title", "price", "category", "status", "stock", "alertThreshold"} <= set(products[0])
+
+
+# —— 会话重命名(spec #11 A2 扩展) ——
+
+
+async def test_rename_conversation_and_auto_title_pin() -> None:
+    """重命名:标题 trim 更新(响应与列表同形);手工命名不再被自动标题覆盖(自动仅在建行时写)。"""
+    user_id, username = await _seed_user()
+    async with _client(user_id, username) as client:
+        await _run_task(client, "原始自动标题的会话首条消息", "s-rename")
+
+        response = await client.patch("/api/conversations/s-rename", json={"title": "  改过的名字  "})
+        assert response.status_code == 200
+        conversation = response.json()["conversation"]
+        assert conversation["title"] == "改过的名字"  # trim
+        assert set(conversation) == {"sessionId", "title", "updatedAt", "messageCount"}
+        listing = await client.get("/api/conversations")
+        assert listing.json()["conversations"][0]["title"] == "改过的名字"
+
+        # 再发消息:自动标题只在建行时写,不覆盖手工命名
+        await _run_task(client, "第二条消息", "s-rename")
+        listing = await client.get("/api/conversations")
+        assert listing.json()["conversations"][0]["title"] == "改过的名字"
+
+
+async def test_rename_validation_404_and_user_scope() -> None:
+    """空/超长 → 422;不存在/他人会话 → 404(归属隔离,改名不生效)。"""
+    user_id, username = await _seed_user()
+    other_id, other_name = await _seed_user()
+    async with _client(user_id, username) as client:
+        await _run_task(client, "待重命名会话", "s-rename-v")
+        assert (await client.patch("/api/conversations/s-rename-v", json={"title": "   "})).status_code == 422
+        assert (await client.patch("/api/conversations/s-rename-v", json={"title": "长" * 51})).status_code == 422
+        assert (await client.patch("/api/conversations/s-missing", json={"title": "x"})).status_code == 404
+    async with _client(other_id, other_name) as client:
+        assert (await client.patch("/api/conversations/s-rename-v", json={"title": "越权改名"})).status_code == 404
+    async with _client(user_id, username) as client:
+        listing = await client.get("/api/conversations")
+        assert listing.json()["conversations"][0]["title"] == "待重命名会话"

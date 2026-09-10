@@ -1,7 +1,7 @@
-"""CSV 导入测试(spec #8 B8):解析纯函数单测(离线)+ 落库幂等集成(真 PG)。
+"""CSV 导入测试(spec #8 B8 + spec #11):解析纯函数单测(离线)+ 落库幂等集成(真 PG)。
 
-- 解析:表头校验(缺必填/未知列)、行级容错(金额/库存/状态/币种)、行号定位
-- 落库:商品 sku 幂等跳过落 draft;订单 reference 幂等、SKU/邮箱解析、不扣库存
+- 解析:表头校验(缺必填/未知列)、行级容错(金额/库存/状态/币种/邮箱/偏好)、行号定位
+- 落库:商品 sku 幂等跳过落 draft;订单 reference 幂等、SKU/邮箱解析、不扣库存;买家 email 幂等跳过
 - 端点:text/csv 体 → 报告形状;编码错误 400;重传同文件结果稳定(幂等)
 """
 
@@ -17,8 +17,10 @@ from sqlalchemy import select
 from python_backend.api.app import create_app
 from python_backend.core.imports import (
     CsvFormatError,
+    import_customers,
     import_orders,
     import_products,
+    parse_customers_csv,
     parse_orders_csv,
     parse_products_csv,
 )
@@ -195,6 +197,51 @@ async def test_import_orders_without_reference_all_created() -> None:
     assert report.created == 2  # 两行全部创建(修复:按 NULL 去重会只建第一条并崩溃)
 
 
+# —— 买家入口(spec #11) ——
+
+
+def test_parse_customers_validation_and_defaults() -> None:
+    """买家解析:name/email 必填;locale/preferences 可选(偏好为 JSON 对象);行级容错不阻断。"""
+    csv_text = (
+        "name,email,locale,preferences\n"
+        '张三,zhang@example.com,zh-CN,{"vip":true}\n'  # 第 2 行:全字段
+        "李四,li@example.com,,\n"  # 第 3 行:locale/偏好缺省
+        "王五,,zh-CN,\n"  # 第 4 行:缺 email
+        "赵六,bad-email,zh-CN,\n"  # 第 5 行:email 非法
+        "钱七,qi@example.com,zh-CN,not-json\n"  # 第 6 行:偏好非法
+    )
+    rows, errors = parse_customers_csv(csv_text)
+    assert [r["email"] for r in rows] == ["zhang@example.com", "li@example.com"]
+    assert rows[0]["preferences"] == {"vip": True}
+    assert rows[1]["locale"] == "zh-CN"  # 缺省
+    assert rows[1]["preferences"] == {}
+    assert [e["row"] for e in errors] == [4, 5, 6]
+    assert "邮箱非法" in errors[1]["reason"]
+    assert "偏好非法" in errors[2]["reason"]
+
+
+def _customers_csv() -> str:
+    """每轮唯一邮箱的测试 CSV(dev 库跨轮累积,固定邮箱会跨测试互扰)。"""
+    tag = uuid.uuid4().hex[:8]
+    return f"name,email,locale\n买家甲,cust-{tag}-a@example.com,zh-CN\nBuyer B,cust-{tag}-b@example.com,\n"
+
+
+async def test_import_customers_creates_skips_existing() -> None:
+    """买家落库:email 幂等(已存在跳过);重传同文件 → created 0、skipped 全部。"""
+    rows, errors = parse_customers_csv(_customers_csv())
+    assert errors == []
+    report = await import_customers(rows)
+    assert report.created == 2 and report.skipped == 0
+
+    async with SessionFactory() as session:
+        customer = (await session.execute(select(Customer).where(Customer.email == rows[0]["email"]))).scalar_one()
+        assert customer.name == rows[0]["name"]
+        assert customer.locale == "zh-CN"
+
+    again = await import_customers(rows)
+    assert again.created == 0 and again.skipped == 2
+
+
 # —— 端点(无 graph 装配即可,导入不依赖监督图) ——
 
 
@@ -217,3 +264,27 @@ async def test_import_endpoint_report_shape() -> None:
             "/api/import/products", content=b"\xff\xfe\x00bad", headers={"Content-Type": "text/csv"}
         )
     assert bad.status_code == 400
+
+
+async def test_import_customers_endpoint_report_shape() -> None:
+    """POST /api/import/customers(text/csv)→ 报告 {created, skipped, errors}(与商品/订单同形)。"""
+    tag = uuid.uuid4().hex[:8]
+    csv_text = f"name,email\n端点买家,ep-{tag}@example.com\n"
+    async with _client() as client:
+        response = await client.post("/api/import/customers", content=csv_text, headers={"Content-Type": "text/csv"})
+    assert response.status_code == 200
+    assert set(response.json()["report"]) == {"created", "skipped", "errors"}
+    assert response.json()["report"]["created"] == 1
+
+
+async def test_import_customers_endpoint_rejects_bad_input() -> None:
+    """买家导入入口:表头缺必填列与编码非法均 400 拒绝(与商品/订单导入同语义)。"""
+    async with _client() as client:
+        missing_column = await client.post(
+            "/api/import/customers", content="name\n张三\n", headers={"Content-Type": "text/csv"}
+        )
+        bad_encoding = await client.post(
+            "/api/import/customers", content=b"\xff\xfe\x00bad", headers={"Content-Type": "text/csv"}
+        )
+    assert missing_column.status_code == 400
+    assert bad_encoding.status_code == 400

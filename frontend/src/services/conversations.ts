@@ -30,3 +30,30 @@ export async function deleteConversation(sessionId: string): Promise<void> {
     throw new Error(detail);
   }
 }
+
+/** 会话重命名(spec #11 A2 扩展):trim 非空且 ≤50 字(后端 422)。 */
+export async function renameConversation(
+  sessionId: string,
+  title: string,
+): Promise<ConversationMeta> {
+  const res = await apiFetch(
+    `${BASE}/conversations/${encodeURIComponent(sessionId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    },
+  );
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      // 非 JSON 响应:保留 statusText
+    }
+    throw new Error(detail);
+  }
+  const body = (await res.json()) as { conversation: ConversationMeta };
+  return body.conversation;
+}

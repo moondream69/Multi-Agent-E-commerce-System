@@ -1,9 +1,10 @@
-"""CSV 批量导入(spec #8 B8):商品/订单数据入口,行级容错 + 幂等语义。
+"""CSV 批量导入(spec #8 B8 + spec #11):商品/订单/买家数据入口,行级容错 + 幂等语义。
 
 - 解析与校验是纯函数(单测离线);落库走 SessionFactory(PG 集成测试)
-- 幂等键:商品=sku(已存在跳过)、订单=reference(可选,已存在跳过;缺失的行全部创建)
+- 幂等键:商品=sku(已存在跳过)、订单=reference(可选,已存在跳过;缺失的行全部创建)、买家=email(已存在跳过)
 - 商品落 draft(上架仍走审批护栏,三层分类不被导入破坏)
 - 订单导入是历史数据入口:不扣库存(库存是现状)、不取汇率快照(fx_rate 留空)
+- 买家是订单导入与模拟流量的前置:导入顺序 买家 → 订单(spec #11)
 - 报告 {created, skipped, errors}:errors 行号+原因,单行错误不阻断其他行
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
@@ -176,6 +178,45 @@ def parse_orders_csv(text: str) -> tuple[list[dict], list[dict]]:
     return validated, errors
 
 
+def parse_customers_csv(text: str) -> tuple[list[dict], list[dict]]:
+    """买家 CSV 解析(spec #11):name/email 必填;locale/preferences 可选。
+
+    行级校验:email 须含 @ 且两侧非空;locale 非空时 ≤10 字符;preferences 须为 JSON 对象。
+    """
+    rows, errors = _rows_from_csv(text, required={"name", "email"}, optional={"locale", "preferences"})
+    validated: list[dict] = []
+    for entry in rows:
+        row, data = entry["row"], entry["data"]
+        email = data["email"]
+        local, _, domain = email.partition("@")
+        if not local.strip() or not domain.strip():
+            errors.append({"row": row, "reason": f"邮箱非法:{email!r}"})
+            continue
+        locale = data.get("locale") or "zh-CN"
+        if len(locale) > 10:
+            errors.append({"row": row, "reason": f"语言标签非法:{locale!r}(须 ≤10 字符)"})
+            continue
+        preferences: dict = {}
+        if data.get("preferences"):
+            try:
+                preferences = json.loads(data["preferences"])
+                if not isinstance(preferences, dict):
+                    raise ValueError
+            except ValueError:
+                errors.append({"row": row, "reason": f"偏好非法:{data['preferences']!r}(须为 JSON 对象)"})
+                continue
+        validated.append(
+            {
+                "row": row,
+                "name": data["name"],
+                "email": email,
+                "locale": locale,
+                "preferences": preferences,
+            }
+        )
+    return validated, errors
+
+
 async def import_products(rows: list[dict]) -> ImportReport:
     """商品落库:sku 已存在跳过(幂等),新建落 draft;不触发审批(直接入口,信任输入)。"""
     report = ImportReport()
@@ -233,7 +274,9 @@ async def import_orders(rows: list[dict]) -> ImportReport:
                     await session.execute(select(Customer.id).where(Customer.email == row["customer_email"]))
                 ).scalar_one_or_none()
                 if customer_id is None:
-                    report.errors.append({"row": row["row"], "reason": f"买家邮箱不存在:{row['customer_email']}"})
+                    report.errors.append(
+                        {"row": row["row"], "reason": f"买家邮箱不存在(请先导入买家):{row['customer_email']}"}
+                    )
                     continue
             session.add(
                 Order(
@@ -245,6 +288,27 @@ async def import_orders(rows: list[dict]) -> ImportReport:
                     platform=row["platform"],
                     reference=row["reference"],
                 )
+            )
+            report.created += 1
+    return report
+
+
+async def import_customers(rows: list[dict]) -> ImportReport:
+    """买家落库(spec #11):email 已存在跳过(幂等,与 sku/reference 约定一致,不做 upsert)。
+
+    买家是订单导入与模拟流量的前置(导入顺序:买家 → 订单)。
+    """
+    report = ImportReport()
+    async with SessionFactory() as session, session.begin():
+        for row in rows:
+            existing = (
+                await session.execute(select(Customer.id).where(Customer.email == row["email"]))
+            ).scalar_one_or_none()
+            if existing is not None:
+                report.skipped += 1
+                continue
+            session.add(
+                Customer(name=row["name"], email=row["email"], locale=row["locale"], preferences=row["preferences"])
             )
             report.created += 1
     return report

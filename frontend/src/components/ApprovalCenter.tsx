@@ -12,6 +12,7 @@ import {
   ApprovalBatchStatus,
 } from '../types/events';
 import { theme } from '../theme';
+import { ORDER_STATUS_LABELS } from '../labels';
 
 // —— 参数/状态的台账标签(系统术语 → 中文台账口径)——
 // 动作标签由 GET /api/actions 提供(spec #8 注册表单一化,不再硬编码)。
@@ -21,16 +22,6 @@ const PARAM_LABELS: Record<string, string> = {
   order_id: '订单',
   new_price: '新价格',
   to_status: '目标状态',
-};
-
-const ORDER_STATUS_LABELS: Record<string, string> = {
-  pending: '待处理',
-  confirmed: '已确认',
-  processing: '处理中',
-  shipped: '已发货',
-  delivered: '已送达',
-  returned: '已退货',
-  cancelled: '已取消',
 };
 
 const PRODUCT_STATUS_LABELS: Record<string, string> = {

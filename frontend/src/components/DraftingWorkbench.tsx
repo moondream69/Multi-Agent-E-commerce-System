@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { TicketList } from './TicketList';
 import { draftReply } from '../services/drafting';
 import { DraftingEvidence } from '../types/events';
 import { theme } from '../theme';
 
-// —— 起草工作台(B11/B19):双栏——左买家消息+查证证据、右可编辑多语草稿+一键复制 ——
+// —— 起草工作台(B11/B19 + A11):双栏——左买家消息+查证证据+升级工单、右可编辑多语草稿+一键复制 ——
 
 const LOCALES: Array<{ code: string; label: string }> = [
   { code: 'zh', label: '中文' },
@@ -241,6 +242,7 @@ export function DraftingWorkbench() {
             </div>
           )}
         </div>
+        <TicketList />
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
           <EvidenceBlock evidence={evidence} />
         </div>

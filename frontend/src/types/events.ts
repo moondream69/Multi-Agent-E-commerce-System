@@ -171,3 +171,34 @@ export interface ProductListItem {
   stock: number;
   alertThreshold: number;
 }
+
+// —— 工单(A11 收口:GET /api/tickets + PATCH 结单)——
+
+export interface TicketItem {
+  ticketId: number;
+  message: string;
+  status: 'open' | 'closed';
+  customerName: string | null;
+  createdAt: string | null;
+  resolvedAt: string | null;
+}
+
+// —— 经营快照(spec #11:GET /api/reports/summary,零 LLM 纯 SQL 聚合)——
+
+export interface ReportSummary {
+  orders: { byStatus: Record<string, number>; total: number };
+  revenue: {
+    windowDays: number;
+    baseCurrency: string;
+    amount: string;
+    unconverted: number;
+  };
+  lowStock: Array<{
+    productId: number;
+    sku: string;
+    title: string;
+    stock: number;
+    alertThreshold: number;
+  }>;
+  tickets: { open: number };
+}

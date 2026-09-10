@@ -26,6 +26,7 @@ uv run ty check .                                  # 类型检查 (Alembic 迁�
 cd frontend && npm run dev                           # Vite (5173)
 cd frontend && npm run lint / lint:fix               # ESLint 检查/自动修复 (前端,无 --fix 不改写)
 cd frontend && npm run format / format:check         # Prettier 格式化/只检查
+cd frontend && npm test                              # vitest 组件测试(新增/修改组件;test:watch 监听)
 cd frontend && npm run build                         # 前端构建 (tsc + vite)
 
 # 模拟流量 (需后端已启动;容器内为 docker compose --profile sim up -d)

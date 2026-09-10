@@ -1,9 +1,10 @@
-"""子图 LLM 失败收敛(issue #10):切片如实「未完成+原因」,异常路径不悬挂任务行。
+"""子图 LLM 失败收敛(issue #10)+ 簿记失败分类收敛(spec #11 §3.3)。
 
-三个接缝:
+四个接缝:
 1. make_agent_runner:单点捕获 LlmFailure → incomplete(三个业务 Agent 一次覆盖,不穿透 REST 500)
 2. 监督图:_aggregate 转 error「未完成+原因」、审计如实 failed、失败切片不进 apply
-3. REST 两入口(发起/恢复):任何未预期异常 → 行 failed + 广播 task.failed,随后原样上抛 500
+3. REST 两入口(发起/恢复):图执行/任务行写入失败 → 行 failed + 广播 task.failed,随后原样上抛 500
+4. 辅助簿记(记忆/广播)失败 → 不改行、响应如实成功(logger.exception 可观测)
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from python_backend.agents.base import make_agent_runner
 from python_backend.agents.customer_service.agent import build_customer_agent
+from python_backend.api import app as app_module
 from python_backend.api.app import create_app
 from python_backend.core.auth import create_token, hash_password
 from python_backend.core.graph import SupervisorState, build_supervisor
@@ -66,14 +68,17 @@ def _two_slice_plan() -> SlicePlan:
 
 
 class FailingMemory:
-    """记忆写入失败(仅助手侧):模拟图成功后的簿记失败(端点尾部兜底的注入点)。"""
+    """记忆写入失败(默认仅助手侧):模拟辅助簿记失败(spec #11 分类收敛的注入点)。"""
+
+    def __init__(self, roles: tuple[str, ...] = ("assistant",)) -> None:
+        self._roles = roles
 
     async def get_context(self, session_id: str, user_id: int | None) -> str | None:
         return None
 
     async def record(self, session_id, user_id, *, role: str, content: str, task_id: str | None = None) -> None:
-        if role == "assistant":
-            raise RuntimeError("记忆写入失败")
+        if role in self._roles:
+            raise RuntimeError(f"记忆写入失败({role})")
 
 
 def _make_client(
@@ -235,13 +240,66 @@ def test_resume_unexpected_error_converges_then_raises() -> None:
     assert "task.failed" in emitter.names()
 
 
-# —— 接缝 3:图成功后的簿记失败(端点尾部兜底) ——
+# —— 接缝 4:辅助簿记失败(分类收敛,spec #11 §3.3) ——
 
 
-def test_post_graph_bookkeeping_failure_converges_then_raises() -> None:
-    """图跑完后的簿记(记忆落库)失败 → 同样收敛行/广播,端点 500。"""
+def test_post_graph_bookkeeping_failure_keeps_task_completed() -> None:
+    """图成功、仅辅助簿记(记忆落库)失败 → 端点如实成功,不翻 failed、不广播 task.failed。"""
+    client, _store, emitter = _make_client({"order_management": slice_agent([], answer="完成")}, memory=FailingMemory())
+
+    response = client.post("/api/tasks", json={"request": "上架商品"})
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "completed"
+    assert "task.completed" in emitter.names()
+    assert "task.failed" not in emitter.names(), "辅助簿记失败不得把已成功的任务谎报为失败"
+
+
+def test_user_message_memory_failure_does_not_block_task() -> None:
+    """图前的用户消息落库失败同属辅助簿记:任务照常执行并如实成功。"""
+    client, _store, _emitter = _make_client(
+        {"order_management": slice_agent([], answer="完成")}, memory=FailingMemory(roles=("user", "assistant"))
+    )
+
+    response = client.post("/api/tasks", json={"request": "上架商品"})
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "completed"
+
+
+def test_resume_bookkeeping_failure_keeps_task_completed() -> None:
+    """恢复入口:图成功、仅辅助簿记失败 → 响应 status 如实 completed,不广播 task.failed。"""
     client, _store, emitter = _make_client(
-        {"order_management": slice_agent([], answer="完成")}, memory=FailingMemory(), raise_app_exceptions=False
+        {
+            "order_management": slice_agent([], actions=[PUBLISH]),
+            "customer_service": slice_agent([], answer="切片完成"),
+        },
+        plan=_two_slice_plan(),
+        memory=FailingMemory(),
+    )
+
+    response = _start_and_approve(client)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert "task.completed" in emitter.names()
+    assert "task.failed" not in emitter.names()
+
+
+def test_task_row_write_failure_converges_then_raises(monkeypatch) -> None:
+    """任务行写入(关键簿记)失败 → 收敛 failed + 广播 task.failed,端点仍 500(不悬挂/不谎报)。"""
+    real = app_module.update_task_row
+    calls = {"n": 0}
+
+    async def flaky_update(**kwargs) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("行写入失败")
+        await real(**kwargs)
+
+    monkeypatch.setattr(app_module, "update_task_row", flaky_update)
+    client, _store, emitter = _make_client(
+        {"order_management": slice_agent([], answer="完成")}, raise_app_exceptions=False
     )
 
     response = client.post("/api/tasks", json={"request": "上架商品"})
@@ -345,22 +403,21 @@ async def test_resume_row_failed_with_reason() -> None:
 
 
 @pytest.mark.integration
-async def test_task_row_failed_on_post_graph_error() -> None:
-    """图成功后的簿记失败:行同样收敛 failed(不留 in_progress),端点 500。"""
+async def test_task_row_completed_on_post_graph_bookkeeping_failure() -> None:
+    """图成功后仅辅助簿记失败:行保持 completed(如实),端点 201 成功(spec #11 分类收敛)。"""
     _require_postgres()
     user_id, username = await _seed_user()
     session = f"fail-post-graph-{uuid.uuid4().hex[:8]}"
-    client = _authed_client(
-        {"order_management": slice_agent([], answer="完成")}, memory=FailingMemory(), raise_app_exceptions=False
-    )
+    client = _authed_client({"order_management": slice_agent([], answer="完成")}, memory=FailingMemory())
     client.headers.update({"Authorization": f"Bearer {create_token(username, user_id)}"})
     async with client:
         response = await client.post("/api/tasks", json={"request": "上架商品", "session_id": session})
-        assert response.status_code == 500
+        assert response.status_code == 201
+        assert response.json()["status"] == "completed"
 
         listing = await client.get("/api/tasks", params={"session_id": session})
         tasks = listing.json()["tasks"]
-        assert len(tasks) == 1 and tasks[0]["status"] == "failed"
+        assert len(tasks) == 1 and tasks[0]["status"] == "completed"
 
 
 @pytest.mark.integration
