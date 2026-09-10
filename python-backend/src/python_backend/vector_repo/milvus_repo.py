@@ -17,13 +17,19 @@ from python_backend.vector_repo.base import SearchHit, VectorRecord, VectorRepos
 
 class MilvusVectorRepository(VectorRepository):
     def __init__(self, *, client: MilvusClient | None = None, dimension: int | None = None) -> None:
-        settings = get_settings()
-        self._client = client or MilvusClient(uri=settings.milvus_uri)
-        self._dimension = dimension or settings.embedding_dimension
+        self._client: MilvusClient | None = client
+        self._dimension = dimension or get_settings().embedding_dimension
+
+    @property
+    def client(self) -> MilvusClient:
+        """惰性建连:构造仓库不要求 Milvus 在线(离线装配与 CI 快速套件依赖此点)。"""
+        if self._client is None:
+            self._client = MilvusClient(uri=get_settings().milvus_uri)
+        return self._client
 
     def _ensure_collection(self, collection: str) -> None:
-        if not self._client.has_collection(collection):
-            self._client.create_collection(
+        if not self.client.has_collection(collection):
+            self.client.create_collection(
                 collection_name=collection,
                 dimension=self._dimension,
                 primary_field_name="id",
@@ -40,11 +46,11 @@ class MilvusVectorRepository(VectorRepository):
         self._ensure_collection(collection)
 
         def _upsert_and_flush() -> None:
-            self._client.upsert(
+            self.client.upsert(
                 collection_name=collection,
                 data=[{"id": r.id, "vector": r.vector, **r.payload} for r in records],
             )
-            self._client.flush(collection_name=collection)  # Milvus 写入须 flush 后才可检索(契约:写入立即可查)
+            self.client.flush(collection_name=collection)  # Milvus 写入须 flush 后才可检索(契约:写入立即可查)
 
         await asyncio.to_thread(_upsert_and_flush)
 
@@ -56,7 +62,7 @@ class MilvusVectorRepository(VectorRepository):
         if filter:  # pymilvus 不接受 None,而空串 "" 会被解释为过滤一切的表达式——无过滤须不传该参数
             kwargs["filter"] = filter
         results = await asyncio.to_thread(
-            self._client.search,
+            self.client.search,
             collection_name=collection,
             data=[vector],
             limit=top_k,
@@ -72,11 +78,11 @@ class MilvusVectorRepository(VectorRepository):
         return hits
 
     async def delete(self, collection: str, ids: list[str]) -> None:
-        if not ids or not self._client.has_collection(collection):
+        if not ids or not self.client.has_collection(collection):
             return
 
         def _delete_and_flush() -> None:
-            self._client.delete(collection_name=collection, ids=ids)
-            self._client.flush(collection_name=collection)  # 软删除标记同样须 flush 后对检索生效
+            self.client.delete(collection_name=collection, ids=ids)
+            self.client.flush(collection_name=collection)  # 软删除标记同样须 flush 后对检索生效
 
         await asyncio.to_thread(_delete_and_flush)

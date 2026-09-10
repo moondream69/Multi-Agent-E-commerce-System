@@ -40,6 +40,7 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 > uv 在 PATH(`E:\Python\Scripts\uv.exe`)。PyPI 直连不畅时:`HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。
 > ⚠️ 改后端代码后须 `docker compose build app && docker compose up -d app`——app 镜像 COPY 源码、无挂载,不重建即跑旧码。
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
+> ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
 > CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
 
 ## 技术栈
