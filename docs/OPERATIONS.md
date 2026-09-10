@@ -51,9 +51,9 @@ cd frontend && npm run dev
 
 ```bash
 # 备份(Postgres 数据即全部业务数据;Redis 只是缓存,可丢)
-docker compose exec postgres pg_dump -U postgres multi_agent_ecommerce > backup_$(date +%F).sql
+docker compose exec postgres pg_dump -U postgres mae > backup_$(date +%F).sql
 # 恢复
-cat backup_xxx.sql | docker compose exec -T postgres psql -U postgres multi_agent_ecommerce
+cat backup_xxx.sql | docker compose exec -T postgres psql -U postgres mae
 
 # 查看日志
 docker compose logs -f app            # 应用(含 LLM 重试/失败收敛日志)
@@ -64,6 +64,10 @@ docker compose up -d --build app
 ```
 
 ## 审计 SQL(跑一天后评估)
+
+```bash
+docker compose exec postgres psql -U postgres mae
+```
 
 ```sql
 -- 任务失败率与分布
@@ -89,7 +93,7 @@ SELECT count(*) FROM tasks WHERE created_at > now() - interval '1 day';
 无用户管理界面,直接插库(密码用 bcrypt):
 
 ```bash
-docker compose exec postgres psql -U postgres multi_agent_ecommerce -c \
+docker compose exec postgres psql -U postgres mae -c \
   "INSERT INTO users (username, password_hash) VALUES ('alice', '<bcrypt哈希>');"
 ```
 
