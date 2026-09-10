@@ -1,10 +1,12 @@
 """REST 端点(spec #7):任务发起/全量与按线程批次列表/多批一次决定/自然消息/影子补执行。
 
 接缝:HTTP 接口(create_app 注入图与批次存储)与意图判定纯函数。
+⚠️ 归 integration:端点自身写任务行(db/task_store,PG)且无注入缝——离线不可跑(issue #13)。
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -12,7 +14,16 @@ from python_backend.agents.executor import ApplyResult
 from python_backend.api.app import create_app
 from python_backend.core.approvals import parse_decision_intent
 from python_backend.core.graph import build_supervisor
-from tests.conftest import FakeApply, InMemoryApprovalBatchStore, RecordingEmitter, StubPlanner, slice_agent
+from tests.conftest import (
+    FakeApply,
+    InMemoryApprovalBatchStore,
+    InMemorySessionMemory,
+    RecordingEmitter,
+    StubPlanner,
+    slice_agent,
+)
+
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("requires_postgres")]
 
 PUBLISH = {
     "action": "product.publish",
@@ -33,7 +44,15 @@ def make_client(*, shadow_mode: bool = False) -> tuple[TestClient, InMemoryAppro
         apply_fn=apply_fn,
     )
     return (
-        TestClient(create_app(graph=graph, batch_store=store, apply_fn=apply_fn, auth_required=False)),
+        TestClient(
+            create_app(
+                graph=graph,
+                batch_store=store,
+                apply_fn=apply_fn,
+                memory=InMemorySessionMemory(),  # 默认件是 PG 记忆;离线快速套件须注入内存实现
+                auth_required=False,
+            )
+        ),
         store,
         apply_fn,
     )
@@ -227,7 +246,14 @@ async def test_shadow_batch_execute_emits_notifications() -> None:
         apply_fn=apply_fn,
     )
     client = TestClient(
-        create_app(graph=graph, batch_store=store, apply_fn=apply_fn, emitter=emitter, auth_required=False)
+        create_app(
+            graph=graph,
+            batch_store=store,
+            apply_fn=apply_fn,
+            emitter=emitter,
+            memory=InMemorySessionMemory(),  # 同上:避免默认 PG 记忆触库
+            auth_required=False,
+        )
     )
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
     batch = (await store.list_open())[0]

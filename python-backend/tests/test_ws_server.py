@@ -68,6 +68,8 @@ def server_url():
     thread.join(timeout=5)
 
 
+@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
+@pytest.mark.usefixtures("requires_postgres")
 async def test_socketio_client_receives_approval_requested(server_url: str) -> None:
     """e2e:REST 发起任务 → WS 广播 approval.requested 到达真实 socket.io 客户端。"""
     received: list[dict] = []

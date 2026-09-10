@@ -36,6 +36,8 @@ def _ts_union_values(name: str) -> set[str]:
     return set(re.findall(r"'(\w+)'", match.group(1)))
 
 
+@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
+@pytest.mark.usefixtures("requires_postgres")
 async def test_approval_batch_response_keys_match_contract() -> None:
     """GET /approvals 响应键 == ts ApprovalBatch 接口字段(驼峰)。"""
     store = InMemoryApprovalBatchStore()

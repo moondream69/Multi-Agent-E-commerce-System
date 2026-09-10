@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -43,6 +44,8 @@ def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore, RecordingTask
     return client, store, tracer
 
 
+@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
+@pytest.mark.usefixtures("requires_postgres")
 async def test_task_trace_spans_and_approval_events_recorded() -> None:
     """B14:任务 trace 内记录 manager 规划 span、切片 span、approval.requested 事件(带 batchId 互链)。"""
     client, store, tracer = make_client()

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -85,6 +86,8 @@ def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore, FakeApply, Re
     return client, store, apply_fn, emitter
 
 
+@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
+@pytest.mark.usefixtures("requires_postgres")
 async def test_rest_emits_task_lifecycle_events() -> None:
     """REST:任务发起广播 created + interrupted(中断时)。"""
     client, _store, _apply, emitter = make_client()
@@ -93,6 +96,8 @@ async def test_rest_emits_task_lifecycle_events() -> None:
     assert "task.interrupted" in emitter.names()
 
 
+@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
+@pytest.mark.usefixtures("requires_postgres")
 async def test_resume_emits_decided_and_completed() -> None:
     """REST:resume 广播 approval.decided + task.completed。"""
     client, store, _apply, emitter = make_client()
@@ -112,6 +117,8 @@ async def test_resume_emits_decided_and_completed() -> None:
     assert "task.completed" in emitter.names()
 
 
+@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
+@pytest.mark.usefixtures("requires_postgres")
 async def test_message_terminate_emits_decided_reject() -> None:
     """REST:自然消息终止 → 全部批次 decided(reject),任务失败终态事件。"""
     client, store, _apply, emitter = make_client()
@@ -127,6 +134,8 @@ async def test_message_terminate_emits_decided_reject() -> None:
     assert "task.failed" in emitter.names(), "终止任务以 failed(带 error)终态呈现"
 
 
+@pytest.mark.integration  # 端点写任务行(PG),离线不可跑(issue #13)
+@pytest.mark.usefixtures("requires_postgres")
 async def test_shadow_mode_emits_requested_without_interrupt() -> None:
     """影子模式:approval.requested 照发(审批中心展示影子段),无 task.interrupted。"""
     store = InMemoryApprovalBatchStore()

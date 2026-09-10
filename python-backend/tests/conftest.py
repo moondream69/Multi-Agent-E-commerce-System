@@ -54,6 +54,26 @@ def requires_postgres() -> None:
     require_postgres()
 
 
+class InMemorySessionMemory:
+    """会话记忆内存实现(B16 接缝;供离线可跑的测试注入,勿用于需复现摘要/跨进程持久化的用例)。
+
+    get_context 恒返回 None:本替身不复现 PG 实现的摘要语义,需要该行为请走集成测试。
+    """
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    async def get_context(self, session_id: str, user_id: int | None) -> str | None:
+        return None
+
+    async def record(
+        self, session_id: str, user_id: int | None, *, role: str, content: str, task_id: str | None = None
+    ) -> None:
+        self.records.append(
+            {"session_id": session_id, "user_id": user_id, "role": role, "content": content, "task_id": task_id}
+        )
+
+
 class InMemoryApprovalBatchStore:
     """批次存储内存实现(图级单测共享接缝;PG 实现见 db/approval_store)。
 
