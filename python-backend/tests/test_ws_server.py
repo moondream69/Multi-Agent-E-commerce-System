@@ -10,6 +10,7 @@ import asyncio
 import socket
 import sys
 import threading
+import time
 
 import httpx
 import pytest
@@ -63,6 +64,14 @@ def server_url():
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
+    # 就绪等待:线程启动 ≠ 端口已监听(CI/慢机上是竞态,本地快机常掩盖)——连上再放行
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                break
+        except OSError:
+            time.sleep(0.1)
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=5)
