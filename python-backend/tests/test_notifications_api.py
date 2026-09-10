@@ -1,4 +1,4 @@
-"""通知读路径(增量 8-T2,spec #14):内存替身可见语义 + 端点流程(离线,不触 PG)。
+"""通知读路径(增量 8-T2/T3,spec #14):内存替身可见语义 + 端点流程(离线,不触 PG)。
 
 替身复现生产语义:按用户隔离、每组最近 50 条(保留最新)、未读 = read_at 空、
 mark_read 幂等;端点路由经 create_app 注入替身(认证态 JWT 直签,反证不绕过注入)。
@@ -12,7 +12,11 @@ from fastapi.testclient import TestClient
 from python_backend.api.app import create_app
 from python_backend.core.auth import create_token
 from python_backend.db.notification_store import MAX_PER_KIND
-from tests.conftest import FailingNotificationStore, InMemoryNotificationStore
+from tests.conftest import (
+    FailingNotificationStore,
+    InMemoryNotificationStore,
+    RecordingEmitter,
+)
 
 
 def _envelope(notification_id: str, *, kind: str = "order_status") -> dict:
@@ -113,3 +117,83 @@ async def test_unauthenticated_context_skips_store() -> None:
 
     assert client.get("/api/notifications").json() == {"notifications": [], "unread": 0}
     assert client.post("/api/notifications/read").json() == {"unread": 0}
+
+
+# —— notification.read poke(增量 8-T3):提交后广播 / 辅助投递 / 跨用户不误清 ——
+
+
+class _TraceStore(InMemoryNotificationStore):
+    """mark_read 调用写入共享 trace(与广播事件同列):证明「提交后广播」顺序。"""
+
+    def __init__(self, trace: list[str]) -> None:
+        super().__init__(user_ids=(42,))
+        self._trace = trace
+
+    async def mark_read(self, user_id: int) -> None:
+        await super().mark_read(user_id)
+        self._trace.append("mark_read")
+
+
+class _TraceEmitter:
+    """记录事件并写入共享 trace(顺序断言用);载荷与 RecordingEmitter 同存。"""
+
+    def __init__(self, trace: list[str]) -> None:
+        self._trace = trace
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event: str, payload: dict) -> None:
+        self.events.append((event, payload))
+        self._trace.append(event)
+
+
+class _FailingEmitter:
+    """广播必炸:辅助投递分类用例——端点响应不受影响。"""
+
+    async def emit(self, event: str, payload: dict) -> None:
+        raise RuntimeError("广播炸了(测试)")
+
+
+async def test_mark_read_broadcasts_empty_poke_after_commit() -> None:
+    """标记已读提交后广播 notification.read;poke 空载荷(不携带计数/用户标识)。"""
+    trace: list[str] = []
+    store = _TraceStore(trace)
+    emitter = _TraceEmitter(trace)
+    await store.record([_envelope("poke-1")])
+    client = TestClient(create_app(auth_required=False, notification_store=store, emitter=emitter))
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+
+    assert client.post("/api/notifications/read").json() == {"unread": 0}
+
+    assert emitter.events == [("notification.read", {})], "空载荷 poke"
+    assert trace == ["mark_read", "notification.read"], "提交后广播(先落库,后 emit)"
+
+
+async def test_poke_broadcast_failure_keeps_response_ok() -> None:
+    """广播失败按辅助投递分类:仅日志,端点仍 200 {unread: 0};已读落库不受影响。"""
+    store = InMemoryNotificationStore(user_ids=(42,))
+    await store.record([_envelope("poke-fail")])
+    client = TestClient(create_app(auth_required=False, notification_store=store, emitter=_FailingEmitter()))
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+
+    response = client.post("/api/notifications/read")
+
+    assert (response.status_code, response.json()) == (200, {"unread": 0})
+    assert await store.unread_count(42) == 0, "落库不受广播失败影响"
+
+
+async def test_poke_does_not_cross_clear_other_user() -> None:
+    """A 端标记已读的 poke 不误清 B 端:各端凭自身 token 重拉,未读按用户隔离。"""
+    store = InMemoryNotificationStore(user_ids=(1, 42))
+    await store.record([_envelope("cross-1")])
+    emitter = RecordingEmitter()
+    app = create_app(auth_required=False, notification_store=store, emitter=emitter)
+
+    client_a = TestClient(app)
+    client_a.headers.update({"Authorization": f"Bearer {create_token('tester', 1)}"})
+    client_b = TestClient(app)
+    client_b.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+
+    client_a.post("/api/notifications/read")  # A 端开面板:提交后广播 poke
+
+    assert emitter.names() == ["notification.read"]
+    assert client_b.get("/api/notifications").json()["unread"] == 1, "B 端重拉自身未读不变(不误清)"

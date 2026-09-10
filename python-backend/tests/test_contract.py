@@ -84,6 +84,7 @@ def test_ws_event_names_present() -> None:
     assert "APPROVAL_REQUESTED: 'approval.requested'" in text
     assert "APPROVAL_DECIDED: 'approval.decided'" in text
     assert "NOTIFICATION_CREATED: 'notification.created'" in text
+    assert "NOTIFICATION_READ: 'notification.read'" in text
     assert "TASK_INTERRUPTED: 'task.interrupted'" in text
 
 

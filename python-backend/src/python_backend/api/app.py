@@ -611,10 +611,16 @@ def create_app(
 
     @app.post("/api/notifications/read")
     async def mark_notifications_read(request: Request) -> dict:
-        """标记已读(增量 8-T2):幂等清零当前用户未读;未认证跳过落库(同 TaskStore 语义)。"""
+        """标记已读(增量 8-T2/T3):幂等清零当前用户未读;未认证跳过落库(同 TaskStore 语义)。
+
+        提交后广播 notification.read(空载荷 poke):各端凭自身 token 重拉——事件不
+        携带计数/用户标识(WS 为全量广播无房间无鉴权,携带数值会误清他人客户端)。
+        广播为辅助投递(spec #11 分类 ③):失败仅日志,不影响端点成功响应。
+        """
         user_id = _current_user_id(request)
         if user_id is not None:
             await app.state.notification_store.mark_read(user_id)
+            await _ancillary(app.state.emitter.emit("notification.read", {}), "notification.read 广播")
         return {"unread": 0}
 
     @app.get("/api/conversations")

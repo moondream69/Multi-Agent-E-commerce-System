@@ -158,4 +158,22 @@ describe('NotificationBell(增量 8-T2:服务端真源)', () => {
 
     expect(localStorage.getItem('notification-bells-v1')).toBe(legacy);
   });
+
+  it('收到 notification.read poke:重拉真源使状态与拉取结果一致,且不触发写请求', async () => {
+    fetchMock.mockResolvedValue(
+      feed({ notifications: [notification('n-1')], unread: 2 }),
+    );
+    render(<NotificationBell />);
+    expect(await screen.findByText('2')).toBeTruthy();
+
+    fetchMock.mockResolvedValue(
+      feed({ notifications: [notification('n-9')], unread: 0 }),
+    );
+    emitSocket('notification.read', {});
+
+    await waitFor(() => expect(badge('2')).toBeNull()); // 未读随重拉归零(不本地自算)
+    expect(markReadMock).not.toHaveBeenCalled(); // poke 无回环:不触发任何写请求
+    fireEvent.click(screen.getByTitle('通知'));
+    expect(screen.getByText('消息 n-9')).toBeTruthy(); // 列表即重拉快照
+  });
 });

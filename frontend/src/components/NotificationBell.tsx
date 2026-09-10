@@ -4,9 +4,12 @@ import { useSocket } from '../hooks/useSocket';
 import { EventType, NotificationMessage } from '../types/events';
 import { theme } from '../theme';
 
-// —— 通知铃铛(spec #9 A8/A9/A14;增量 8-T2 服务端真源)——
+// —— 通知铃铛(spec #9 A8/A9/A14;增量 8-T2/#17 服务端真源 + 多端已读同步)——
 
-const BELL_EVENTS = [EventType.NOTIFICATION_CREATED]; // 模块级常量:useSocket 依赖引用稳定
+const BELL_EVENTS = [
+  EventType.NOTIFICATION_CREATED,
+  EventType.NOTIFICATION_READ,
+]; // 模块级常量:useSocket 依赖引用稳定
 
 function formatTime(timestamp: string): string {
   const date = new Date(timestamp);
@@ -18,14 +21,18 @@ function formatTime(timestamp: string): string {
 export function NotificationBell() {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const { unread, lists, ingest, openPanel, closePanel } =
+  const { unread, lists, ingest, refresh, openPanel, closePanel } =
     useNotificationBells();
 
   const onEvent = useCallback(
-    (_event: string, payload: Record<string, unknown>) => {
+    (event: string, payload: Record<string, unknown>) => {
+      if (event === EventType.NOTIFICATION_READ) {
+        void refresh(); // 同账号他端已读:凭自身 token 重拉(空载荷 poke 不携带数值,不本地自算)
+        return;
+      }
       ingest(payload as unknown as NotificationMessage);
     },
-    [ingest],
+    [ingest, refresh],
   );
   useSocket(BELL_EVENTS, onEvent);
 

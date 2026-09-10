@@ -11,6 +11,7 @@ export const EventType = {
   APPROVAL_REQUESTED: 'approval.requested',
   APPROVAL_DECIDED: 'approval.decided',
   NOTIFICATION_CREATED: 'notification.created',
+  NOTIFICATION_READ: 'notification.read',
 } as const;
 
 export type EventType = (typeof EventType)[keyof typeof EventType];
