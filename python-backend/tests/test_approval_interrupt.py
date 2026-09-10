@@ -14,7 +14,14 @@ from python_backend.agents.executor import ApplyResult
 from python_backend.core.approvals import BatchAlreadyDecidedError, classify_action
 from python_backend.core.graph import SupervisorState, build_supervisor
 from python_backend.core.planning import Slice, SlicePlan
-from tests.conftest import FakeApply, InMemoryApprovalBatchStore, RecordingEmitter, StubPlanner, slice_agent
+from tests.conftest import (
+    FakeApply,
+    InMemoryApprovalBatchStore,
+    InMemoryNotificationStore,
+    RecordingEmitter,
+    StubPlanner,
+    slice_agent,
+)
 
 PUBLISH = {
     "action": "product.publish",
@@ -78,8 +85,9 @@ async def test_actions_batched_by_type_then_interrupt() -> None:
 
 
 async def test_approve_emits_notifications_from_effects() -> None:
-    """spec #9:apply 提交后按效果广播 notification.created(效果在事务内产生、提交后 emit)。"""
+    """spec #9 + 增量 8-T1:apply 提交后按效果落库(按用户扇出)并广播 notification.created。"""
     store = InMemoryApprovalBatchStore()
+    notification_store = InMemoryNotificationStore()
     emitter = RecordingEmitter()
 
     async def apply_fn(batch_id: str, actions: list[dict]) -> ApplyResult:
@@ -95,6 +103,7 @@ async def test_approve_emits_notifications_from_effects() -> None:
         batch_store=store,
         apply_fn=apply_fn,
         emitter=emitter,
+        notification_store=notification_store,
     )
     config = {"configurable": {"thread_id": "notify-effects"}}
     await graph.ainvoke(SupervisorState(request="上架商品", thread_id="notify-effects"), config)
@@ -105,6 +114,8 @@ async def test_approve_emits_notifications_from_effects() -> None:
     assert len(notifications) == 1
     assert notifications[0]["kind"] == "order_status"
     assert "#42" in notifications[0]["message"]
+    assert len(notification_store.rows) == 1, "切片 apply 的通知同样落库(默认扇出 1 用户)"
+    assert notification_store.rows[0]["notificationId"] == notifications[0]["notificationId"]
 
 
 async def test_reject_emits_no_notification() -> None:

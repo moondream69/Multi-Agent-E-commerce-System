@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import socket
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
@@ -124,6 +124,35 @@ class InMemoryTaskStore:
 
     async def get_task(self, thread_id: str) -> Task | None:
         return self._by_thread.get(thread_id)
+
+
+class InMemoryNotificationStore:
+    """通知存储内存实现(增量 8-T1 接缝;端点流程用例离线可跑,不触 PG)。
+
+    复现生产可见语义:信封批量落库、按 user_ids 扇出(模拟「全量现有用户」)、
+    (user_id, notificationId) 重复落库幂等(生产侧为唯一约束 + on_conflict)。
+    created_at 由本实现填充(PG 侧 server_default);read_at 恒空(读路径属 T2)。
+    """
+
+    def __init__(self, user_ids: Iterable[int] = (1,)) -> None:
+        self.user_ids = list(user_ids)
+        self.rows: list[dict] = []
+
+    async def record(self, notifications: list[dict]) -> None:
+        seen = {(row["user_id"], row["notificationId"]) for row in self.rows}
+        for payload in notifications:
+            for user_id in self.user_ids:
+                if (user_id, payload["notificationId"]) in seen:
+                    continue
+                seen.add((user_id, payload["notificationId"]))
+                self.rows.append({**payload, "user_id": user_id, "read_at": None})
+
+
+class FailingNotificationStore:
+    """落库必炸的通知存储(增量 8-T1):辅助簿记分类用例——仅日志,不阻塞广播、不影响响应。"""
+
+    async def record(self, notifications: list[dict]) -> None:
+        raise RuntimeError("落库炸了(测试)")
 
 
 class InMemoryApprovalBatchStore:

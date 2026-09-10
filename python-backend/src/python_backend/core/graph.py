@@ -32,6 +32,7 @@ from python_backend.core.events import EventEmitter, NullEmitter
 from python_backend.core.notifications import emit_notifications
 from python_backend.core.planning import ManagerPlanner, PlanFailed, Planner, Slice, SlicePlan
 from python_backend.db.audit_store import AuditWriter, NullAuditWriter
+from python_backend.db.notification_store import NotificationStore, PostgresNotificationStore
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
 
@@ -190,6 +191,7 @@ async def _execute_slice(
     shadow_mode: bool,
     apply_fn: ApplyFunction,
     emitter: EventEmitter,
+    notification_store: NotificationStore,
     tracer: TaskTracer,
     audit: AuditWriter,
 ) -> dict:
@@ -329,8 +331,8 @@ async def _execute_slice(
                 if not outcome.applied:
                     conflicts.append(f"{batch['action_type']}:{outcome.reason}")
                 else:
-                    # 提交后组装通知(spec #9 A8/A9):效果已落库才广播,回滚不误报
-                    await emit_notifications(emitter, outcome.effects)
+                    # 提交后组装通知(spec #9 A8/A9;增量 8-T1 起同时落库):效果已落库才广播,回滚不误报
+                    await emit_notifications(notification_store, emitter, outcome.effects)
             else:
                 rejected_comments.append(comment_value or "")
         if rejected_comments:
@@ -413,22 +415,27 @@ def build_supervisor(
     shadow_mode: bool = False,
     apply_fn: ApplyFunction | None = None,
     emitter: EventEmitter | None = None,
+    notification_store: NotificationStore | None = None,
     tracer: TaskTracer | None = None,
     audit: AuditWriter | None = None,
 ):
     """构建监督图:manager → prepare → 逐层 Send 扇出 → check_layer → … → aggregate。
 
     checkpointer 为 None 时不持久化(interrupt 会如实报错);生产装配挂 PostgresSaver(spec #6 D1)。
-    apply_fn/emitter/tracer/audit 默认生产实现或 no-op(spec #7/#8 接缝),测试注入假实现。
+    apply_fn/emitter/notification_store/tracer/audit 默认生产实现或 no-op(spec #7/#8/增量 8 接缝),
+    测试注入假实现。
     """
     agents = agents or {}
     apply_fn = apply_fn or apply_batch_actions
     emitter = emitter or NullEmitter()
+    notification_store = notification_store or PostgresNotificationStore()
     tracer = tracer or NullTaskTracer()
     audit = audit or NullAuditWriter()
 
     async def execute_slice(state: SupervisorState) -> dict:
-        return await _execute_slice(state, agents, batch_store, shadow_mode, apply_fn, emitter, tracer, audit)
+        return await _execute_slice(
+            state, agents, batch_store, shadow_mode, apply_fn, emitter, notification_store, tracer, audit
+        )
 
     # langgraph 的 StateLike/_Node 泛型上界在静态检查下对具体 TypedDict 与
     # 逆变节点函数必然报 invalid-argument-type(运行时合法且为官方文档模式),故精确忽略。
@@ -459,12 +466,14 @@ def default_supervisor(
     shadow_mode: bool = False,
     agents: dict[str, AgentRunner] | None = None,
     emitter: EventEmitter | None = None,
+    notification_store: NotificationStore | None = None,
     tracer: TaskTracer | None = None,
     audit: AuditWriter | None = None,
 ) -> CompiledStateGraph:
     """生产装配入口:真实 ManagerPlanner + 注入的业务子图 runner(spec #7 挂接)。
 
-    checkpointer/batch_store/shadow_mode/emitter/tracer/audit 由装配方注入(spec #6 D1 / #7 / #8)。
+    checkpointer/batch_store/shadow_mode/emitter/notification_store/tracer/audit 由装配方注入
+    (spec #6 D1 / #7 / #8 / 增量 8)。
     """
     return build_supervisor(
         ManagerPlanner(),
@@ -473,6 +482,7 @@ def default_supervisor(
         batch_store=batch_store,
         shadow_mode=shadow_mode,
         emitter=emitter,
+        notification_store=notification_store,
         tracer=tracer,
         audit=audit,
     )

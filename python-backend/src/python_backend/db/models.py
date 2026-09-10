@@ -307,3 +307,23 @@ class AgentTask(Base):
     output: Mapped[dict | None] = mapped_column(JSONB)
     correlation_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Notification(Base):
+    """通知(增量 8-T1):WS 广播之外的持久副本,按用户扇出(每用户一行)。
+
+    未读 = read_at 为空(服务端按用户已读);(user_id, notification_id) 唯一
+    保重放幂等;notification_id 为信封 id(前端按它去重,与 WS 载荷同源)。
+    """
+
+    __tablename__ = "notifications"
+    __table_args__ = (UniqueConstraint("user_id", "notification_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    notification_id: Mapped[str] = mapped_column(String(36))
+    kind: Mapped[str] = mapped_column(String(40))
+    message: Mapped[str] = mapped_column(Text)
+    order_id: Mapped[int | None] = mapped_column(BigInteger)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

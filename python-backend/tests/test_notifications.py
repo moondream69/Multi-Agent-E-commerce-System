@@ -12,7 +12,7 @@ from python_backend.core.notifications import (
     build_notifications,
     inventory_alert_message,
 )
-from tests.conftest import RecordingEmitter
+from tests.conftest import FailingNotificationStore, InMemoryNotificationStore, RecordingEmitter
 
 
 def _ids():
@@ -96,12 +96,15 @@ def test_build_fx_missing_notification() -> None:
     assert notification["orderId"] == 9
 
 
-async def test_emit_notifications_broadcasts_each_payload() -> None:
-    """发射:每个通知一条 notification.created 事件(提交后由调用方触发)。"""
-    emitter = RecordingEmitter()
+async def test_emit_notifications_records_then_broadcasts() -> None:
+    """组装点扩展(增量 8-T1):每个通知落库(按用户扇出)+ 广播 notification.created。"""
     from python_backend.core.notifications import emit_notifications
 
+    store = InMemoryNotificationStore()
+    emitter = RecordingEmitter()
+
     await emit_notifications(
+        store,
         emitter,
         [
             {"type": "order_status", "order_id": 1, "to": "shipped"},
@@ -110,13 +113,31 @@ async def test_emit_notifications_broadcasts_each_payload() -> None:
     )
     assert emitter.names() == ["notification.created", "notification.created"]
     assert {payload["kind"] for _event, payload in emitter.events} == {KIND_ORDER_STATUS, KIND_FX_MISSING}
+    assert len(store.rows) == 2, "默认扇出到 1 个用户:两个信封各一行"
+    assert {row["kind"] for row in store.rows} == {KIND_ORDER_STATUS, KIND_FX_MISSING}
+    assert [row["notificationId"] for row in store.rows] == [
+        payload["notificationId"] for _event, payload in emitter.events
+    ], "落库信封与广播载荷同源"
+
+
+async def test_emit_notifications_store_failure_still_broadcasts() -> None:
+    """落库失败按辅助簿记分类(增量 8-T1):仅日志,不阻塞广播(实时投递尽力而为)。"""
+    from python_backend.core.notifications import emit_notifications
+
+    emitter = RecordingEmitter()
+    await emit_notifications(
+        FailingNotificationStore(), emitter, [{"type": "order_status", "order_id": 1, "to": "shipped"}]
+    )
+    assert emitter.names() == ["notification.created"]
 
 
 @pytest.mark.parametrize("effects", [[], [{"type": "order_status", "order_id": 1, "to": "pending"}]])
 async def test_emit_notifications_empty_or_single(effects: list[dict]) -> None:
-    """空效果不发射;单效果发射一次(边界)。"""
-    emitter = RecordingEmitter()
+    """空效果零存储零发射;单效果各一次(边界)。"""
     from python_backend.core.notifications import emit_notifications
 
-    await emit_notifications(emitter, effects)
+    store = InMemoryNotificationStore()
+    emitter = RecordingEmitter()
+    await emit_notifications(store, emitter, effects)
     assert len(emitter.events) == len(effects)
+    assert len(store.rows) == len(effects)

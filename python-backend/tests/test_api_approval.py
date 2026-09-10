@@ -14,8 +14,10 @@ from python_backend.api.app import create_app
 from python_backend.core.approvals import parse_decision_intent
 from python_backend.core.graph import build_supervisor
 from tests.conftest import (
+    FailingNotificationStore,
     FakeApply,
     InMemoryApprovalBatchStore,
+    InMemoryNotificationStore,
     InMemorySessionMemory,
     InMemoryTaskStore,
     RecordingEmitter,
@@ -28,6 +30,16 @@ PUBLISH = {
     "params": {"product_id": 1},
     "snapshot": {"exists": True, "status": "draft"},
 }
+
+
+class _EffectApply:
+    """脚本化 apply:固定效果描述(通知路径用例共用)。"""
+
+    def __init__(self, effects: list[dict]) -> None:
+        self.effects = effects
+
+    async def __call__(self, batch_id: str, actions: list[dict]) -> ApplyResult:
+        return ApplyResult(applied=True, effects=self.effects)
 
 
 def make_client(*, shadow_mode: bool = False) -> tuple[TestClient, InMemoryApprovalBatchStore, FakeApply]:
@@ -224,18 +236,11 @@ async def test_shadow_execute_unknown_batch_is_404() -> None:
 
 
 async def test_shadow_batch_execute_emits_notifications() -> None:
-    """spec #9:影子补执行提交后按 apply 效果广播通知(与切片 apply 同一语义)。"""
-
-    class EffectApply:
-        async def __call__(self, batch_id: str, actions: list[dict]) -> ApplyResult:
-            return ApplyResult(
-                applied=True,
-                effects=[{"type": "order_status", "order_id": 9, "from": "pending", "to": "confirmed"}],
-            )
-
+    """spec #9 + 增量 8-T1:影子补执行提交后按 apply 效果落库(扇出)并广播通知(与切片 apply 同一语义)。"""
     store = InMemoryApprovalBatchStore()
     emitter = RecordingEmitter()
-    apply_fn = EffectApply()
+    notification_store = InMemoryNotificationStore()
+    apply_fn = _EffectApply([{"type": "order_status", "order_id": 9, "from": "pending", "to": "confirmed"}])
     graph = build_supervisor(
         StubPlanner(),
         agents={"order_management": slice_agent(actions=[PUBLISH], answer="已登记")},
@@ -252,6 +257,7 @@ async def test_shadow_batch_execute_emits_notifications() -> None:
             emitter=emitter,
             memory=InMemorySessionMemory(),  # 同上:避免默认 PG 记忆触库
             task_store=InMemoryTaskStore(),  # 同上:避免默认 PG 任务行存储触库
+            notification_store=notification_store,  # 同上:避免默认 PG 通知存储触库(增量 8-T1)
             auth_required=False,
         )
     )
@@ -265,6 +271,44 @@ async def test_shadow_batch_execute_emits_notifications() -> None:
     assert len(notifications) == 1
     assert notifications[0]["kind"] == "order_status"
     assert "#9" in notifications[0]["message"]
+    assert len(notification_store.rows) == 1, "影子补执行的通知同样落库(默认扇出 1 用户)"
+    assert notification_store.rows[0]["kind"] == "order_status"
+
+
+async def test_shadow_batch_execute_survives_notification_store_failure() -> None:
+    """增量 8-T1:落库失败按辅助簿记分类——端点如实 200、广播照常(spec #11 分类 ③)。"""
+    store = InMemoryApprovalBatchStore()
+    emitter = RecordingEmitter()
+    apply_fn = _EffectApply([{"type": "order_status", "order_id": 9, "from": "pending", "to": "confirmed"}])
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent(actions=[PUBLISH], answer="已登记")},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        shadow_mode=True,
+        apply_fn=apply_fn,
+    )
+    client = TestClient(
+        create_app(
+            graph=graph,
+            batch_store=store,
+            apply_fn=apply_fn,
+            emitter=emitter,
+            memory=InMemorySessionMemory(),
+            task_store=InMemoryTaskStore(),
+            notification_store=FailingNotificationStore(),
+            auth_required=False,
+        )
+    )
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    batch = (await store.list_open())[0]
+
+    response = client.post(f"/api/threads/{thread_id}/shadow-batches/{batch.batch_id}/execute")
+
+    assert response.status_code == 200
+    assert [event for event, _payload in emitter.events if event == "notification.created"] == [
+        "notification.created"
+    ], "落库失败不阻塞广播"
 
 
 def test_parse_decision_intent_priority() -> None:

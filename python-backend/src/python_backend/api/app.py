@@ -62,6 +62,7 @@ from python_backend.db.conversation_store import (
 )
 from python_backend.db.customer_store import list_customers
 from python_backend.db.models import Product, User
+from python_backend.db.notification_store import NotificationStore, PostgresNotificationStore
 from python_backend.db.report_store import build_summary
 from python_backend.db.session import SessionFactory
 from python_backend.db.task_store import PostgresTaskStore, TaskStore
@@ -336,16 +337,18 @@ def create_app(
     drafting: DraftingService | None = None,
     audit: AuditWriter | None = None,
     task_store: TaskStore | None = None,
+    notification_store: NotificationStore | None = None,
 ) -> FastAPI:
-    """构建 API 应用:graph/batch_store/apply_fn/emitter/tracer/fx_service/memory/drafting/audit/task_store
-    可注入(测试)或由 lifespan 装配(生产)。
+    """构建 API 应用:graph/batch_store/apply_fn/emitter/tracer/fx_service/memory/drafting/audit/task_store/
+    notification_store 可注入(测试)或由 lifespan 装配(生产)。
 
     apply_fn 默认真实 apply_batch_actions;emitter/tracer/audit 默认 no-op(spec #7/#8 接缝);
     fx_service 默认由下单端点惰性解析(spec #8 接缝,测试注入假实现);
     auth_required 默认开(spec #8 A1 全门禁),非认证行为的测试显式关闭;
     memory 默认 PG 会话记忆(spec #8 B16 接缝,测试注入内存实现);
     drafting 默认真实起草服务(spec #8 B11 接缝,测试注入假实现);
-    task_store 默认 PG 任务行存储(issue #13 接缝,测试注入内存实现——端点流程离线可跑)。
+    task_store 默认 PG 任务行存储(issue #13 接缝,测试注入内存实现——端点流程离线可跑);
+    notification_store 默认 PG 通知存储(增量 8-T1 接缝,测试注入内存实现——同上)。
     """
     app = FastAPI(title="Multi-Agent E-commerce System(切片式人工环节)", version="0.1.0")
     app.state.graph = graph
@@ -359,6 +362,7 @@ def create_app(
     app.state.drafting = drafting or DraftingService()
     app.state.audit = audit or NullAuditWriter()
     app.state.task_store = task_store or PostgresTaskStore()
+    app.state.notification_store = notification_store or PostgresNotificationStore()
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
@@ -471,8 +475,8 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error)) from error
         except OrderCreationError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        # 提交后组装通知(spec #9 A8/A9):订单创建 + 汇率缺失 + 库存跌破阈值
-        await emit_notifications(app.state.emitter, result.effects)
+        # 提交后组装通知(spec #9 A8/A9;增量 8-T1 起同时落库):订单创建 + 汇率缺失 + 库存跌破阈值
+        await emit_notifications(app.state.notification_store, app.state.emitter, result.effects)
         return {"order": result.order}
 
     @app.post("/api/import/products")
@@ -765,7 +769,7 @@ def create_app(
         outcome = await app.state.apply_fn(batch_id, record.actions)
         if not outcome.applied:
             raise HTTPException(status_code=409, detail=outcome.reason)
-        await emit_notifications(app.state.emitter, outcome.effects)  # 提交后通知(spec #9)
+        await emit_notifications(app.state.notification_store, app.state.emitter, outcome.effects)  # 提交后通知
         return {"status": "executed", "result": {"applied": True}}
 
     return app

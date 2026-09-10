@@ -1,18 +1,23 @@
-"""通知组装(spec #9 A8/A9/A14):业务效果 → 通知载荷,经 WS 事件 notification.created 下发。
+"""通知组装(spec #9 A8/A9/A14;落库增量 8-T1):业务效果 → 通知载荷,经 WS 事件 notification.created 下发。
 
 - 效果描述由 apply 处理器在事务内产生(纯数据),提交后由调用方 emit(回滚不误报)
 - 文案零 LLM:订单状态映射表(宪章「客服通知文案沿用状态映射表」;#18 起为卖家运营口吻);
   库存五档文案与 check_inventory 工具共用同一函数(单一数据路径)
-- 通知不落库:WS 推送 + 前端 localStorage(A14 语义)
+- 组装点 = 组装 → 落库(按用户扇出,持久副本)→ 广播(增量 8-T1,spec #14);
+  落库失败仅日志(spec #11 分类 ③:辅助簿记,不阻塞广播、不影响调用方响应)
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 from python_backend.core.events import EventEmitter
+from python_backend.db.notification_store import NotificationStore
+
+logger = logging.getLogger(__name__)
 
 # 订单状态 → 通知文案(#18:卖家运营口吻陈述句,无「您」买家视角;零 LLM 映射表)
 ORDER_STATUS_MESSAGES: dict[str, str] = {
@@ -99,7 +104,17 @@ def _envelope(notification_id: str, message: str, kind: str, order_id: int | Non
     }
 
 
-async def emit_notifications(emitter: EventEmitter, effects: list[dict]) -> None:
-    """组装并广播通知(调用方须在事务提交后调用:效果已落库,通知才如实)。"""
-    for payload in build_notifications(effects):
+async def emit_notifications(store: NotificationStore, emitter: EventEmitter, effects: list[dict]) -> None:
+    """组装效果 → 落库(按用户扇出)→ 广播(调用方须在事务提交后调用:效果已落库,通知才如实)。
+
+    落库失败按辅助簿记分类(spec #11 分类 ③):仅日志——不阻塞广播、不影响调用方响应。
+    """
+    payloads = build_notifications(effects)
+    if not payloads:
+        return
+    try:
+        await store.record(payloads)
+    except Exception:
+        logger.exception("通知落库失败(辅助簿记,仅日志)")
+    for payload in payloads:
         await emitter.emit("notification.created", payload)
