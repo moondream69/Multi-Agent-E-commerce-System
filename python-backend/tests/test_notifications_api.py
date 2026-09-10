@@ -134,15 +134,15 @@ class _TraceStore(InMemoryNotificationStore):
         self._trace.append("mark_read")
 
 
-class _TraceEmitter:
-    """记录事件并写入共享 trace(顺序断言用);载荷与 RecordingEmitter 同存。"""
+class _TraceEmitter(RecordingEmitter):
+    """RecordingEmitter + 共享 trace(与 _TraceStore 的 mark_read 同列,顺序断言用)。"""
 
     def __init__(self, trace: list[str]) -> None:
+        super().__init__()
         self._trace = trace
-        self.events: list[tuple[str, dict]] = []
 
     async def emit(self, event: str, payload: dict) -> None:
-        self.events.append((event, payload))
+        await super().emit(event, payload)
         self._trace.append(event)
 
 

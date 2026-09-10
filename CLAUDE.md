@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 当前状态:推翻式重构期
 
-旧系统冻结在 main(880b62d);**rebuild 分支按 ADR-0005 重写中**(增量 1-7 已落地 + issue #12 修复,下会话增量 8,交接见 `docs/handoffs/`)。README.md 停留在旧系统(自 main 冻结起未更新,含旧类名/旧表描述与必挂的 uvicorn 直启命令),以本文件 + CONTEXT.md 为准。业务决策唯一约束 = @docs/adr/0005-architecture-rebuild-production-charter.md;验收基线 = @docs/acceptance-scenarios.md;术语表(目标态,以它为准)= @CONTEXT.md。旧系统术语/类名只在被取代的决策记录中保留,不得当作现行架构。
+旧系统冻结在 main(880b62d);**rebuild 分支按 ADR-0005 重写中**(增量 1-8 已落地——通知落库与多端同步收口见 issue #14,交接见 `docs/handoffs/`)。README.md 停留在旧系统(自 main 冻结起未更新,含旧类名/旧表描述与必挂的 uvicorn 直启命令),以本文件 + CONTEXT.md 为准。业务决策唯一约束 = @docs/adr/0005-architecture-rebuild-production-charter.md;验收基线 = @docs/acceptance-scenarios.md;术语表(目标态,以它为准)= @CONTEXT.md。旧系统术语/类名只在被取代的决策记录中保留,不得当作现行架构。
 
 ## 开发命令
 
