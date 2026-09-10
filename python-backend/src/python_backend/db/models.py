@@ -13,6 +13,7 @@ from decimal import Decimal
 from sqlalchemy import (
     BigInteger,
     DateTime,
+    Enum,
     ForeignKey,
     Integer,
     Numeric,
@@ -75,6 +76,16 @@ class TicketStatus(enum.StrEnum):
     CLOSED = "closed"
 
 
+def _status_column_type(status: type[enum.StrEnum], name: str) -> Enum:
+    """status 列类型:非原生 VARCHAR,按 value(小写)落库(issue #12)。
+
+    与迁移 0001 的 ``sa.Enum(..., native_enum=False)`` 声明对齐 —— 仅靠 ``Mapped[X]``
+    推断会得到原生枚举(类型名 = 类名小写),多行批插渲染 ``::productstatus`` cast 报错;
+    ``values_callable`` 钉住小写 value 口径,与迁移声明 / server_default / JSON 契约一致。
+    """
+    return Enum(status, name=name, native_enum=False, values_callable=lambda members: [m.value for m in members])
+
+
 class User(Base):
     """登录用户:小团队平权,无角色(宪章 A31)。"""
 
@@ -99,7 +110,11 @@ class Product(Base):
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     platform: Mapped[str] = mapped_column(String(20), default="amazon")
     category: Mapped[str] = mapped_column(String(50))
-    status: Mapped[ProductStatus] = mapped_column(default=ProductStatus.DRAFT, server_default="draft")
+    status: Mapped[ProductStatus] = mapped_column(
+        _status_column_type(ProductStatus, "product_status"),
+        default=ProductStatus.DRAFT,
+        server_default=ProductStatus.DRAFT.value,
+    )
     stock: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # 库存告警阈值(商品级,spec #9 A9):扣减后低于该值发五档告警通知
     alert_threshold: Mapped[int] = mapped_column(
@@ -133,7 +148,11 @@ class Order(Base):
     reference: Mapped[str | None] = mapped_column(String(64))  # CSV 导入幂等去重键(可选,partial unique)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
-    status: Mapped[OrderStatus] = mapped_column(default=OrderStatus.PENDING, server_default="pending")
+    status: Mapped[OrderStatus] = mapped_column(
+        _status_column_type(OrderStatus, "order_status"),
+        default=OrderStatus.PENDING,
+        server_default=OrderStatus.PENDING.value,
+    )
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
@@ -174,7 +193,11 @@ class Task(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     session_id: Mapped[str] = mapped_column(String(64))
     type: Mapped[str] = mapped_column(String(40))
-    status: Mapped[TaskStatus] = mapped_column(default=TaskStatus.PENDING, server_default="pending")
+    status: Mapped[TaskStatus] = mapped_column(
+        _status_column_type(TaskStatus, "task_status"),
+        default=TaskStatus.PENDING,
+        server_default=TaskStatus.PENDING.value,
+    )
     slice_plan: Mapped[dict | None] = mapped_column(JSONB)
     input: Mapped[dict | None] = mapped_column(JSONB)
     result: Mapped[dict | None] = mapped_column(JSONB)
@@ -196,7 +219,11 @@ class ApprovalBatch(Base):
     slice_no: Mapped[int] = mapped_column(Integer)
     action_type: Mapped[str] = mapped_column(String(40))
     actions: Mapped[list] = mapped_column(JSONB)
-    status: Mapped[ApprovalStatus] = mapped_column(default=ApprovalStatus.PENDING, server_default="pending")
+    status: Mapped[ApprovalStatus] = mapped_column(
+        _status_column_type(ApprovalStatus, "approval_status"),
+        default=ApprovalStatus.PENDING,
+        server_default=ApprovalStatus.PENDING.value,
+    )
     mode: Mapped[str] = mapped_column(String(10), default="approval")
     requested_by: Mapped[str] = mapped_column(String(64))
     decided_by: Mapped[str | None] = mapped_column(String(64))
@@ -219,7 +246,11 @@ class Ticket(Base):
     task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"))
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
     message: Mapped[str] = mapped_column(Text)
-    status: Mapped[TicketStatus] = mapped_column(default=TicketStatus.OPEN, server_default="open")
+    status: Mapped[TicketStatus] = mapped_column(
+        _status_column_type(TicketStatus, "ticket_status"),
+        default=TicketStatus.OPEN,
+        server_default=TicketStatus.OPEN.value,
+    )
     created_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

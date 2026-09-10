@@ -39,10 +39,10 @@ async def _summary() -> dict:
     return response.json()
 
 
-async def _save(row: object) -> None:
-    """逐行落库:多行批插会渲染原生枚举类型(模型/迁移枚举声明不一致的既有缺陷),测试避开。"""
+async def _save(*rows: object) -> None:
+    """多行批插:同一 session 一次 add_all(枚举列经 insertmanyvalues;#12 修复前会渲染原生枚举 cast)。"""
     async with SessionFactory() as session, session.begin():
-        session.add(row)
+        session.add_all(rows)
 
 
 def _status_count(summary: dict, status: str) -> int:
@@ -57,30 +57,25 @@ async def test_report_summary_aggregates() -> None:
     product = Product(sku=f"RPT-{tag}", title=f"报表商品-{tag}", price=Decimal("10.00"), category="测试", stock=50)
     low = Product(sku=f"RPT-LOW-{tag}", title=f"低库存-{tag}", price=Decimal("10.00"), category="测试", stock=2)
     equal = Product(sku=f"RPT-EQ-{tag}", title=f"触线不告警-{tag}", price=Decimal("10.00"), category="测试", stock=10)
-    for row in (product, low, equal):
-        await _save(row)
-    # 窗内带汇率:计入成交额(100.00 * 7.1234 = 712.34)
+    await _save(product, low, equal)  # 先落父行供订单外键引用
     await _save(
+        # 窗内带汇率:计入成交额(100.00 * 7.1234 = 712.34)
         Order(
             product_id=product.id,
             status=OrderStatus.PENDING,
             total_amount=Decimal("100.00"),
             currency="USD",
             fx_rate=Decimal("7.1234"),
-        )
-    )
-    # 窗内缺汇率:计入 unconverted,不计金额
-    await _save(
+        ),
+        # 窗内缺汇率:计入 unconverted,不计金额
         Order(
             product_id=product.id,
             status=OrderStatus.PENDING,
             total_amount=Decimal("50.00"),
             currency="USD",
             fx_rate=None,
-        )
-    )
-    # 窗外带汇率:窗口过滤,不计
-    await _save(
+        ),
+        # 窗外带汇率:窗口过滤,不计
         Order(
             product_id=product.id,
             status=OrderStatus.SHIPPED,
@@ -88,16 +83,14 @@ async def test_report_summary_aggregates() -> None:
             currency="USD",
             fx_rate=Decimal("7.0000"),
             created_at=datetime.now(UTC) - timedelta(days=10),
-        )
-    )
-    await _save(Ticket(message=f"未结-{tag}", created_by="report-test"))
-    await _save(
+        ),
+        Ticket(message=f"未结-{tag}", created_by="report-test"),
         Ticket(
             message=f"已结-{tag}",
             created_by="report-test",
             status=TicketStatus.CLOSED,
             resolved_at=datetime.now(UTC),
-        )
+        ),
     )
 
     after = await _summary()
