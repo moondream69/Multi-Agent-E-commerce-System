@@ -26,7 +26,6 @@ from python_backend.core.auth import (
 from python_backend.db.models import User
 from python_backend.db.session import SessionFactory
 from python_backend.settings import get_settings
-from tests.conftest import postgres_reachable
 
 # —— 单测(离线) ——
 
@@ -64,10 +63,7 @@ def test_token_roundtrip_and_expiry() -> None:
 # —— 集成(真 PG,离线秒 skip) ——
 
 
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+pytestmark = pytest.mark.usefixtures("requires_postgres")
 
 
 class _FakeSettings:

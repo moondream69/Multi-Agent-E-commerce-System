@@ -20,8 +20,7 @@ from python_backend.core.memory import CONTEXT_MESSAGES, PostgresSessionMemory
 from python_backend.core.planning import ManagerPlanner
 from python_backend.db.models import Conversation, Task, User
 from python_backend.db.session import SessionFactory
-from python_backend.settings import get_settings
-from tests.conftest import FakeLlm, InMemoryApprovalBatchStore, StubPlanner, postgres_reachable
+from tests.conftest import FakeLlm, InMemoryApprovalBatchStore, StubPlanner
 
 
 class InMemorySessionMemory:
@@ -70,10 +69,7 @@ async def test_graph_passes_context_to_planner() -> None:
 # —— 集成(真 PG,离线秒 skip) ——
 
 
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+pytestmark = pytest.mark.usefixtures("requires_postgres")
 
 
 async def _seed_user() -> tuple[int, str]:

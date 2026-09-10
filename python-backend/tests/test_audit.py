@@ -22,13 +22,11 @@ from python_backend.db.audit_store import PgAuditWriter
 from python_backend.db.models import AgentTask, Task, User
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.tracing import task_trace_id
-from python_backend.settings import get_settings
 from tests.conftest import (
     FakeApply,
     InMemoryApprovalBatchStore,
     RecordingAudit,
     StubPlanner,
-    postgres_reachable,
     slice_agent,
 )
 
@@ -145,10 +143,7 @@ async def test_plan_failed_recorded_in_task_result() -> None:
 # —— PG 集成(离线秒 skip) ——
 
 
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+pytestmark = pytest.mark.usefixtures("requires_postgres")
 
 
 async def test_pg_audit_rows_land_with_trace_correlation() -> None:

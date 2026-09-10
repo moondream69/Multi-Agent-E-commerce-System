@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, rebuild]
   pull_request:
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
         run: uv run pytest -q -m "not e2e and not integration"
 
   frontend:
-    name: Frontend (lint + build)
+    name: Frontend (lint + test + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -43,5 +43,7 @@ jobs:
         run: npm ci
       - name: Lint (eslint)
         run: npm run lint
+      - name: Tests (vitest)
+        run: npm test
       - name: Build (tsc + vite)
         run: npm run build

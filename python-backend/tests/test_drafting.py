@@ -17,8 +17,7 @@ from python_backend.api.app import create_app
 from python_backend.core.drafting import DraftingService
 from python_backend.db.models import Order, Product
 from python_backend.db.session import SessionFactory
-from python_backend.settings import get_settings
-from tests.conftest import FakeLlm, postgres_reachable
+from tests.conftest import FakeLlm
 
 
 class FakeEmbedding:
@@ -109,10 +108,7 @@ async def test_drafting_endpoint_shape_and_errors() -> None:
 # —— 集成(真 PG,离线秒 skip) ——
 
 
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+pytestmark = pytest.mark.usefixtures("requires_postgres")
 
 
 async def test_order_evidence_included_and_missing_order_not_fabricated() -> None:

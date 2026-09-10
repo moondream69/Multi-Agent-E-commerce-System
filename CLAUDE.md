@@ -4,20 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 当前状态:推翻式重构期
 
-旧系统冻结在 main(880b62d);**rebuild 分支按 ADR-0005 重写中**(增量 1-6 已落地,下会话增量 7,交接见 `docs/handoffs/`)。业务决策唯一约束 = @docs/adr/0005-architecture-rebuild-production-charter.md;验收基线 = @docs/acceptance-scenarios.md;术语表(目标态,以它为准)= @CONTEXT.md。旧系统术语/类名只在被取代的决策记录中保留,不得当作现行架构。
+旧系统冻结在 main(880b62d);**rebuild 分支按 ADR-0005 重写中**(增量 1-7 已落地 + issue #12 修复,下会话增量 8,交接见 `docs/handoffs/`)。README.md 停留在旧系统(自 main 冻结起未更新,含旧类名/旧表描述与必挂的 uvicorn 直启命令),以本文件 + CONTEXT.md 为准。业务决策唯一约束 = @docs/adr/0005-architecture-rebuild-production-charter.md;验收基线 = @docs/acceptance-scenarios.md;术语表(目标态,以它为准)= @CONTEXT.md。旧系统术语/类名只在被取代的决策记录中保留,不得当作现行架构。
 
 ## 开发命令
 
 ```bash
 # 基础设施
-docker compose up -d                                          # 启动 Postgres + Redis + app(模拟流量 --profile sim、Ollama --profile embed 按需;首次需 docker compose build)
+docker compose up -d                                          # 启动 9 服务:Postgres/Redis/app 之外,Milvus/etcd/MinIO/ClickHouse/Langfuse×2 属默认栈(模拟流量 --profile sim、Ollama --profile embed 按需;首次需 docker compose build)
 
 # 后端 (python-backend/,Python 版为唯一后端)
 cd python-backend
 uv run python -m python_backend.run                # 启动(端口 3000;Windows 下经 run.py 切 SelectorEventLoop——uvicorn 直接跑 main 会因 psycopg 不支持 Proactor 而启动失败)
 uv run pytest                                      # 全部测试(e2e/integration 需真实服务在线,离线秒 skip)
 uv run pytest -m "not e2e and not integration"     # CI 同款快速套件
-uv run alembic upgrade head                        # 数据库迁移(12 表,含 pgvector 扩展)
+uv run alembic upgrade head                        # 数据库迁移(12 业务表;checkpoint 表由 PostgresSaver 自建,不在 Alembic 内)
 uv run ruff check .                                # Lint (无 --fix,自动修复用 `ruff check . --fix`)
 uv run ruff format .                               # 格式化
 uv run ty check .                                  # 类型检查 (Alembic 迁移已排除)
@@ -38,10 +38,13 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 > lint/format 已移入前端:所有 npm 命令须在 `frontend/` 下执行(仓库根已无 package.json)。
 > Python 侧规范工具为 ruff(lint+format)与 ty(type check),配置在 `python-backend/pyproject.toml`。
 > uv 在 PATH(`E:\Python\Scripts\uv.exe`)。PyPI 直连不畅时:`HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。
+> ⚠️ 改后端代码后须 `docker compose build app && docker compose up -d app`——app 镜像 COPY 源码、无挂载,不重建即跑旧码。
+> ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
+> CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
 
 ## 技术栈
 
-FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via Ollama (Embedding, 1024维) · python-socketio (WS 广播) · React + Vite + socket.io-client · uv
+FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 VectorRepository)· Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via Ollama (Embedding, 1024维) · python-socketio (WS 广播) · React + Vite + socket.io-client · uv
 
 ## 核心架构
 
@@ -63,7 +66,7 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 | `VectorRepository` | `vector_repo/base.py` | 向量访问抽象(Milvus 实现,pgvector 可切换) |
 | 事件与观测 | `core/events.py` / `infrastructure/tracing.py` | `EventEmitter`(WS 事件)/ `TaskTracer`(Langfuse 层级,B14) |
 | 通知组装 | `core/notifications.py` | 效果描述→通知载荷(状态映射表 7 文案 + 五档库存文案,零 LLM);`notification.created` 由 apply/REST **提交后** emit |
-| `LlmService` | `infrastructure/llm.py` | `complete()` + `completeWithTools()`(function calling);失败统一包装 `LlmFailure`(fallback 只承接它) |
+| `LlmService` | `infrastructure/llm.py` | `complete()` + `complete_with_tools()`(function calling);失败统一包装 `LlmFailure`(fallback 只承接它) |
 
 ### Agent 模式
 
@@ -80,7 +83,7 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 1. `agents/<name>/tools.py`:定义 `ToolDefinition` 清单(OpenAI function 形状;工具名与动作标识经 `action_of` 显式映射)
 2. `agents/<name>/agent.py`:`build_<name>_agent(executor, llm)` 返回 (编译子图, ToolRegistry);结构化图直接手绘节点
 3. 挂接:`core/planning.py` 的 `AGENTS` 元组 + Manager 提示词领域路由;`main.py` 的 `build_agents()`
-4. 新动作一处注册:`agents/registry.py` 的 REGISTRY.register(风险分类/中文标签/处理函数);前端标签经 GET /api/actions 渲染,不再硬编码。审批动作的 `apply` 若产生对外可见效果,**返回效果描述**(`core/notifications.py` 的 `EFFECT_*`),由调用方在事务提交后组装通知——不要在事务内 emit
+4. 新动作一处注册:`agents/executor.py` 中集中注册(REGISTRY.register:风险分类/中文标签/处理函数;`agents/registry.py` 仅定义类);前端标签经 GET /api/actions 渲染,不再硬编码。审批动作的 `apply` 若产生对外可见效果,**返回效果描述**(`core/notifications.py` 的 `EFFECT_*`),由调用方在事务提交后组装通知——不要在事务内 emit
 
 ## 环境配置
 
@@ -98,12 +101,17 @@ FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · Dee
 | `environment` | 环境剖面:`dev`=演练(影子模式)/ `prod`=生产(审批锁死);影子模式由它派生,运行时不可切换 |
 | `auth_jwt_secret` / `auth_token_ttl_hours` | JWT 签名密钥(生产必改:`openssl rand -hex 32`)/ 有效期 |
 | `auth_admin_username` / `auth_admin_password` | 初始管理员凭据(启动时 lifespan 懒 seed;密码留空则跳过) |
-| `approval_ttl_hours` | 审批批次存活时长(默认 4 小时,超时置 expired) |
+| `approval_ttl_hours` | 审批批次存活时长(预留:当前无自动过期清扫,见 docs/OPERATIONS.md) |
 | `cors_origins` | 允许的跨域来源列表 |
 | `fx_api_url` | 汇率 API(基准 CNY;Redis 缓存 4h,下单快照落库) |
 
 > ⚠️ Embedding 服务不可用时 `EmbeddingService` 显式报错(不静默降级为零向量)。
 > 前端类型是 API 契约唯一真源:`frontend/src/types/events.ts`(对应契约测试 `python-backend/tests/test_contract.py`)。
+
+## 数据库约定
+
+- 枚举 status 列一律经 `db/models.py` 的 `_status_column_type()` 声明(`native_enum=False` + `values_callable`,落库 = 小写 value,与迁移/server_default/JSON 契约一致);**新增枚举列照抄,勿靠 `Mapped[X]` 推断**(推断出原生枚举 → 批插渲染 `::<名>status` 报错,issue #12);改口径 = 数据迁移
+- dev 库 = `mae`(测试直写,带 tag 行会累积);`multi_agent_ecommerce` 是旧系统冻结库,**勿动**
 
 ## Agent skills
 
@@ -118,3 +126,7 @@ Issue 跟踪在 GitHub Issues,用 `gh` CLI 读写。见 `docs/agents/issue-track
 ### Domain docs
 
 单上下文布局:仓库根一个 `CONTEXT.md`,ADR 在 `docs/adr/`。见 `docs/agents/domain.md`。
+
+### Session handoffs
+
+每会话收尾写 `docs/handoffs/session-handoff-<date>-<topic>.md`(该目录 gitignore,不入库);开头写明"下会话主题"。

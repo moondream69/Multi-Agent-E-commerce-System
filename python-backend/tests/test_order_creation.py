@@ -23,10 +23,9 @@ from python_backend.db.approval_store import PostgresApprovalBatchStore
 from python_backend.db.models import Order, Product, ProductStatus
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.fx import FxUnavailableError
-from python_backend.settings import get_settings
-from tests.conftest import RecordingEmitter, postgres_reachable
+from tests.conftest import RecordingEmitter
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("requires_postgres")]
 
 
 class FakeFxService:
@@ -44,12 +43,6 @@ class FakeFxService:
         if currency.upper() == "CNY":
             return Decimal(1)
         return self.rate
-
-
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
 
 
 async def _make_product(stock: int = 5, *, alert_threshold: int = 1) -> Product:

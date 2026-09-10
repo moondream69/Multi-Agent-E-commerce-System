@@ -18,14 +18,8 @@ from python_backend.agents.executor import ApplyResult, ToolExecutor, apply_batc
 from python_backend.core.approvals import classify_action
 from python_backend.db.models import Order, OrderStatus, Product, ProductStatus, Ticket
 from python_backend.db.session import SessionFactory
-from python_backend.settings import get_settings
 from python_backend.vector_repo.base import VectorRecord
-from tests.conftest import FakeEmbedding, FakeLlm, InMemoryVectorRepository, postgres_reachable
-
-
-def _pg_guard() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+from tests.conftest import FakeEmbedding, FakeLlm, InMemoryVectorRepository, require_postgres
 
 
 def make_executor(llm: FakeLlm | None = None) -> ToolExecutor:
@@ -135,7 +129,7 @@ async def test_execute_trend_query_empty_collection_returns_empty() -> None:
 
 @pytest.fixture
 async def product() -> Product:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         row = Product(sku=f"SKU-{uuid.uuid4().hex[:8]}", title="宠物饮水机", price=Decimal("9.99"), category="宠物")
         session.add(row)
@@ -144,7 +138,7 @@ async def product() -> Product:
 
 
 async def test_execute_draft_create_inserts_draft(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     result = await make_executor().execute(
         "draft.create",
         {"sku": f"SKU-{uuid.uuid4().hex[:8]}", "title": "自动饮水机", "price": "19.9", "category": "宠物"},
@@ -156,7 +150,7 @@ async def test_execute_draft_create_inserts_draft(product: Product) -> None:
 
 
 async def test_execute_draft_create_duplicate_sku_raises(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     with pytest.raises(ValueError, match="已存在"):
         await make_executor().execute(
             "draft.create", {"sku": product.sku, "title": "重复", "price": "1.0", "category": "宠物"}
@@ -164,7 +158,7 @@ async def test_execute_draft_create_duplicate_sku_raises(product: Product) -> No
 
 
 async def test_execute_draft_edit_updates_only_draft(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     executor = make_executor()
     result = await executor.execute("draft.edit", {"product_id": product.id, "title": "新版标题", "price": "12.5"})
     assert result["title"] == "新版标题"
@@ -174,7 +168,7 @@ async def test_execute_draft_edit_updates_only_draft(product: Product) -> None:
 
 
 async def test_execute_draft_edit_non_draft_raises(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         row = await session.get(Product, product.id)
         assert row is not None
@@ -186,7 +180,7 @@ async def test_execute_draft_edit_non_draft_raises(product: Product) -> None:
 
 async def test_execute_draft_create_with_alert_threshold(product: Product) -> None:
     """spec #9:草稿创建可带库存告警阈值(缺省取默认 10)。"""
-    _pg_guard()
+    require_postgres()
     executor = make_executor()
     with_threshold = await executor.execute(
         "draft.create",
@@ -211,7 +205,7 @@ async def test_execute_draft_create_with_alert_threshold(product: Product) -> No
 
 async def test_execute_draft_create_invalid_alert_threshold_raises(product: Product) -> None:
     """非法阈值(0/负数/非整数)如实报错,不静默替换。"""
-    _pg_guard()
+    require_postgres()
     for bad in (0, -1, "abc"):
         with pytest.raises(ValueError, match="告警阈值"):
             await make_executor().execute(
@@ -228,7 +222,7 @@ async def test_execute_draft_create_invalid_alert_threshold_raises(product: Prod
 
 async def test_execute_draft_edit_updates_alert_threshold(product: Product) -> None:
     """spec #9:草稿编辑可改库存告警阈值(免审,草稿内部编辑)。"""
-    _pg_guard()
+    require_postgres()
     result = await make_executor().execute("draft.edit", {"product_id": product.id, "alert_threshold": 7})
     assert result["alert_threshold"] == 7
     async with SessionFactory() as session:
@@ -238,7 +232,7 @@ async def test_execute_draft_edit_updates_alert_threshold(product: Product) -> N
 
 async def test_execute_check_inventory_reads_real_stock(product: Product) -> None:
     """A7:库存检查读库(不再 LLM 自报),五档告警文案。"""
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         row = await session.get(Product, product.id)
         assert row is not None
@@ -252,7 +246,7 @@ async def test_execute_check_inventory_reads_real_stock(product: Product) -> Non
 
 
 async def test_execute_check_inventory_five_tiers(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     executor = make_executor()
     async with SessionFactory() as session:
         row = await session.get(Product, product.id)
@@ -266,7 +260,7 @@ async def test_execute_check_inventory_five_tiers(product: Product) -> None:
 
 async def test_execute_check_inventory_uses_product_threshold_by_default(product: Product) -> None:
     """A9:阈值参数缺省 → 读商品自身 alert_threshold(消除 LLM 自报阈值残余)。"""
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         row = await session.get(Product, product.id)
         assert row is not None
@@ -281,7 +275,7 @@ async def test_execute_check_inventory_uses_product_threshold_by_default(product
 
 
 async def test_execute_list_orders_and_lookup(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         order = Order(product_id=product.id, status=OrderStatus.PENDING, total_amount=Decimal("19.98"), currency="USD")
         session.add(order)
@@ -297,7 +291,7 @@ async def test_execute_list_orders_and_lookup(product: Product) -> None:
 
 
 async def test_execute_escalate_ticket_inserts_ticket() -> None:
-    _pg_guard()
+    require_postgres()
     result = await make_executor().execute("escalate_ticket", {"message": "客户要求升级处理"})
     async with SessionFactory() as session:
         rows = (await session.execute(select(Ticket))).scalars().all()
@@ -305,7 +299,7 @@ async def test_execute_escalate_ticket_inserts_ticket() -> None:
 
 
 async def test_execute_manage_template_crud() -> None:
-    _pg_guard()
+    require_postgres()
     scenario = f"shipping_delay_{uuid.uuid4().hex[:6]}"
     executor = make_executor()
     created = await executor.execute(
@@ -323,7 +317,7 @@ async def test_execute_manage_template_crud() -> None:
 
 
 async def test_execute_list_approvals_reads_batches(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     from python_backend.db.approval_store import PostgresApprovalBatchStore
 
     store = PostgresApprovalBatchStore()
@@ -343,19 +337,19 @@ async def test_execute_list_approvals_reads_batches(product: Product) -> None:
 
 
 async def test_capture_product_snapshot(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     snapshot = await make_executor().capture("product.publish", {"product_id": product.id})
     assert snapshot == {"exists": True, "status": "draft", "title": "宠物饮水机", "sku": product.sku}
 
 
 async def test_capture_missing_product_marks_not_exists() -> None:
-    _pg_guard()
+    require_postgres()
     snapshot = await make_executor().capture("product.publish", {"product_id": 999999})
     assert snapshot == {"exists": False}
 
 
 async def test_capture_order_transition_snapshot(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         order = Order(product_id=product.id, status=OrderStatus.PENDING, total_amount=Decimal("9.99"))
         session.add(order)
@@ -365,7 +359,7 @@ async def test_capture_order_transition_snapshot(product: Product) -> None:
 
 
 async def test_capture_unknown_action_raises() -> None:
-    _pg_guard()
+    require_postgres()
     with pytest.raises(ValueError, match="无快照"):
         await make_executor().capture("detect_anomalies", {})
 
@@ -392,7 +386,7 @@ async def _approved_batch(action_type: str, actions: list[dict]) -> str:
 
 
 async def test_apply_publish_happy_path(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     snapshot = await make_executor().capture("product.publish", {"product_id": product.id})
     actions = [{"action": "product.publish", "params": {"product_id": product.id}, "snapshot": snapshot}]
     result = await apply_batch_actions(await _approved_batch("product.publish", actions), actions)
@@ -403,7 +397,7 @@ async def test_apply_publish_happy_path(product: Product) -> None:
 
 
 async def test_apply_update_price_happy_path(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     snapshot = await make_executor().capture("product.update_price", {"product_id": product.id})
     actions = [
         {
@@ -421,7 +415,7 @@ async def test_apply_update_price_happy_path(product: Product) -> None:
 
 async def test_apply_drift_conflict_rolls_back_whole_batch(product: Product) -> None:
     """批内同进同退:一个动作漂移,整批回滚(状态与价格都不变)。"""
-    _pg_guard()
+    require_postgres()
     publish_snapshot = await make_executor().capture("product.publish", {"product_id": product.id})
     price_snapshot = await make_executor().capture("product.update_price", {"product_id": product.id})
     async with SessionFactory() as session:
@@ -449,7 +443,7 @@ async def test_apply_drift_conflict_rolls_back_whole_batch(product: Product) -> 
 
 
 async def test_apply_transition_valid(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         order = Order(product_id=product.id, status=OrderStatus.PENDING, total_amount=Decimal("9.99"))
         session.add(order)
@@ -474,7 +468,7 @@ async def test_apply_transition_valid(product: Product) -> None:
 
 async def test_apply_transition_illegal_move_is_conflict(product: Product) -> None:
     """非法流转(状态机外)apply 时拒绝。"""
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         order = Order(product_id=product.id, status=OrderStatus.PENDING, total_amount=Decimal("9.99"))
         session.add(order)
@@ -494,7 +488,7 @@ async def test_apply_transition_illegal_move_is_conflict(product: Product) -> No
 
 
 async def test_apply_transition_drift_conflict(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         order = Order(product_id=product.id, status=OrderStatus.PENDING, total_amount=Decimal("9.99"))
         session.add(order)
@@ -520,7 +514,7 @@ async def test_apply_transition_drift_conflict(product: Product) -> None:
 
 
 async def test_apply_cancel_from_pending(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         order = Order(product_id=product.id, status=OrderStatus.PENDING, total_amount=Decimal("9.99"))
         session.add(order)
@@ -537,7 +531,7 @@ async def test_apply_cancel_from_pending(product: Product) -> None:
 
 
 async def test_apply_cancel_from_delivered_is_conflict(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         order = Order(product_id=product.id, status=OrderStatus.DELIVERED, total_amount=Decimal("9.99"))
         session.add(order)
@@ -551,7 +545,7 @@ async def test_apply_cancel_from_delivered_is_conflict(product: Product) -> None
 
 
 async def test_apply_delete_with_order_refs_is_conflict(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     async with SessionFactory() as session:
         session.add(Order(product_id=product.id, status=OrderStatus.PENDING, total_amount=Decimal("9.99")))
         await session.commit()
@@ -563,7 +557,7 @@ async def test_apply_delete_with_order_refs_is_conflict(product: Product) -> Non
 
 
 async def test_apply_delete_without_refs_deletes(product: Product) -> None:
-    _pg_guard()
+    require_postgres()
     snapshot = await make_executor().capture("product.delete", {"product_id": product.id})
     actions = [{"action": "product.delete", "params": {"product_id": product.id}, "snapshot": snapshot}]
     result = await apply_batch_actions(await _approved_batch("product.delete", actions), actions)
@@ -578,7 +572,7 @@ async def test_apply_empty_batch_is_noop() -> None:
 
 async def test_apply_concurrent_same_product_serializes_no_dirty_write(product: Product) -> None:
     """B18:两个 apply 并发同商品同快照,恰好一个成功(行锁串行化 + 漂移检测)。"""
-    _pg_guard()
+    require_postgres()
     snapshot_1 = await make_executor().capture("product.publish", {"product_id": product.id})
     snapshot_2 = dict(snapshot_1)
 

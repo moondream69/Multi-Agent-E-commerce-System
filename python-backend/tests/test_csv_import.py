@@ -26,8 +26,6 @@ from python_backend.core.imports import (
 )
 from python_backend.db.models import Customer, Order, Product, ProductStatus
 from python_backend.db.session import SessionFactory
-from python_backend.settings import get_settings
-from tests.conftest import postgres_reachable
 
 PRODUCTS_CSV = (
     "sku,title,price,category,currency,stock\nSKU-A,蓝牙音箱,19.99,数码,USD,10\nSKU-B,桌面支架,9.50,配件,USD,0\n"
@@ -112,10 +110,7 @@ async def test_parse_orders_validation_and_defaults() -> None:
 # —— 落库集成(真 PG,离线秒 skip) ——
 
 
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+pytestmark = pytest.mark.usefixtures("requires_postgres")
 
 
 async def test_import_products_creates_drafts_skips_existing() -> None:

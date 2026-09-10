@@ -7,6 +7,8 @@ import socket
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
+import pytest
+
 from python_backend.agents.executor import ApplyResult
 from python_backend.core.approvals import (
     ApprovalBatchRecord,
@@ -16,6 +18,7 @@ from python_backend.core.approvals import (
 )
 from python_backend.core.planning import Slice, SlicePlan
 from python_backend.infrastructure.llm import ToolCallResult
+from python_backend.settings import get_settings
 from python_backend.vector_repo.base import SearchHit, VectorRecord, VectorRepository
 
 
@@ -37,6 +40,18 @@ def postgres_reachable(database_url: str, timeout: float = 2.0) -> bool:
     """Postgres 在线 TCP 快速探测:离线时 integration 秒 skip(默认超时放大至分钟级)。"""
     parsed = urlparse(database_url.replace("postgresql+psycopg://", "postgresql://"))
     return _tcp_reachable(parsed.hostname or "", parsed.port or 5432, timeout)
+
+
+def require_postgres() -> None:
+    """Postgres 在线探测:离线秒 skip(各测试模块与夹具共用,勿再复制本地版本)。"""
+    if not postgres_reachable(get_settings().database_url):
+        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+
+
+@pytest.fixture
+def requires_postgres() -> None:
+    """integration 模块共享夹具(经 pytestmark usefixtures 挂载,等价原先各文件的 autouse 探测)。"""
+    require_postgres()
 
 
 class InMemoryApprovalBatchStore:

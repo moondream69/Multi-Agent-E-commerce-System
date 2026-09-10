@@ -1,169 +1,66 @@
 # Multi-Agent E-commerce System
 
-多 AI Agent 协作的跨境电商系统，面向中国出海电商场景。三个 Agent（选品分析 / 订单处理 / 智能客服）各自携带专用工具，由 LLM 驱动的 ReAct 推理自主决策工具调用顺序；Agent 间通过**事件总线**松耦合协作——选品报告自动生成商品草稿、订单状态变化触发客服主动通知，形成从「选品」到「售后」的完整业务闭环。
+多 Agent 协作的跨境电商系统(中国出海场景):用户的自然语言请求经 Manager 规划为切片计划,由三个业务 Agent(选品 / 订单 / 客服)在监督图中逐步执行;一切对外可见的高危动作**不立即生效**——登记进审批批次,人工批准后在事务内统一执行。
 
-前端提供三个工作视图：**驾驶舱**（Agent 状态 + 实时事件流 + 聊天指挥）、**客服工作台**（售后对话）、**审批中心**（高危操作人工审批）。买家前台视图已移除——store REST API 保留为模拟流量入口。
+> **当前处于推翻式重构期**:`main` 冻结旧系统;现行目标态在 **`rebuild` 分支**(架构宪章 = `docs/adr/0005-architecture-rebuild-production-charter.md`)。本 README 描述目标态;开发命令、约定与排坑以 `CLAUDE.md` 为准。
+
+## 它怎么工作
+
+```
+用户输入 (REST /api/tasks) → Manager 规划(≤5 切片 + 依赖声明) → 监督图逐层 Send 扇出
+                             → 业务子图(免审直行、审批动作收集参数快照) → 按类型打包批次
+                             → 切片边界 interrupt → 批准后事务内 apply(批内同进同退) → 汇总
+```
+
+三条执行原则:
+
+- **免审直行 / 审批效果后置**:只读与草稿编辑直接执行;上架、改价、删除、订单流转、取消等对外动作只登记参数快照,批准后才在一个事务里统一生效(批内同进同退,快照漂移整批回滚)
+- **切片边界可挂起**:运行状态落库(checkpointer),审批决定后从断点恢复,可跨进程重启(durable interrupt)
+- **全过程可观测**:WebSocket 实时事件流、通知铃铛、驾驶舱经营快照、审批中心与工单列表
 
 ## 技术栈
 
-FastAPI + LangGraph · PostgreSQL 16 + pgvector (向量检索) · Redis 7 · DeepSeek v4 Flash (LLM) · 本地 BGE-M3 via Ollama (Embedding, 1024 维) · React + Vite + socket.io-client · uv
+FastAPI + LangGraph · PostgreSQL 16(业务数据) · Milvus(向量检索) · Redis 7 · DeepSeek v4 Flash(LLM) · 本地 BGE-M3 via Ollama(Embedding,1024 维) · python-socketio · React + Vite · uv
 
 ## 快速开始
 
 ```bash
-cp .env.example .env                    # 编辑 .env 填入实际配置 (EMBEDDING_API_URL 用 Ollama:11434)
-docker compose up -d                    # 启动 PostgreSQL + Redis + 应用 (首次先 docker compose build)
-# Embedding 由 Ollama (http://localhost:11434, 模型 bge-m3) 提供——compose 内 `docker compose --profile embed up -d ollama` 或本机启动,先 `ollama pull bge-m3` 确认模型已拉取
+cp .env.example .env        # 填入 LLM key 等;Embedding 默认指向本机 Ollama:11434(需 ollama pull bge-m3)
+docker compose up -d        # 起 Postgres/Redis/Milvus/app/Langfuse 等(首次先 docker compose build)
 
 cd python-backend
-uv run alembic upgrade head             # 数据库迁移 (12 表,含 pgvector 扩展)
-uv run python -m python_backend.seed    # 数据播种 (幂等,按自然键跳过已存在记录)
-uv run uvicorn python_backend.main:app --port 3000   # 启动后端 (端口 3000,前端契约不变)
+uv run alembic upgrade head             # 数据库迁移(12 业务表;checkpoint 表由 PostgresSaver 自建)
+uv run python -m python_backend.run     # 本机起后端 :3000(Windows 必走 run.py;容器方案由 compose 托管)
 
-# 前端 (另开终端)
-cd frontend && npm install && npm run dev  # Vite 开发服务器 (端口 5173)
+cd frontend && npm install && npm run dev   # 前端 :5173
 ```
 
-## 核心架构
+管理员与演示买家由应用启动时幂等 seed(凭据取 `.env` 的 `AUTH_ADMIN_*`)。
 
-```
-用户输入 (聊天 / REST) → IntentParser → Orchestrator → Agent.handleTask()
-                                                           │
-                                          BaseAgent (模板方法: 状态机 + 错误兜底)
-                                                              │
-                                          LangGraph StateGraph (ReAct 循环)
-                                                              │
-                                          LLM 选工具 → 工具执行 → 观察 → 再推理 → 输出
-```
-
-### Agent 间协作(事件总线)
-
-工具在业务动作完成后 `emit` 领域事件，其他 Agent 订阅并做出反应——跨 Agent 数据流因此形成闭环：
-
-```
-选品报告 report.generated ──→ 订单 Agent: LLM 提炼商品 → product_crud 创建草稿
-订单状态 order.status_changed ──→ 客服 Agent: 生成通知 → chat:notification 推送聊天面板
-库存告警 inventory.alert ──→ 客服 Agent: 转发通知
-客服回复 reply.generated / 升级 escalation.triggered ──→ 事件流展示
-```
-
-演示买家「张伟」(seed 客户,email `zhangwei@example.com`)经 store REST API 下单(模拟流量入口,前端买家视图已移除),创建 pending 订单;订单状态流转由订单 Agent 在聊天中指挥完成,状态变化即触发客服主动通知。
-
-### 关键组件
-
-| 组件 | 职责 |
-|------|------|
-| `BaseAgent` (`core/base_agent.py`) | 模板方法：状态机 + `executeTask()` 调用 LangGraph 图 |
-| `ReAct 图` (`core/graph.py`) | LangGraph 手绘 StateGraph：LLM 选工具 → 执行 → 观察 → 循环直到输出最终答案(同步 LLM 调用经 `asyncio.to_thread` 卸载出事件循环) |
-| `Workflow` (`core/workflow.py`) | 可选图级约束：阶段必调工具集 / 工具白名单 / 可否直接回答 |
-| `Orchestrator` (`core/orchestrator.py`) | Agent 注册 + 任务路由 + 任务审计 (agent_tasks 表) |
-| `EventBus` (`core/event_bus.py`) | Agent 间松耦合事件通信，`emit()` / `on()` / `broadcast()` |
-| `LlmService` (`infrastructure/llm.py`) | `complete()` (纯文本,Redis 缓存) + `completeWithTools()` (function calling) |
-| `EmbeddingService` (`infrastructure/embedding.py`) | `embed()` (→1024 维向量) + `search()` (pgvector 余弦相似度) |
-| `ITool` (`domain/tools.py`) | 所有工具的标准化接口：`{ definition; execute(params) }`(可注入 EventBus emit 事件) |
-
-### Agent 清单
-
-三个 Agent 不写死业务逻辑，只声明身份和工具清单，由 LLM 自主决定工具调用顺序：
-
-| Agent | 工具 |
-|-------|------|
-| **ProductResearchAgent** | `trend_query`, `competitor_analysis`, `scoring`, `generate_report` |
-| **OrderManagementAgent** | `product_crud`, `order_workflow`, `check_inventory`, `detect_anomalies`, `list_orders`, `list_approvals` |
-| **CustomerServiceAgent** | `translate`, `faq_search`, `sentiment_analysis`, `manage_template`, `order_lookup`, `escalate_ticket` |
-
-客服 Agent 声明两阶段 Workflow:先必调 `sentiment_analysis` + `faq_search`,完成后解锁全部工具可自由回答(图级白名单裁剪,未声明 Agent 行为不变)。
-
-## 事件类型(14 类)
-
-| 事件 | 触发方 | 消费方 |
-|------|--------|--------|
-| `report.generated` | 选品 `generate_report` | 订单 Agent → 自动创建商品草稿 |
-| `product.created` / `product.updated` | 订单 `product_crud` | 事件流展示 |
-| `order.status_changed` | 订单 `order_workflow` / 商店下单 | 客服 Agent → 主动通知;事件流展示 |
-| `reply.generated` | 客服 `manage_template.fill` | 事件流展示 |
-| `escalation.triggered` | 客服 `escalate_ticket` | 事件流展示 |
-| `inventory.alert` | 订单 `check_inventory` (告警时) | 客服 Agent → 转发通知 |
-| `customer.notification` | 客服 Agent | WS 桥接 `chat:notification` → 聊天面板 |
-| `task.assigned` / `task.completed` / `task.failed` | Orchestrator | 事件流展示 |
-| `agent.status_changed` | BaseAgent 状态机 | 驾驶舱 Agent 状态徽标 |
-| `approval.requested` / `approval.decided` | 审批护栏 (execute_guarded) | 审批中心徽标刷新 |
-
-## REST 端点
-
-| 方法 | 路径 | 功能 |
-|------|------|------|
-| POST | `/api/agents/task` | 创建并路由 Agent 任务 |
-| GET | `/api/agents/{id}` | 查询 Agent 信息 |
-| GET | `/api/dashboard/agents` | 全部 Agent 列表 |
-| GET | `/api/dashboard/status` | Agent 在线统计 |
-| GET | `/api/products` (`?category=`) | 商店商品列表(仅 active) |
-| GET | `/api/products/{id}` | 商品详情 |
-| POST | `/api/orders` | 下单(模拟流量入口,可指定买家邮箱) |
-| GET | `/api/orders` | 订单列表(含嵌套商品) |
-| POST | `/api/auth/login` | 登录(用户名密码 → JWT) |
-| GET | `/api/approvals` | 审批列表(分级审批护栏) |
-| POST | `/api/approvals/{id}/decide` | 通过/拒绝高危操作审批 |
-| POST | `/api/approvals/{id}/execute` | 影子建议一键补执行 |
-
-WebSocket:`chat:message` → `chat:response`(task_created / task_result / task_error 三形状);服务端推送 `agent:event`(全量事件)与 `chat:notification`(客服主动通知)。WS 连接需携带登录 token(`io({ auth: { token } })`)。契约真源:`frontend/src/types/events.ts`。
-
-## 数据库(12 表)
-
-`products` · `customers` · `orders` · `conversations`(聊天记录持久化) · `agent_tasks`(任务审计) · `agent_memory`(预留) · `product_embeddings` · `faq_embeddings` · `market_embeddings`(pgvector) · `reply_templates`(客服话术模板) · `users`(系统登录用户) · `approval_requests`(高危操作审批)
-
-## 环境配置
-
-| 变量 | 用途 |
-|------|------|
-| `DB_HOST/PORT/USERNAME/PASSWORD/NAME` | PostgreSQL 连接 |
-| `REDIS_HOST/PORT` | Redis 连接 |
-| `LLM_API_KEY` | API Key |
-| `LLM_API_URL` | API 端点 (如 `https://api.deepseek.com`) |
-| `LLM_MODEL` | 模型名 (如 `deepseek-v4-flash`) |
-| `LLM_MAX_CONCURRENCY` | 进程内 LLM 并发上限(DeepSeek 账号级限流防护,默认 2) |
-| `EMBEDDING_API_URL` | Ollama 端点 (`http://localhost:11434`)，留空则用 OpenAI |
-| `EMBEDDING_MODEL` | `bge-m3` (1024 维) 或 `text-embedding-3-small` (1536 维) |
-| `EMBEDDING_DIMENSION` | 向量维度 (1024 或 1536) |
-| `AUTH_JWT_SECRET` | JWT 签名密钥(生产必改:`openssl rand -hex 32`) |
-| `AUTH_ADMIN_USERNAME/PASSWORD` | 初始管理员(seed 幂等创建;密码留空则随机生成) |
-| `SHADOW_MODE` | 影子模式:AI 高危建议只记录不执行,审批中心一键补执行 |
-
-> ⚠️ Embedding 服务不可用时 `EmbeddingService` 显式报错(不静默降级为零向量)。
-> ⚠️ 业务路由已整体加认证(匿名 401);`/health`、`/api/auth/login` 保持公开。
-
-## 生产部署(局域网)
-
-定位为内部卖家工具(2-5 人小团队)。`docker compose up -d --build` 一键起 PostgreSQL + Redis + 应用(自动迁移 + 播种),前端由后端静态托管(单端口 3000)。模拟流量:`docker compose --profile sim up -d`。
-
-详见 [docs/OPERATIONS.md](docs/OPERATIONS.md):启动流程、**单 worker 硬约束**、备份/恢复、跑一天后的审计 SQL。
-
-## 开发命令
+模拟流量(需后端在线;真 HTTP 入口,走完整任务/下单链路):
 
 ```bash
-# 后端 (cd python-backend)
-uv run pytest                          # 全部测试 (含 WS e2e,需 Ollama/DeepSeek 在线)
-uv run pytest -m "not e2e and not integration"   # CI 同款快速套件 (无 DB/外部依赖)
-uv run alembic upgrade head            # 数据库迁移
-uv run python -m python_backend.seed   # 数据播种 (幂等)
-uv run ruff check .                    # Lint
-uv run ruff format .                   # 格式化
-uv run ty check .                      # 类型检查
-
-# 前端 (cd frontend; 仓库根已无 package.json,npm 命令须在 frontend 下执行)
-npm run lint / lint:fix                # ESLint 检查 / 自动修复
-npm run format / format:check          # Prettier 格式化 / 只检查
-npm run build                          # 前端构建 (tsc + vite)
-npm run dev                            # Vite (5173)
+cd python-backend && uv run python -m python_backend.simulator --once     # 冒烟一轮(命中下单会等 30-90s)
 ```
 
-> uv 在 PATH(`E:\Python\Scripts\uv.exe`)。PyPI 直连不畅时:`HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。
-> CI (`.github/workflows/ci.yml`)：push/PR 自动跑后端 ruff+ty+快速测试与前端 lint+build。
+## 测试与检查
 
-架构决策见 [docs/adr/](docs/adr/)。
+```bash
+cd python-backend && uv run pytest                       # 全部(集成/e2e 需真实服务在线,离线秒 skip)
+cd python-backend && uv run ruff check . && uv run ty check .
+cd frontend && npm run lint && npm test && npm run build # vitest 组件测试
+```
 
-## 新增 Agent
+CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑上述检查。
 
-1. 在 `python-backend/src/python_backend/agents/<name>/` 下创建 `tools.py`，实现 `ITool` 接口（含 `definition` + `execute()`，需要 emit 事件时构造注入 `EventBus`）
-2. 创建 `<name>/agent.py` 继承 `BaseAgent`，声明 `systemPrompt` + 工具清单（需要图级约束时声明 `workflow`）
-3. 在 `main.py` 注册：`orchestrator.register_agent(agent, TaskType.XXX)`，并在组装处订阅需要响应的事件
+## 目录与文档地图
+
+| 路径 | 内容 |
+|------|------|
+| `python-backend/` | FastAPI + LangGraph 后端(唯一后端;结构见其 README) |
+| `frontend/` | React + Vite 前端(驾驶舱 / 客服工作台 / 审批中心 / 工单) |
+| `docs/adr/` | 架构决策记录;现行约束 = **ADR-0005** |
+| `docs/acceptance-scenarios.md` | 验收基线(A/B 场景清单) |
+| `docs/OPERATIONS.md` | 运维手册:启动、备份/恢复、审计 SQL |
+| `CONTEXT.md` | 术语表(目标态,以它为准) |
+| `CLAUDE.md` | 开发命令与约定(AI 会话入口) |

@@ -53,16 +53,13 @@ def server_url():
     wrapped = wrap_with_socketio(app, sio)
 
     port = _free_port()
-    # loop="none":让 asyncio.run 按线程内设置的 Selector 策略建循环
-    # (新版 uvicorn 在 win32 默认强制 Proactor 策略,psycopg 异步不可用)
+    # loop="none":禁掉 uvicorn 自身的循环管理,由服务线程内 asyncio.run 的 loop_factory 建循环
     server = uvicorn.Server(uvicorn.Config(wrapped, host="127.0.0.1", port=port, log_level="warning", loop="none"))
 
     def run() -> None:
-        # 服务线程自建事件循环:psycopg 异步处理器要求 Selector(与 run.py 同策略;
-        # pytest-asyncio 在主线程设置了 Proactor 策略,须在此覆盖回 Selector)
-        if sys.platform == "win32":
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        server.run()
+        # 服务线程显式以 SelectorEventLoop 建循环:psycopg 异步处理器要求 Selector,
+        # 且不受主线程(pytest-asyncio)事件循环策略影响(与 run.py 同一 loop_factory 手法)
+        asyncio.run(server.serve(), loop_factory=asyncio.SelectorEventLoop if sys.platform == "win32" else None)
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()

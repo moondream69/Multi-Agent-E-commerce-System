@@ -23,9 +23,9 @@ from python_backend.db.approval_store import PostgresApprovalBatchStore
 from python_backend.db.models import ApprovalBatch, Product
 from python_backend.db.session import SessionFactory
 from python_backend.settings import get_settings
-from tests.conftest import StubPlanner, postgres_reachable, slice_agent
+from tests.conftest import StubPlanner, slice_agent
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("requires_postgres")]
 
 
 async def make_assemblage(product_id: int | None = None):
@@ -53,12 +53,6 @@ async def make_assemblage(product_id: int | None = None):
     )
     app = create_app(graph=graph, batch_store=store, auth_required=False)
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test"), store
-
-
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
 
 
 async def _make_product() -> Product:

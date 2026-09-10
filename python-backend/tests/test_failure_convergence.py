@@ -26,7 +26,6 @@ from python_backend.core.planning import Slice, SlicePlan
 from python_backend.db.models import User
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.llm import LlmFailure
-from python_backend.settings import get_settings
 from tests.conftest import (
     FakeApply,
     FakeExecutor,
@@ -35,7 +34,7 @@ from tests.conftest import (
     RecordingAudit,
     RecordingEmitter,
     StubPlanner,
-    postgres_reachable,
+    require_postgres,
     slice_agent,
 )
 
@@ -354,15 +353,10 @@ def _authed_client(
     )
 
 
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
-
-
 @pytest.mark.integration
 async def test_task_row_failed_on_llm_failure() -> None:
     """发起入口:LLM 失败 → 201 + 行 failed + result.error 如实落库(无悬挂 in_progress)。"""
-    _require_postgres()
+    require_postgres()
     user_id, username = await _seed_user()
     client = _authed_client({"customer_service": make_agent_runner(_failing_customer_graph())}, plan=_customer_plan())
     client.headers.update({"Authorization": f"Bearer {create_token(username, user_id)}"})
@@ -379,7 +373,7 @@ async def test_task_row_failed_on_llm_failure() -> None:
 @pytest.mark.integration
 async def test_resume_row_failed_with_reason() -> None:
     """恢复入口:切片 2 恢复中失败 → 行 failed(不留 in_progress)+ result.error 含原因。"""
-    _require_postgres()
+    require_postgres()
     user_id, username = await _seed_user()
     client = _authed_client(
         {
@@ -405,7 +399,7 @@ async def test_resume_row_failed_with_reason() -> None:
 @pytest.mark.integration
 async def test_task_row_completed_on_post_graph_bookkeeping_failure() -> None:
     """图成功后仅辅助簿记失败:行保持 completed(如实),端点 201 成功(spec #11 分类收敛)。"""
-    _require_postgres()
+    require_postgres()
     user_id, username = await _seed_user()
     session = f"fail-post-graph-{uuid.uuid4().hex[:8]}"
     client = _authed_client({"order_management": slice_agent([], answer="完成")}, memory=FailingMemory())
@@ -423,7 +417,7 @@ async def test_task_row_completed_on_post_graph_bookkeeping_failure() -> None:
 @pytest.mark.integration
 async def test_task_row_failed_on_unexpected_error() -> None:
     """编程错误:行收敛 failed(端点 500,观测保留)。"""
-    _require_postgres()
+    require_postgres()
 
     async def boom(slice_) -> dict:
         raise KeyError("编程错误")

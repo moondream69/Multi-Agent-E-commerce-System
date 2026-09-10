@@ -18,16 +18,8 @@ from python_backend.db import customer_store
 from python_backend.db.customer_store import ensure_demo_buyers
 from python_backend.db.models import Customer
 from python_backend.db.session import SessionFactory
-from python_backend.settings import get_settings
-from tests.conftest import postgres_reachable
 
-pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(autouse=True)
-def _require_postgres() -> None:
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线(compose dev 库),integration 跳过")
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("requires_postgres")]
 
 
 async def test_customers_endpoint_shape_and_order() -> None:

@@ -39,10 +39,10 @@ from python_backend.vector_repo.milvus_repo import MilvusVectorRepository
 
 logger = logging.getLogger(__name__)
 
-# Windows:psycopg async 不能跑在 ProactorEventLoop 上(uvicorn 默认 loop),
-# 必须在 uvicorn 创建事件循环之前切换为 SelectorEventLoop(与测试同策略)。
+# Windows:psycopg async 不能跑在 ProactorEventLoop 上(uvicorn 默认 loop),此块为直接以 main
+# 为入口的消费者兜底(正式入口 run.py 已改用 loop_factory);策略 API 自 3.14 弃用,保留原因见 __init__.py。
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # ty: ignore[deprecated]
 
 
 def build_agents() -> dict[str, AgentRunner]:
