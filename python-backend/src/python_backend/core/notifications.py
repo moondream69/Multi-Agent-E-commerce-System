@@ -1,7 +1,7 @@
 """通知组装(spec #9 A8/A9/A14):业务效果 → 通知载荷,经 WS 事件 notification.created 下发。
 
 - 效果描述由 apply 处理器在事务内产生(纯数据),提交后由调用方 emit(回滚不误报)
-- 文案零 LLM:订单状态映射表(宪章「客服通知文案沿用状态映射表」,逐字沿用旧系统);
+- 文案零 LLM:订单状态映射表(宪章「客服通知文案沿用状态映射表」;#18 起为卖家运营口吻);
   库存五档文案与 check_inventory 工具共用同一函数(单一数据路径)
 - 通知不落库:WS 推送 + 前端 localStorage(A14 语义)
 """
@@ -14,15 +14,15 @@ from datetime import UTC, datetime
 
 from python_backend.core.events import EventEmitter
 
-# 订单状态 → 买家通知文案(旧系统映射表逐字沿用;措辞调整留后续增量)
+# 订单状态 → 通知文案(#18:卖家运营口吻陈述句,无「您」买家视角;零 LLM 映射表)
 ORDER_STATUS_MESSAGES: dict[str, str] = {
-    "pending": "您的订单 #{order_id} 已提交,等待商家确认。",
-    "confirmed": "您的订单 #{order_id} 已确认,准备处理。",
-    "processing": "您的订单 #{order_id} 正在处理中,请耐心等待。",
-    "shipped": "您的订单 #{order_id} 已发货,请留意物流信息。",
-    "delivered": "您的订单 #{order_id} 已送达,感谢您的购买!",
-    "cancelled": "您的订单 #{order_id} 已取消。如有疑问请随时联系客服。",
-    "returned": "您的订单 #{order_id} 已完成退货处理。",
+    "pending": "新订单 #{order_id} 已提交,待确认。",
+    "confirmed": "订单 #{order_id} 已确认。",
+    "processing": "订单 #{order_id} 进入处理中。",
+    "shipped": "订单 #{order_id} 已发货。",
+    "delivered": "订单 #{order_id} 已送达。",
+    "cancelled": "订单 #{order_id} 已取消。",
+    "returned": "订单 #{order_id} 已完成退货。",
 }
 
 KIND_ORDER_STATUS = "order_status"

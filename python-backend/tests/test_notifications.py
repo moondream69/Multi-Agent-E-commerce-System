@@ -34,13 +34,28 @@ def test_order_status_messages_cover_seven_states() -> None:
     assert "#5" in ORDER_STATUS_MESSAGES["shipped"].format(order_id=5)
 
 
+def test_order_status_messages_seller_voice() -> None:
+    """#18(A8 文案):七条为卖家运营口吻——无「您」买家视角,逐条钉住。"""
+    pinned = {
+        "pending": "新订单 #{order_id} 已提交,待确认。",
+        "confirmed": "订单 #{order_id} 已确认。",
+        "processing": "订单 #{order_id} 进入处理中。",
+        "shipped": "订单 #{order_id} 已发货。",
+        "delivered": "订单 #{order_id} 已送达。",
+        "cancelled": "订单 #{order_id} 已取消。",
+        "returned": "订单 #{order_id} 已完成退货。",
+    }
+    assert pinned == ORDER_STATUS_MESSAGES
+    assert all("您" not in text for text in ORDER_STATUS_MESSAGES.values())
+
+
 def test_build_order_status_notification() -> None:
     """订单状态效果 → 通知信封(order_status,携 orderId)。"""
     effects = [{"type": "order_status", "order_id": 7, "from": "pending", "to": "confirmed"}]
     notifications = build_notifications(effects, new_id=_ids())
     assert len(notifications) == 1
     assert notifications[0]["notificationId"] == "n-0"
-    assert notifications[0]["message"] == "您的订单 #7 已确认,准备处理。"
+    assert notifications[0]["message"] == "订单 #7 已确认。"
     assert notifications[0]["kind"] == KIND_ORDER_STATUS
     assert notifications[0]["orderId"] == 7
     assert notifications[0]["timestamp"]
