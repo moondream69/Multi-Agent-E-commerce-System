@@ -19,6 +19,7 @@ from python_backend.core.approvals import (
 )
 from python_backend.core.planning import Slice, SlicePlan
 from python_backend.db.models import Task, TaskStatus
+from python_backend.db.notification_store import MAX_PER_KIND
 from python_backend.infrastructure.llm import ToolCallResult
 from python_backend.settings import get_settings
 from python_backend.vector_repo.base import SearchHit, VectorRecord, VectorRepository
@@ -126,12 +127,24 @@ class InMemoryTaskStore:
         return self._by_thread.get(thread_id)
 
 
+def _read_envelope(row: dict) -> dict:
+    """落库行 → 契约信封五键(生产的 list_for_user 同形:不泄漏 user_id/read_at 等内部列)。"""
+    return {
+        "notificationId": row["notificationId"],
+        "message": row["message"],
+        "kind": row["kind"],
+        "orderId": row["orderId"],
+        "timestamp": row["timestamp"],
+    }
+
+
 class InMemoryNotificationStore:
-    """通知存储内存实现(增量 8-T1 接缝;端点流程用例离线可跑,不触 PG)。
+    """通知存储内存实现(增量 8 接缝;端点流程用例离线可跑,不触 PG)。
 
     复现生产可见语义:信封批量落库、按 user_ids 扇出(模拟「全量现有用户」)、
-    (user_id, notificationId) 重复落库幂等(生产侧为唯一约束 + on_conflict)。
-    created_at 由本实现填充(PG 侧 server_default);read_at 恒空(读路径属 T2)。
+    (user_id, notificationId) 重复落库幂等(生产侧为唯一约束 + on_conflict);
+    读路径(增量 8-T2):按用户隔离、每组最近 MAX_PER_KIND 条(保留最新)、
+    未读 = read_at 空计数、mark_read 幂等。created_at 由本实现填充(PG 侧 server_default)。
     """
 
     def __init__(self, user_ids: Iterable[int] = (1,)) -> None:
@@ -147,12 +160,46 @@ class InMemoryNotificationStore:
                 seen.add((user_id, payload["notificationId"]))
                 self.rows.append({**payload, "user_id": user_id, "read_at": None})
 
+    async def list_for_user(self, user_id: int) -> list[dict]:
+        """信封列表:每组最近 MAX_PER_KIND 条(截断保留最新),整体最新在前。
+
+        排列口径与生产同构:插入序倒排 ≈ created_at + id 倒排(同批 created_at 相同,id 决胜)。
+        """
+        indexed = [(index, row) for index, row in enumerate(self.rows) if row["user_id"] == user_id]
+        by_kind: dict[str, list[tuple[int, dict]]] = {}
+        for index, row in indexed:
+            by_kind.setdefault(row["kind"], []).append((index, row))
+        kept: list[tuple[int, dict]] = []
+        for items in by_kind.values():
+            kept.extend(items[-MAX_PER_KIND:])
+        kept.sort(key=lambda pair: pair[0], reverse=True)
+        return [_read_envelope(row) for _index, row in kept]
+
+    async def unread_count(self, user_id: int) -> int:
+        return sum(1 for row in self.rows if row["user_id"] == user_id and row["read_at"] is None)
+
+    async def mark_read(self, user_id: int) -> None:
+        """该用户全部未读置 read_at(幂等:重复调用无副作用)。"""
+        now = datetime.now(UTC)
+        for row in self.rows:
+            if row["user_id"] == user_id and row["read_at"] is None:
+                row["read_at"] = now
+
 
 class FailingNotificationStore:
-    """落库必炸的通知存储(增量 8-T1):辅助簿记分类用例——仅日志,不阻塞广播、不影响响应。"""
+    """落库/读路径必炸的通知存储(增量 8):辅助簿记分类用例——仅日志,不阻塞广播、不影响响应。"""
 
     async def record(self, notifications: list[dict]) -> None:
         raise RuntimeError("落库炸了(测试)")
+
+    async def list_for_user(self, user_id: int) -> list[dict]:
+        raise RuntimeError("读路径炸了(测试)")
+
+    async def unread_count(self, user_id: int) -> int:
+        raise RuntimeError("读路径炸了(测试)")
+
+    async def mark_read(self, user_id: int) -> None:
+        raise RuntimeError("读路径炸了(测试)")
 
 
 class InMemoryApprovalBatchStore:

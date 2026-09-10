@@ -596,6 +596,27 @@ def create_app(
         """经营快照(spec #11):订单分布 / 近 7 日成交额(CNY 快照口径)/ 低库存 / 未结工单,零 LLM。"""
         return await build_summary()
 
+    @app.get("/api/notifications")
+    async def list_notifications(request: Request) -> dict:
+        """通知真源(增量 8-T2):当前用户通知历史(每组最近 50 条,最新在前)+ 全量未读计数。
+
+        未认证上下文(TaskStore 同语义)返回空态,不触存储;unread 与每组截断解耦。
+        """
+        user_id = _current_user_id(request)
+        if user_id is None:
+            return {"notifications": [], "unread": 0}
+        notifications = await app.state.notification_store.list_for_user(user_id)
+        unread = await app.state.notification_store.unread_count(user_id)
+        return {"notifications": notifications, "unread": unread}
+
+    @app.post("/api/notifications/read")
+    async def mark_notifications_read(request: Request) -> dict:
+        """标记已读(增量 8-T2):幂等清零当前用户未读;未认证跳过落库(同 TaskStore 语义)。"""
+        user_id = _current_user_id(request)
+        if user_id is not None:
+            await app.state.notification_store.mark_read(user_id)
+        return {"unread": 0}
+
     @app.get("/api/conversations")
     async def list_user_conversations(request: Request) -> dict:
         """会话列表(spec #9 A2):当前用户的会话,updated_at 倒序。"""

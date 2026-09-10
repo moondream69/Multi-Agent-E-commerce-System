@@ -103,6 +103,23 @@ async def test_notification_message_matches_contract() -> None:
     assert set(payload) == expected, f"通知载荷键 {set(payload)} 应等于契约字段 {expected}"
 
 
+async def test_notification_feed_matches_contract() -> None:
+    """GET /api/notifications 响应键 == ts NotificationFeed;元素 == NotificationMessage(增量 8-T2)。"""
+    from python_backend.core.auth import create_token
+    from python_backend.core.notifications import build_notifications
+    from tests.conftest import InMemoryNotificationStore
+
+    store = InMemoryNotificationStore(user_ids=(42,))
+    await store.record(build_notifications([{"type": "order_status", "order_id": 1, "to": "shipped"}]))
+    client = TestClient(create_app(auth_required=False, notification_store=store))
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+
+    body = client.get("/api/notifications").json()
+
+    assert set(body) == _ts_interface_fields("NotificationFeed"), "读响应键 == 契约字段"
+    assert set(body["notifications"][0]) == _ts_interface_fields("NotificationMessage"), "落库行与信封同形"
+
+
 async def test_conversation_meta_matches_contract() -> None:
     """会话列表字段 == ts ConversationMeta(spec #9 A2)。"""
     expected = _ts_interface_fields("ConversationMeta")

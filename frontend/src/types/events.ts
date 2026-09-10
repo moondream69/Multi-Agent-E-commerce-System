@@ -77,6 +77,12 @@ export interface NotificationMessage {
   timestamp: string;
 }
 
+// GET /api/notifications 响应(增量 8-T2):当前用户通知历史(每组最近 50 条)+ 全量未读计数
+export interface NotificationFeed {
+  notifications: NotificationMessage[];
+  unread: number;
+}
+
 // —— 会话(A2 多会话:新建/切换/删除、标题截断 20 字、空白会话惰性落库)——
 
 export interface ConversationMeta {

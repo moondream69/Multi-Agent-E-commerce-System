@@ -4,7 +4,7 @@ import { useSocket } from '../hooks/useSocket';
 import { EventType, NotificationMessage } from '../types/events';
 import { theme } from '../theme';
 
-// —— 通知铃铛(spec #9 A8/A9/A14):WS notification.created → 按 kind 归组 + 未读持久化 ——
+// —— 通知铃铛(spec #9 A8/A9/A14;增量 8-T2 服务端真源)——
 
 const BELL_EVENTS = [EventType.NOTIFICATION_CREATED]; // 模块级常量:useSocket 依赖引用稳定
 
