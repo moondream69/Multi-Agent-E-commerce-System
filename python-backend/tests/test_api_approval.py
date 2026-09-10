@@ -12,7 +12,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from python_backend.agents.executor import ApplyResult
 from python_backend.api.app import create_app
 from python_backend.core.approvals import parse_decision_intent
+from python_backend.core.auth import create_token
 from python_backend.core.graph import build_supervisor
+from python_backend.db.models import TaskStatus
 from tests.conftest import (
     FailingNotificationStore,
     FakeApply,
@@ -115,6 +117,48 @@ async def test_resume_approve_completes_and_applies() -> None:
     assert body["summary"]["results"]["1"]["executed"] is True
     assert [bid for bid, _a in apply_fn.calls] == [batch_id]
     assert await store.list_pending(thread_id) == []
+
+
+async def test_resume_completes_when_notification_store_fails() -> None:
+    """增量 8-T1:apply 后通知落库失败按辅助簿记分类——任务照常 completed(任务行不被翻)、响应 200、广播照常。"""
+    store = InMemoryApprovalBatchStore()
+    emitter = RecordingEmitter()
+    task_store = InMemoryTaskStore()
+    apply_fn = _EffectApply([{"type": "order_status", "order_id": 3, "from": "pending", "to": "confirmed"}])
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent(actions=[PUBLISH], answer="已登记")},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        apply_fn=apply_fn,
+        emitter=emitter,  # 生产装配:图与端点共用同一发射器(main.py 同款)
+    )
+    client = TestClient(
+        create_app(
+            graph=graph,
+            batch_store=store,
+            apply_fn=apply_fn,
+            emitter=emitter,
+            memory=InMemorySessionMemory(),
+            task_store=task_store,
+            notification_store=FailingNotificationStore(),
+            auth_required=False,
+        )
+    )
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    batch_id = (await store.list_pending(thread_id))[0].batch_id
+
+    response = client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve"}})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    row = await task_store.get_task(thread_id)
+    assert row is not None and row.status is TaskStatus.COMPLETED, "通知落库失败不得翻转任务行"
+    assert [event for event, _payload in emitter.events if event == "notification.created"] == [
+        "notification.created"
+    ], "落库失败不阻塞广播"
 
 
 async def test_resume_reject_updates_batch_and_replans() -> None:

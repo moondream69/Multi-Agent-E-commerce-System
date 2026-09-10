@@ -10,6 +10,7 @@ from python_backend.core.notifications import (
     KIND_ORDER_STATUS,
     ORDER_STATUS_MESSAGES,
     build_notifications,
+    emit_notifications,
     inventory_alert_message,
 )
 from tests.conftest import FailingNotificationStore, InMemoryNotificationStore, RecordingEmitter
@@ -98,7 +99,6 @@ def test_build_fx_missing_notification() -> None:
 
 async def test_emit_notifications_records_then_broadcasts() -> None:
     """组装点扩展(增量 8-T1):每个通知落库(按用户扇出)+ 广播 notification.created。"""
-    from python_backend.core.notifications import emit_notifications
 
     store = InMemoryNotificationStore()
     emitter = RecordingEmitter()
@@ -122,7 +122,6 @@ async def test_emit_notifications_records_then_broadcasts() -> None:
 
 async def test_emit_notifications_store_failure_still_broadcasts() -> None:
     """落库失败按辅助簿记分类(增量 8-T1):仅日志,不阻塞广播(实时投递尽力而为)。"""
-    from python_backend.core.notifications import emit_notifications
 
     emitter = RecordingEmitter()
     await emit_notifications(
@@ -134,7 +133,6 @@ async def test_emit_notifications_store_failure_still_broadcasts() -> None:
 @pytest.mark.parametrize("effects", [[], [{"type": "order_status", "order_id": 1, "to": "pending"}]])
 async def test_emit_notifications_empty_or_single(effects: list[dict]) -> None:
     """空效果零存储零发射;单效果各一次(边界)。"""
-    from python_backend.core.notifications import emit_notifications
 
     store = InMemoryNotificationStore()
     emitter = RecordingEmitter()

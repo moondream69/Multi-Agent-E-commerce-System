@@ -20,7 +20,7 @@ from python_backend.agents.executor import apply_batch_actions
 from python_backend.api.app import create_app
 from python_backend.core.approvals import classify_action
 from python_backend.db.approval_store import PostgresApprovalBatchStore
-from python_backend.db.models import Order, Product, ProductStatus
+from python_backend.db.models import Notification, Order, Product, ProductStatus
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.fx import FxUnavailableError
 from tests.conftest import RecordingEmitter
@@ -143,7 +143,7 @@ async def test_rest_order_fx_unavailable_leaves_blank_and_notifies() -> None:
 
 
 async def test_rest_order_notifies_created_status() -> None:
-    """A8:下单成功后广播 order_status 通知(状态映射表文案,零 LLM)。"""
+    """A8 + 增量 8-T1:下单成功后广播 order_status 通知,同一信封落库(按用户扇出)。"""
     fx = FakeFxService()
     emitter = RecordingEmitter()
     product = await _make_product(stock=5)
@@ -155,6 +155,19 @@ async def test_rest_order_notifies_created_status() -> None:
     assert payload["kind"] == "order_status"
     assert "已提交" in payload["message"]
     assert payload["orderId"] == response.json()["order"]["id"]
+    # 落库副本:该 notificationId 至少一行(全量用户扇出)且未读(read_at 空)
+    async with SessionFactory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(Notification).where(Notification.notification_id == payload["notificationId"])
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) >= 1, "下单路径的通知须落库(第三条写路径)"
+    assert all(row.read_at is None for row in rows)
 
 
 async def test_rest_order_triggers_inventory_alert_below_product_threshold() -> None:
