@@ -75,7 +75,7 @@ class SupervisorState(TypedDict, total=False):
     replan_count: int
     results: Annotated[dict[int, dict], merge_dicts]
     error: str | None
-    summary: dict | None
+    summary: str | None  # 人类可读摘要文本(issue #25:契约 TaskDetail.result.summary 为 string)
     # Send 注入的切片数据(Send 状态为完整替换,execute_slice 经这些 key 取切片)
     slice_no: int
     slice: dict  # 完整切片字段(Slice 构造参数),无损往返
@@ -368,36 +368,30 @@ def _report_terminated(state: SupervisorState) -> dict:
 
 
 def _aggregate(state: SupervisorState) -> dict:
-    """汇总(监督图定义:规划 → 分派 → 汇总):拼装切片轨迹与结果供上层/前端消费。
+    """汇总(监督图定义:规划 → 分派 → 汇总):产人类可读摘要供上层/前端消费(issue #25)。
+
+    摘要 = 「完成 M/N 个切片」(M=最终计划内已产出结果的切片数,N=计划切片数),零 LLM 纯拼装;
+    切片结构化细节由 `plan` 与 `results` 状态各自承载,不进摘要(契约 summary 为 string)。
 
     冲突/未完成如实上报为 error(B18/B17):审批动作执行冲突与子图步数超限不是静默事件。
     """
     plan = state["plan"]
     if isinstance(plan, SlicePlan):
+        results = state.get("results", {})
         problems = []
-        for no in sorted(state.get("results", {})):
-            result = state["results"][no]
+        for no in sorted(results):
+            result = results[no]
             if result.get("conflict"):
                 problems.append(f"切片 {no} 审批动作执行冲突:{result['conflict']}")
             if result.get("incomplete"):
                 problems.append(f"切片 {no} 未完成:{result['incomplete']}")
+        # M 只数最终计划内切片:重规划回流跨轮累计 results(含被拒切片),按总数计会产出「完成 2/1」式失真
+        done = sum(1 for s in plan.slices if s.no in results)
         return {
             "error": state.get("error") or ("; ".join(problems) if problems else None),
-            "summary": {
-                "slices": [
-                    {
-                        "no": s.no,
-                        "agent": s.agent,
-                        "description": s.description,
-                        "depends_on": s.depends_on,
-                        "approval_points": s.approval_points,
-                    }
-                    for s in plan.slices
-                ],
-                "results": state.get("results", {}),
-            },
+            "summary": f"完成 {done}/{len(plan.slices)} 个切片",
         }
-    return {"error": state.get("error"), "summary": {"slices": [], "results": {}}}
+    return {"error": state.get("error"), "summary": "完成 0/0 个切片"}
 
 
 def _report_failure(state: SupervisorState) -> dict:

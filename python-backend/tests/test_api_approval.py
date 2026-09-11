@@ -114,7 +114,7 @@ async def test_resume_approve_completes_and_applies() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["summary"]["results"]["1"]["executed"] is True
+    assert body["summary"] == "完成 1/1 个切片"  # issue #25:摘要回归字符串口径
     assert [bid for bid, _a in apply_fn.calls] == [batch_id]
     assert await store.list_pending(thread_id) == []
 

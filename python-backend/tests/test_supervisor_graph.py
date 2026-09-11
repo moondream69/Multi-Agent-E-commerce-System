@@ -49,8 +49,7 @@ async def test_supervisor_compiles_and_runs_single_slice() -> None:
     assert result["error"] is None
     assert result["results"][1]["executed"] is True
     assert executed == [1]
-    assert [s["no"] for s in result["summary"]["slices"]] == [1]  # 汇总环节:切片轨迹拼装
-    assert set(result["summary"]["results"]) == {1}
+    assert result["summary"] == "完成 1/1 个切片"  # 汇总环节:人类可读摘要(issue #25 字符串口径)
 
 
 async def test_dependencies_run_in_topological_order() -> None:
@@ -103,4 +102,5 @@ async def test_plan_failed_reports_reason_and_skips_dispatch() -> None:
     assert result["error"] is not None
     assert "上限" in result["error"]
     assert result["results"] == {}
+    assert result.get("summary") is None  # 规划失败不产摘要(issue #25 边界)
     assert executed == []

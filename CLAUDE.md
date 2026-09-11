@@ -42,7 +42,7 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
 > ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
 > CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
-> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**208 passed / 63 skipped / 49 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流;**63 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
+> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**209 passed / 63 skipped / 49 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径;**63 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
 
 ## 技术栈
 

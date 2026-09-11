@@ -180,6 +180,36 @@ async def test_task_list_matches_contract() -> None:
     assert expected == {"threadId", "sessionId", "type", "status", "title", "createdAt"}
 
 
+async def test_task_detail_result_matches_contract() -> None:
+    """任务详情字段 == ts TaskDetail;result.summary 为字符串(issue #25:契约声明 string,不得回对象)。
+
+    三面收口同链验证(离线,经 create_app 注入缝):详情响应 / POST 响应 / 助手消息落库。
+    """
+    from python_backend.core.auth import create_token
+    from tests.conftest import InMemorySessionMemory
+
+    memory = InMemorySessionMemory()
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent()},  # 无审批动作 → 免审直行 → completed
+        checkpointer=InMemorySaver(),
+    )
+    client = TestClient(create_app(graph=graph, task_store=InMemoryTaskStore(), memory=memory, auth_required=False))
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+
+    created = client.post("/api/tasks", json={"request": "查库存"}).json()
+    detail = client.get(f"/api/tasks/{created['thread_id']}").json()
+
+    assert created["summary"] == "完成 1/1 个切片", "POST 响应摘要为字符串(issue #25)"
+    assert set(detail) == _ts_interface_fields("TaskDetail"), "详情响应键 == 契约字段"
+    assert detail["status"] == "completed"
+    assert set(detail["result"]) == {"summary", "error"}, "result 形状 == 契约内联声明 {summary?, error?}"
+    assert detail["result"]["summary"] == "完成 1/1 个切片", "摘要 = 「完成 M/N 个切片」(不得回对象)"
+    assert [r["content"] for r in memory.records if r["role"] == "assistant"] == ["完成 1/1 个切片"], (
+        "助手消息落库为可读文本(issue #25:不再是 Python repr)"
+    )
+
+
 async def test_drafting_response_matches_contract() -> None:
     """POST /api/drafting 响应键 == ts DraftingResponse 接口字段(spec #8 B11)。"""
     from fastapi.testclient import TestClient

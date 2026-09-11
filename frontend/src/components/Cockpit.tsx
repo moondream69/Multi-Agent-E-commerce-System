@@ -135,7 +135,7 @@ function TaskRow({
   );
 }
 
-function SliceTimeline({
+export function SliceTimeline({
   detail,
   onOpenApprovals,
 }: {
@@ -295,7 +295,8 @@ function SliceTimeline({
           );
         })}
       </div>
-      {detail.result?.summary && (
+      {/* spec #25:summary 契约口径为 string;历史脏行(对象)静默不渲染,防对象子节点再白屏 */}
+      {typeof detail.result?.summary === 'string' && (
         <div
           style={{
             marginTop: 14,
