@@ -1,9 +1,9 @@
-"""报表聚合测试(spec #11):GET /api/reports/summary 经营快照。
+"""报表聚合集成测试(spec #11):PostgresReportStore 的纯 SQL 聚合口径。
 
 - 固定数据集 + 前后差值断言(dev 库跨轮累积,绝对值不可断言)
 - 成交额:仅窗内且带汇率快照的订单;缺汇率单列 unconverted;窗外不计
 - 低库存谓词与库存告警一致:stock < 阈值(触线不告警)
-依赖真 PG;离线秒 skip。
+依赖真 PG;离线秒 skip。issue #21:端点契约与替身语义的离线等价用例见 test_report_store.py。
 """
 
 from __future__ import annotations

@@ -42,7 +42,7 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
 > ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
 > CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
-> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。
+> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**202 passed / 63 skipped / 48 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫;**63 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
 
 ## 技术栈
 
@@ -68,6 +68,7 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 | `VectorRepository` | `vector_repo/base.py` | 向量访问抽象(Milvus 实现,pgvector 可切换) |
 | 事件与观测 | `core/events.py` / `infrastructure/tracing.py` | `EventEmitter`(WS 事件)/ `TaskTracer`(Langfuse 层级,B14) |
 | 通知组装与存储 | `core/notifications.py` / `db/notification_store.py` | 效果描述→通知载荷(状态映射表 7 文案 + 五档库存文案,零 LLM),`emit` = 组装→落库→广播;`notification.created` 由 apply/REST **提交后** emit;`NotificationStore` 按用户扇出写 + 回读(每组 50 条服务端截断,未读 = read_at 空),GET / POST read 端点为读路径(poke 提交后广播) |
+| 端点族存储缝 | `db/{task,conversation,customer,ticket,report}_store.py` | 端点触库一律经 `create_app` 注入(`app.state.*_store`,默认 PG 实现,测试注入 `InMemory*` 替身——离线快速套件不触库,#13/#21);`PostgresConversationStore` 挂起审批判定读注入的批次存储、`PostgresTicketStore` 买家名经注入的 `CustomerStore`(join 降级为读端点拼装);新增此类端点照此缝注入,勿在端点内直调模块函数 |
 | `LlmService` | `infrastructure/llm.py` | `complete()` + `complete_with_tools()`(function calling);失败统一包装 `LlmFailure`(fallback 只承接它) |
 
 ### Agent 模式

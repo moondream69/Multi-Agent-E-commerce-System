@@ -54,19 +54,14 @@ from python_backend.core.imports import (
 from python_backend.core.memory import PostgresSessionMemory, SessionMemory
 from python_backend.core.notifications import emit_notifications
 from python_backend.db.audit_store import AuditWriter, NullAuditWriter
-from python_backend.db.conversation_store import (
-    delete_conversation,
-    list_conversations,
-    rename_conversation,
-    session_has_pending_batches,
-)
-from python_backend.db.customer_store import list_customers
+from python_backend.db.conversation_store import ConversationStore, PostgresConversationStore
+from python_backend.db.customer_store import CustomerStore, PostgresCustomerStore
 from python_backend.db.models import Product, User
 from python_backend.db.notification_store import NotificationStore, PostgresNotificationStore
-from python_backend.db.report_store import build_summary
+from python_backend.db.report_store import PostgresReportStore, ReportStore
 from python_backend.db.session import SessionFactory
 from python_backend.db.task_store import PostgresTaskStore, TaskStore
-from python_backend.db.ticket_store import close_ticket, list_tickets
+from python_backend.db.ticket_store import PostgresTicketStore, TicketStore
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
 logger = logging.getLogger(__name__)
@@ -338,9 +333,14 @@ def create_app(
     audit: AuditWriter | None = None,
     task_store: TaskStore | None = None,
     notification_store: NotificationStore | None = None,
+    conversation_store: ConversationStore | None = None,
+    customer_store: CustomerStore | None = None,
+    ticket_store: TicketStore | None = None,
+    report_store: ReportStore | None = None,
 ) -> FastAPI:
     """构建 API 应用:graph/batch_store/apply_fn/emitter/tracer/fx_service/memory/drafting/audit/task_store/
-    notification_store 可注入(测试)或由 lifespan 装配(生产)。
+    notification_store/conversation_store/customer_store/ticket_store/report_store 可注入(测试)
+    或由 lifespan 装配(生产)。
 
     apply_fn 默认真实 apply_batch_actions;emitter/tracer/audit 默认 no-op(spec #7/#8 接缝);
     fx_service 默认由下单端点惰性解析(spec #8 接缝,测试注入假实现);
@@ -348,7 +348,13 @@ def create_app(
     memory 默认 PG 会话记忆(spec #8 B16 接缝,测试注入内存实现);
     drafting 默认真实起草服务(spec #8 B11 接缝,测试注入假实现);
     task_store 默认 PG 任务行存储(issue #13 接缝,测试注入内存实现——端点流程离线可跑);
-    notification_store 默认 PG 通知存储(增量 8-T1 接缝,测试注入内存实现——同上)。
+    notification_store 默认 PG 通知存储(增量 8-T1 接缝,测试注入内存实现——同上);
+    conversation_store / customer_store / ticket_store / report_store 默认 PG 实现(issue #21 接缝
+    ——会话/买家/工单/报表四端点族不再对离线快速套件全盲);后两者默认互相接线:
+    工单列表的买家名经 customer_store 解析(join 降级为读端点拼装);
+    conversation_store 例外:其挂起审批判定依赖批次存储,而 batch_store 生产由 lifespan 构建
+    (create_app 时尚不存在)——此处仅在 batch_store 已给时装配 PG 实现,生产装配由
+    main.lifespan 补接线(test_app_wiring 守卫该接线)。
     """
     app = FastAPI(title="Multi-Agent E-commerce System(切片式人工环节)", version="0.1.0")
     app.state.graph = graph
@@ -363,6 +369,13 @@ def create_app(
     app.state.audit = audit or NullAuditWriter()
     app.state.task_store = task_store or PostgresTaskStore()
     app.state.notification_store = notification_store or PostgresNotificationStore()
+    # 批次存储可为 None(离线用例不挂审批流);未注入会话存储时其 PG 实现需要批次真源才可用
+    app.state.conversation_store = conversation_store or (
+        PostgresConversationStore(batch_store) if batch_store is not None else None
+    )
+    app.state.customer_store = customer_store or PostgresCustomerStore()
+    app.state.ticket_store = ticket_store or PostgresTicketStore(app.state.customer_store)
+    app.state.report_store = report_store or PostgresReportStore()
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
@@ -576,17 +589,17 @@ def create_app(
     @app.get("/api/customers")
     async def list_customer_rows() -> dict:
         """买家列表(只读,spec #11):模拟流量买家池 + 运营查询入口。"""
-        return {"customers": await list_customers()}
+        return {"customers": await app.state.customer_store.list_customers()}
 
     @app.get("/api/tickets")
     async def list_ticket_rows() -> dict:
         """工单列表(只读,spec #11 A11):客服升级实体化落表后的界面可见面。"""
-        return {"tickets": await list_tickets()}
+        return {"tickets": await app.state.ticket_store.list_tickets()}
 
     @app.patch("/api/tickets/{ticket_id}")
     async def close_ticket_row(ticket_id: int, body: TicketCloseRequest) -> dict:
         """工单结单(spec #11 A11):open→closed 记 resolved_at;平权(任何登录者)。"""
-        ticket = await close_ticket(ticket_id)
+        ticket = await app.state.ticket_store.close_ticket(ticket_id)
         if ticket is None:
             raise HTTPException(status_code=404, detail=f"工单 {ticket_id} 不存在")
         return {"ticket": ticket}
@@ -594,7 +607,7 @@ def create_app(
     @app.get("/api/reports/summary")
     async def report_summary() -> dict:
         """经营快照(spec #11):订单分布 / 近 7 日成交额(CNY 快照口径)/ 低库存 / 未结工单,零 LLM。"""
-        return await build_summary()
+        return await app.state.report_store.build_summary()
 
     @app.get("/api/notifications")
     async def list_notifications(request: Request) -> dict:
@@ -629,7 +642,7 @@ def create_app(
         user_id = _current_user_id(request)
         if user_id is None:
             return {"conversations": []}
-        return {"conversations": await list_conversations(user_id)}
+        return {"conversations": await app.state.conversation_store.list_conversations(user_id)}
 
     @app.delete("/api/conversations/{session_id}")
     async def remove_conversation(session_id: str, request: Request) -> dict:
@@ -637,9 +650,9 @@ def create_app(
         user_id = _current_user_id(request)
         if user_id is None:
             raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
-        if await session_has_pending_batches(user_id, session_id):
+        if await app.state.conversation_store.has_pending_batches(user_id, session_id):
             raise HTTPException(status_code=409, detail="该会话仍有挂起审批,请先处理后再删除")
-        if not await delete_conversation(user_id, session_id):
+        if not await app.state.conversation_store.delete_conversation(user_id, session_id):
             raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
         return {"deleted": True}
 
@@ -654,7 +667,7 @@ def create_app(
         user_id = _current_user_id(request)
         if user_id is None:
             raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
-        conversation = await rename_conversation(user_id, session_id, title)
+        conversation = await app.state.conversation_store.rename_conversation(user_id, session_id, title)
         if conversation is None:
             raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
         return {"conversation": conversation}

@@ -6,7 +6,8 @@ import math
 import re
 import socket
 from collections.abc import Awaitable, Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import urlparse
 
 import pytest
@@ -21,8 +22,19 @@ from python_backend.core.approvals import (
 )
 from python_backend.core.planning import Slice, SlicePlan
 from python_backend.db.base import Base
-from python_backend.db.models import Task, TaskStatus
+from python_backend.db.customer_store import DEMO_BUYERS
+from python_backend.db.models import (
+    Conversation,
+    Customer,
+    Order,
+    Product,
+    Task,
+    TaskStatus,
+    Ticket,
+    TicketStatus,
+)
 from python_backend.db.notification_store import MAX_PER_KIND
+from python_backend.db.report_store import REVENUE_WINDOW_DAYS
 from python_backend.infrastructure.llm import ToolCallResult
 from python_backend.settings import get_settings
 from python_backend.vector_repo.base import SearchHit, VectorRecord, VectorRepository
@@ -102,10 +114,22 @@ class InMemorySessionMemory:
     """会话记忆内存实现(B16 接缝;供离线可跑的测试注入,勿用于需复现摘要/跨进程持久化的用例)。
 
     get_context 恒返回 None:本替身不复现 PG 实现的摘要语义,需要该行为请走集成测试。
+    同时是会话存储替身(issue #21):record 即会话惰性创建(建行时写 20 字标题,之后不覆盖),
+    端点读路径经本对象的 list/rename/delete/has_pending_batches——生产里这两条路径分别由
+    memory.record(conversations 表写)与 conversation_store(同表读)承担,共用一张行集,
+    故内存侧合并为一个对象,跨进程语义(摘要/唯一约束)仍以集成测试为准绳。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        task_store: InMemoryTaskStore | None = None,
+        batch_store: InMemoryApprovalBatchStore | None = None,
+    ) -> None:
         self.records: list[dict] = []
+        self._rows: dict[tuple[int, str], Conversation] = {}
+        self._task_store = task_store  # has_pending_batches 的线程发现源(生产查 tasks 表)
+        self._batch_store = batch_store  # 挂起判定真源(生产读注入的批次存储)
 
     async def get_context(self, session_id: str, user_id: int | None) -> str | None:
         return None
@@ -116,6 +140,202 @@ class InMemorySessionMemory:
         self.records.append(
             {"session_id": session_id, "user_id": user_id, "role": role, "content": content, "task_id": task_id}
         )
+        if user_id is None or not content:
+            return
+        row = self._rows.get((user_id, session_id))
+        if row is None:
+            row = Conversation(
+                user_id=user_id,
+                session_id=session_id,
+                title=content[:20],  # A2 语义:标题截断 20 字(建行时写一次)
+                messages=[],
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            self._rows[(user_id, session_id)] = row
+        row.messages = [
+            *row.messages,
+            {"role": role, "content": content, "timestamp": datetime.now(UTC).isoformat(), "task_id": task_id},
+        ]
+        row.updated_at = datetime.now(UTC)
+
+    async def list_conversations(self, user_id: int) -> list[dict]:
+        rows = [row for (owner, _sid), row in self._rows.items() if owner == user_id]
+        rows.sort(key=lambda row: row.updated_at or datetime.min.replace(tzinfo=UTC), reverse=True)
+        return [
+            {
+                "sessionId": row.session_id,
+                "title": row.title or "",
+                "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
+                "messageCount": len(row.messages or []),
+            }
+            for row in rows
+        ]
+
+    async def rename_conversation(self, user_id: int, session_id: str, title: str) -> dict | None:
+        row = self._rows.get((user_id, session_id))
+        if row is None:
+            return None
+        row.title = title  # 手工命名:自动标题只在建行时写,不被本方法触发的后续消息覆盖
+        row.updated_at = datetime.now(UTC)
+        return next(item for item in await self.list_conversations(user_id) if item["sessionId"] == session_id)
+
+    async def delete_conversation(self, user_id: int, session_id: str) -> bool:
+        return self._rows.pop((user_id, session_id), None) is not None
+
+    async def has_pending_batches(self, user_id: int, session_id: str) -> bool:
+        if self._task_store is None or self._batch_store is None:
+            raise RuntimeError("InMemorySessionMemory 未接任务/批次存储,无法判定挂起审批(注入时传入)")
+        threads = [
+            row.thread_id
+            for row in (await self._task_store.list_tasks(session_id=session_id))
+            if row.user_id == user_id
+        ]
+        return any([await self._batch_store.list_pending(thread_id) for thread_id in threads])
+
+
+class InMemoryCustomerStore:
+    """买家存储内存实现(issue #21 接缝;端点与启动 seed 离线可跑,不触 PG)。
+
+    复现生产可见语义:列表按创建倒序(插入倒排)、email 唯一(生产为唯一约束)、
+    seed 仅 dev 且幂等(逐 email 判重,不覆盖既有行);rows 直接暴露供工单列表拼装买家名。
+    """
+
+    def __init__(
+        self, *, settings_provider: Callable[[], object] = get_settings, demo_buyers: list[dict] | None = None
+    ) -> None:
+        self.rows: list[Customer] = []
+        self._settings_provider = settings_provider  # 逐次读:测试可切换环境剖面(Settings 桩只需 environment 属性)
+        self._demo_buyers = demo_buyers
+
+    def add(self, name: str, email: str, locale: str = "zh-CN") -> Customer:
+        customer = Customer(id=len(self.rows) + 1, name=name, email=email, locale=locale)
+        self.rows.append(customer)
+        return customer
+
+    async def list_customers(self) -> list[dict]:
+        ordered = list(reversed(self.rows))  # 插入倒排 = 最新在前(生产按 created_at 降序)
+        return [{"customerId": row.id, "name": row.name, "email": row.email, "locale": row.locale} for row in ordered]
+
+    async def ensure_demo_buyers(self) -> None:
+        if getattr(self._settings_provider(), "environment", None) != "dev":
+            return
+        for buyer in self._demo_buyers or DEMO_BUYERS:
+            if any(row.email == buyer["email"] for row in self.rows):
+                continue
+            self.add(buyer["name"], buyer["email"], buyer["locale"])
+
+    async def find_name(self, customer_id: int) -> str | None:
+        for row in self.rows:
+            if row.id == customer_id:
+                return row.name
+        return None
+
+
+class InMemoryTicketStore:
+    """工单存储内存实现(issue #21 接缝;工单列表/结单端点离线可跑,不触 PG)。
+
+    复现生产可见语义:创建倒序、买家名经注入的买家存储解析(无买家为 null)、
+    结单 open→closed 记 resolved_at 且重复结单幂等(时间不变);created_at 由本实现填充(生产 server_default)。
+    """
+
+    def __init__(self, customers: InMemoryCustomerStore) -> None:
+        self.rows: list[Ticket] = []
+        self._customers = customers
+
+    def add(self, message: str, *, created_by: str = "tester", customer_id: int | None = None) -> Ticket:
+        ticket = Ticket(
+            id=len(self.rows) + 1,
+            message=message,
+            created_by=created_by,
+            customer_id=customer_id,
+            status=TicketStatus.OPEN,
+            created_at=datetime.now(UTC),
+        )
+        self.rows.append(ticket)
+        return ticket
+
+    async def list_tickets(self) -> list[dict]:
+        ordered = list(reversed(self.rows))  # 插入倒排 = 最新在前(生产按 created_at 降序)
+        return [await self._payload(ticket) for ticket in ordered]
+
+    async def close_ticket(self, ticket_id: int) -> dict | None:
+        ticket = next((row for row in self.rows if row.id == ticket_id), None)
+        if ticket is None:
+            return None
+        if ticket.status is TicketStatus.OPEN:
+            ticket.status = TicketStatus.CLOSED
+            ticket.resolved_at = datetime.now(UTC)
+        return await self._payload(ticket)
+
+    async def _payload(self, ticket: Ticket) -> dict:
+        name = None if ticket.customer_id is None else await self._customers.find_name(ticket.customer_id)
+        return {
+            "ticketId": ticket.id,
+            "message": ticket.message,
+            "status": ticket.status.value,
+            "customerName": name,
+            "createdAt": ticket.created_at.isoformat() if ticket.created_at else None,
+            "resolvedAt": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
+        }
+
+
+def _status_value(status) -> str:
+    """枚举或裸字符串取小写 value(替身同时接受两种输入,与生产列口径一致)。"""
+    return str(getattr(status, "value", status))
+
+
+class InMemoryReportStore:
+    """报表聚合内存实现(issue #21 接缝;快照端点离线可跑,不触 PG)。
+
+    复现生产聚合口径:按状态分组计数、成交额 = 窗内 Σ(total_amount x fx_rate) 经 Decimal 量化 2 位、
+    缺汇率单计 unconverted、低库存 = stock < alert_threshold(同谓词,触线不告警)、未结工单计数。
+    简化披露:窗过滤按本替身收集的 Python 时间戳(生产为 SQL 表达式),排序/类型转换等 SQL 侧
+    行为不复刻——聚合正确性的证明仍以集成测试(test_reports.py)为准绳,本替身只保证端点可离线跑。
+    """
+
+    def __init__(self) -> None:
+        self.products: list[Product] = []
+        self.orders: list[Order] = []
+        self.tickets: list[Ticket] = []
+
+    async def build_summary(self) -> dict:
+        now = datetime.now(UTC)
+        by_status: dict[str, int] = {}
+        revenue_sum = Decimal("0")
+        unconverted = 0
+        for order in self.orders:
+            status = _status_value(order.status)
+            by_status[status] = by_status.get(status, 0) + 1
+            if (order.created_at or now) >= now - timedelta(days=REVENUE_WINDOW_DAYS):
+                if order.fx_rate is None:
+                    unconverted += 1
+                else:
+                    revenue_sum += Decimal(order.total_amount) * Decimal(order.fx_rate)
+        low_stock = sorted(
+            (product for product in self.products if product.stock < product.alert_threshold),
+            key=lambda product: product.stock,
+        )
+        return {
+            "orders": {"byStatus": by_status, "total": sum(by_status.values())},
+            "revenue": {
+                "windowDays": REVENUE_WINDOW_DAYS,
+                "baseCurrency": "CNY",
+                "amount": str(revenue_sum.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+                "unconverted": unconverted,
+            },
+            "lowStock": [
+                {
+                    "productId": product.id,
+                    "sku": product.sku,
+                    "title": product.title,
+                    "stock": product.stock,
+                    "alertThreshold": product.alert_threshold,
+                }
+                for product in low_stock
+            ],
+            "tickets": {"open": sum(1 for ticket in self.tickets if _status_value(ticket.status) == "open")},
+        }
 
 
 class InMemoryTaskStore:

@@ -1,8 +1,8 @@
-"""买家入口测试(spec #11):GET /api/customers 只读查询 + 演练 seed(dev-only 幂等)。
+"""买家入口集成测试(spec #11):PostgresCustomerStore 的真库行为 + 端点接线。
 
-- 列表:id/name/email/locale,created_at 倒序(模拟流量买家池 + 运营查询)
-- seed:仅 dev;按 email 幂等;非 dev 环境不落任何行
-依赖真 PG;离线秒 skip。
+- 列表:id/name/email/locale,created_at 倒序(种子行直接落库,端点经注入的 PG 实现读回)
+- seed:仅 dev;按 email 幂等(两次调用只落一行,生产唯一约束兜底)
+离线替身语义见 test_customer_store.py(issue #21);此处保留真 SQL 面。依赖真 PG;离线秒 skip。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from python_backend.api.app import create_app
 from python_backend.db import customer_store
-from python_backend.db.customer_store import ensure_demo_buyers
+from python_backend.db.customer_store import PostgresCustomerStore
 from python_backend.db.models import Customer
 from python_backend.db.session import SessionFactory
 
@@ -23,12 +23,16 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("requires_postgre
 
 
 async def test_customers_endpoint_shape_and_order() -> None:
-    """GET /api/customers:只读列表含 id/name/email/locale,created_at 倒序。"""
+    """GET /api/customers:只读列表含 id/name/email/locale,created_at 倒序。
+
+    注入 PG 实现后端点只见种子行——端点若绕过注入直查全表,本断言即破。
+    """
     tag = uuid.uuid4().hex[:8]
+    store = PostgresCustomerStore()
     async with SessionFactory() as session, session.begin():
         session.add(Customer(name="列表买家", email=f"list-{tag}@example.com", locale="zh-CN"))
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(auth_required=False)), base_url="http://test"
+        transport=ASGITransport(app=create_app(auth_required=False, customer_store=store)), base_url="http://test"
     ) as client:
         response = await client.get("/api/customers")
     assert response.status_code == 200
@@ -47,7 +51,7 @@ async def test_demo_buyers_seed_idempotent_dev_only(monkeypatch) -> None:
         environment = "prod"
 
     monkeypatch.setattr(customer_store, "get_settings", lambda: ProdSettings())
-    await ensure_demo_buyers()
+    await PostgresCustomerStore().ensure_demo_buyers()
     async with SessionFactory() as session:
         row = (
             await session.execute(select(Customer.id).where(Customer.email == probe[0]["email"]))
@@ -58,8 +62,9 @@ async def test_demo_buyers_seed_idempotent_dev_only(monkeypatch) -> None:
         environment = "dev"
 
     monkeypatch.setattr(customer_store, "get_settings", lambda: DevSettings())
-    await ensure_demo_buyers()
-    await ensure_demo_buyers()
+    store = PostgresCustomerStore()
+    await store.ensure_demo_buyers()
+    await store.ensure_demo_buyers()
     async with SessionFactory() as session:
         rows = (await session.execute(select(Customer).where(Customer.email == probe[0]["email"]))).scalars().all()
     assert len(rows) == 1  # 幂等:两次调用只落一行

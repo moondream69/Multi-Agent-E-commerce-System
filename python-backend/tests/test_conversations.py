@@ -1,10 +1,10 @@
-"""多会话端点测试(spec #9 A2):会话列表 / 删除(挂起审批拒删)/ 任务按会话过滤。
+"""多会话集成测试(spec #9 A2):真 PG 的惰性落库 / 拒删 / 历史隔离(会话端点离线替身见 test_conversation_store.py)。
 
 - GET /api/conversations:当前用户会话,updated_at 倒序,标题 20 字截断
 - DELETE /api/conversations/{session_id}:成功 / 404 / 有挂起审批 409
 - GET /api/tasks?session_id=:只返回该会话任务(历史隔离)
-- 空白会话惰性落库:未发消息的会话不在列表
-依赖真 PG;离线秒 skip。
+- 空白会话惰性落库:未发消息的会话不在列表(经 PostgresSessionMemory.record 真写 conversations 表)
+依赖真 PG;离线秒 skip。issue #21:端点流程的离线等价用例见 test_conversation_store.py。
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from python_backend.api.app import create_app
 from python_backend.core.auth import create_token, hash_password
 from python_backend.core.graph import build_supervisor
+from python_backend.db.approval_store import PostgresApprovalBatchStore
 from python_backend.db.models import ApprovalBatch, ApprovalStatus, User
 from python_backend.db.session import SessionFactory
 from tests.conftest import InMemoryApprovalBatchStore, StubPlanner, slice_agent
@@ -34,8 +35,13 @@ async def _seed_user() -> tuple[int, str]:
         return user.id, username
 
 
-def _client(user_id: int, username: str) -> AsyncClient:
-    store = InMemoryApprovalBatchStore()
+def _client(user_id: int, username: str, batch_store=None) -> AsyncClient:
+    """认证态客户端:批次存储默认内存替身;拒删 409 流程需真 PG 批次存储(见该用例)。
+
+    issue #21:挂起审批判定已改经注入的批次存储(PostgresConversationStore.has_pending_batches)
+    ——写与读必须共用同一实例,否则「写 PG、读替身」会判定不挂起。
+    """
+    store = batch_store if batch_store is not None else InMemoryApprovalBatchStore()
     graph = build_supervisor(
         StubPlanner(),
         agents={"order_management": slice_agent([], actions=[], answer="切片完成")},
@@ -117,9 +123,14 @@ async def test_delete_conversation() -> None:
 
 
 async def test_delete_conversation_with_pending_approval_409() -> None:
-    """有挂起审批批次 → 409 拒删(先决定再删,spec #9 决策 1)。"""
+    """有挂起审批批次 → 409 拒删(先决定再删,spec #9 决策 1)。
+
+    真 PG 批次存储注入:该流程验证 PostgresConversationStore.has_pending_batches 跨
+    「任务行 → 审批批次」两表的查询,写与读共用同一实例(见 _client 注释)。
+    """
     user_id, username = await _seed_user()
-    async with _client(user_id, username) as client:
+    batch_store = PostgresApprovalBatchStore()
+    async with _client(user_id, username, batch_store) as client:
         thread_id = await _run_task(client, "含挂起审批的会话", "s-pending")
         async with SessionFactory() as session, session.begin():
             session.add(

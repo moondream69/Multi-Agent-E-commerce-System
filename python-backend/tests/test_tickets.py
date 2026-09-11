@@ -1,9 +1,9 @@
-"""工单可见列表测试(spec #11 A11):GET /api/tickets + PATCH 结单。
+"""工单可见列表集成测试(spec #11 A11):真 PG 的 PostgresTicketStore + 端点接线。
 
-- 列表:created_at 倒序;customerName 由 customer_id join(无买家为 null)
+- 列表:created_at 倒序;customerName 由 buyer 解析(无买家为 null)
 - 结单:open→closed 记 resolved_at;重复结单幂等;body 非法状态 422;不存在 404
 - 平权:任何登录者可看可结(与审批模型一致)
-依赖真 PG;离线秒 skip。
+依赖真 PG;离线秒 skip。issue #21:端点流程的离线等价用例见 test_ticket_store.py。
 """
 
 from __future__ import annotations

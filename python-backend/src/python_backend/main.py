@@ -28,7 +28,7 @@ from python_backend.core.drafting import DraftingService
 from python_backend.core.graph import default_supervisor, supervisor_serde
 from python_backend.db.approval_store import PostgresApprovalBatchStore
 from python_backend.db.audit_store import PgAuditWriter
-from python_backend.db.customer_store import ensure_demo_buyers
+from python_backend.db.conversation_store import PostgresConversationStore
 from python_backend.db.session import engine
 from python_backend.infrastructure.llm import LlmService
 from python_backend.infrastructure.tracing import LangfuseTaskTracer
@@ -63,7 +63,7 @@ def build_app() -> socketio.ASGIApp:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await ensure_admin_user()  # A1:初始管理员懒 seed(幂等;未配置凭据则跳过)
-        await ensure_demo_buyers()  # spec #11:演示买家懒 seed(仅 dev;幂等)
+        await app.state.customer_store.ensure_demo_buyers()  # spec #11:演示买家懒 seed(仅 dev;幂等)
         # AsyncPostgresSaver 必须在事件循环内构造(内部绑定 running loop)
         # autocommit=True:setup() 建索引用 CREATE INDEX CONCURRENTLY(不能在事务块内)
         conn = await psycopg.AsyncConnection.connect(conninfo=settings.postgres_dsn, connect_timeout=5, autocommit=True)
@@ -84,6 +84,8 @@ def build_app() -> socketio.ASGIApp:
         )
         app.state.graph = graph
         app.state.batch_store = batch_store
+        # 会话存储的批次依赖须待批真实例存在后才装(create_app 时 batch_store 尚未构建)
+        app.state.conversation_store = PostgresConversationStore(batch_store)
         app.state.emitter = emitter
         app.state.audit = audit
         logger.info("启动:environment=%s shadow_mode=%s", settings.environment, settings.shadow_mode)
