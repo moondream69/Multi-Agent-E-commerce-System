@@ -115,8 +115,8 @@ class InMemorySessionMemory:
 
     get_context 恒返回 None:本替身不复现 PG 实现的摘要语义,需要该行为请走集成测试。
     同时是会话存储替身(issue #21):record 即会话惰性创建(建行时写 20 字标题,之后不覆盖),
-    端点读路径经本对象的 list/rename/delete/has_pending_batches——生产里这两条路径分别由
-    memory.record(conversations 表写)与 conversation_store(同表读)承担,共用一张行集,
+    端点读路径经本对象的 list/rename/delete/has_pending_batches/get_messages——生产里这两条路径
+    分别由 memory.record(conversations 表写)与 conversation_store(同表读)承担,共用一张行集,
     故内存侧合并为一个对象,跨进程语义(摘要/唯一约束)仍以集成测试为准绳。
     """
 
@@ -182,6 +182,28 @@ class InMemorySessionMemory:
 
     async def delete_conversation(self, user_id: int, session_id: str) -> bool:
         return self._rows.pop((user_id, session_id), None) is not None
+
+    async def get_messages(self, user_id: int, session_id: str) -> dict | None:
+        """消息流(spec #20):原序(落库序=时间序)+ 会话元数据;非本人/不存在 None(端点 404)。
+
+        payload 内联不复用生产序列化(替身不 import 生产实现),契约键形状由 test_contract.py 两侧断言守。
+        """
+        row = self._rows.get((user_id, session_id))
+        if row is None:
+            return None
+        meta = next(item for item in await self.list_conversations(user_id) if item["sessionId"] == session_id)
+        return {
+            "conversation": meta,
+            "messages": [
+                {
+                    "role": message.get("role"),
+                    "content": message.get("content", ""),
+                    "timestamp": message.get("timestamp"),
+                    "taskId": message.get("task_id"),
+                }
+                for message in row.messages or []
+            ],
+        }
 
     async def has_pending_batches(self, user_id: int, session_id: str) -> bool:
         if self._task_store is None or self._batch_store is None:
@@ -460,6 +482,25 @@ class FailingNotificationStore:
         raise RuntimeError("读路径炸了(测试)")
 
     async def mark_read(self, user_id: int) -> None:
+        raise RuntimeError("读路径炸了(测试)")
+
+
+class FailingConversationStore:
+    """读路径必炸的会话存储(spec #20):未认证/越权分支用例——端点若误触存储即 500。"""
+
+    async def list_conversations(self, user_id: int) -> list[dict]:
+        raise RuntimeError("读路径炸了(测试)")
+
+    async def rename_conversation(self, user_id: int, session_id: str, title: str) -> dict | None:
+        raise RuntimeError("写路径炸了(测试)")
+
+    async def delete_conversation(self, user_id: int, session_id: str) -> bool:
+        raise RuntimeError("写路径炸了(测试)")
+
+    async def has_pending_batches(self, user_id: int, session_id: str) -> bool:
+        raise RuntimeError("读路径炸了(测试)")
+
+    async def get_messages(self, user_id: int, session_id: str) -> dict | None:
         raise RuntimeError("读路径炸了(测试)")
 
 

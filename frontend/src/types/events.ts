@@ -93,6 +93,20 @@ export interface ConversationMeta {
   messageCount: number;
 }
 
+// 会话消息流(spec #20 A2 延伸:GET /api/conversations/{sessionId}/messages)
+// 原序=落库序即时间序,服务端全量返回;展示方向由组件决定(驾驶舱取最新在前)。
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string | null;
+  taskId: string | null;
+}
+
+export interface ConversationMessages {
+  conversation: ConversationMeta;
+  messages: ConversationMessage[];
+}
+
 // —— 动作元数据(spec #8:GET /api/actions,前端标签不再硬编码)——
 
 export interface ActionMeta {

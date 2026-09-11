@@ -1,4 +1,4 @@
-"""会话存储缝(issue #21):ConversationStore 内存替身语义 + 会话端点流程(离线,不触 PG)。
+"""会话存储缝(issue #21 + spec #20):ConversationStore 内存替身语义 + 会话端点流程(离线,不触 PG)。
 
 替身挂在 InMemorySessionMemory 上(生产里 conversations 表由 memory.record 写、conversation_store 读,
 共用同一行集);端点路由经 create_app 注入替身(JWT 直签,认证态,反证不绕过注入)。
@@ -14,6 +14,7 @@ from python_backend.api.app import create_app
 from python_backend.core.auth import create_token
 from python_backend.core.graph import build_supervisor
 from tests.conftest import (
+    FailingConversationStore,
     InMemoryApprovalBatchStore,
     InMemorySessionMemory,
     InMemoryTaskStore,
@@ -110,6 +111,36 @@ async def test_has_pending_batches_derives_from_task_and_batch_stores() -> None:
     assert await memory.has_pending_batches(7, "s-1") is False, "已决定即不再挂起"
 
 
+async def test_get_messages_keeps_storage_order_and_maps_task_id() -> None:
+    """消息流(spec #20)原序返回(落库序=时间序);task_id → taskId 透传;元数据与列表同形。"""
+    memory = InMemorySessionMemory()
+    await memory.record("s-1", 7, role="user", content="第一问", task_id="t-1")
+    await memory.record("s-1", 7, role="user", content="第二问")
+    await memory.record("s-1", 7, role="assistant", content="助手答复", task_id="t-1")
+
+    stream = await memory.get_messages(7, "s-1")
+
+    assert stream is not None
+    assert [item["content"] for item in stream["messages"]] == ["第一问", "第二问", "助手答复"]
+    assert [item["role"] for item in stream["messages"]] == ["user", "user", "assistant"]
+    assert set(stream["messages"][0]) == {"role", "content", "timestamp", "taskId"}
+    assert stream["messages"][0]["taskId"] == "t-1"
+    assert stream["messages"][1]["taskId"] is None, "无任务归属的消息 taskId 为 null"
+    assert stream["messages"][0]["timestamp"], "时间戳随行透传"
+    assert set(stream["conversation"]) == {"sessionId", "title", "updatedAt", "messageCount"}
+    assert stream["conversation"]["title"] == "第一问", "建行时写首条消息前 20 字"
+    assert stream["conversation"]["messageCount"] == 3
+
+
+async def test_get_messages_is_owner_scoped() -> None:
+    """归属隔离:非本人/不存在 → None(端点映射 404),不泄漏他人消息。"""
+    memory = InMemorySessionMemory()
+    await memory.record("s-1", 7, role="user", content="甲的消息")
+
+    assert await memory.get_messages(8, "s-1") is None, "非本人读不到"
+    assert await memory.get_messages(7, "s-missing") is None, "不存在同样 None"
+
+
 # —— 端点流程(认证态,注入替身) ——
 
 
@@ -181,3 +212,48 @@ async def test_conversations_are_scoped_to_token_user() -> None:
     assert client_b.get("/api/conversations").json()["conversations"] == []
     assert client_b.delete("/api/conversations/s-mine").status_code == 404
     assert [item["sessionId"] for item in client_a.get("/api/conversations").json()["conversations"]] == ["s-mine"]
+
+
+# —— 消息流端点(spec #20 A2 延伸) ——
+
+
+async def test_messages_endpoint_reads_injected_store() -> None:
+    """GET /messages 读注入替身(探针消息可见即反证未绕过注入),原序 + taskId 透传 + 元数据同列。"""
+    memory, task_store, batch_store = _stores()
+    await memory.record("probe-session", 42, role="user", content="探针提问", task_id="t-probe")
+    await memory.record("probe-session", 42, role="assistant", content="探针答复", task_id="t-probe")
+    client = _client(42, memory, task_store, batch_store)
+
+    response = client.get("/api/conversations/probe-session/messages")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"conversation", "messages"}
+    assert set(body["conversation"]) == {"sessionId", "title", "updatedAt", "messageCount"}
+    assert body["conversation"]["sessionId"] == "probe-session"
+    assert body["conversation"]["messageCount"] == 2
+    assert [item["content"] for item in body["messages"]] == ["探针提问", "探针答复"]
+    assert [item["role"] for item in body["messages"]] == ["user", "assistant"]
+    assert [item["taskId"] for item in body["messages"]] == ["t-probe", "t-probe"]
+    assert set(body["messages"][0]) == {"role", "content", "timestamp", "taskId"}
+
+
+async def test_messages_endpoint_404_for_missing_or_other_user() -> None:
+    """不存在/非本人 → 404(归属校验与 PATCH/DELETE 同语义);他人读不泄漏消息。"""
+    memory, task_store, batch_store = _stores()
+    await memory.record("s-mine", 42, role="user", content="甲的消息")
+    client_a = _client(42, memory, task_store, batch_store)
+    client_b = _client(99, memory, task_store, batch_store)
+
+    assert client_a.get("/api/conversations/s-mine/messages").status_code == 200
+    assert client_b.get("/api/conversations/s-mine/messages").status_code == 404
+    assert client_a.get("/api/conversations/s-missing/messages").status_code == 404
+
+
+async def test_messages_endpoint_unauthenticated_404_skips_store() -> None:
+    """未认证(无 token)→ 404 且零存储调用:必炸替身反证——触库即 500,404 即未触。"""
+    client = TestClient(create_app(auth_required=False, conversation_store=FailingConversationStore()))
+
+    response = client.get("/api/conversations/s-any/messages")
+
+    assert response.status_code == 404

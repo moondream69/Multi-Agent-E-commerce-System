@@ -1,7 +1,9 @@
-"""多会话集成测试(spec #9 A2):真 PG 的惰性落库 / 拒删 / 历史隔离(会话端点离线替身见 test_conversation_store.py)。
+"""多会话集成测试(spec #9 A2 + spec #20):真 PG 的惰性落库 / 拒删 / 历史隔离 / 消息流
+(会话端点离线替身见 test_conversation_store.py)。
 
 - GET /api/conversations:当前用户会话,updated_at 倒序,标题 20 字截断
 - DELETE /api/conversations/{session_id}:成功 / 404 / 有挂起审批 409
+- GET /api/conversations/{session_id}/messages:该会话消息流(原序)+ 元数据,非本人 404
 - GET /api/tasks?session_id=:只返回该会话任务(历史隔离)
 - 空白会话惰性落库:未发消息的会话不在列表(经 PostgresSessionMemory.record 真写 conversations 表)
 依赖真 PG;离线秒 skip。issue #21:端点流程的离线等价用例见 test_conversation_store.py。
@@ -86,6 +88,29 @@ async def test_conversations_are_user_scoped() -> None:
     async with _client(other_id, other_name) as client:
         listing = await client.get("/api/conversations")
         assert [c["sessionId"] for c in listing.json()["conversations"]] == []
+
+
+async def test_conversation_messages_stream_history() -> None:
+    """消息流(spec #20):真 PG 落库的对话按 (user, session) 原序读回,task_id → taskId 透传;他人 404。"""
+    user_id, username = await _seed_user()
+    other_id, other_name = await _seed_user()
+    async with _client(user_id, username) as client:
+        thread_id = await _run_task(client, "记进消息流的首条请求", "s-messages")
+
+        response = await client.get("/api/conversations/s-messages/messages")
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body) == {"conversation", "messages"}
+        messages = body["messages"]
+        assert [item["role"] for item in messages] == ["user", "assistant"], "原序:提问在前、答复在后"
+        assert messages[0]["content"] == "记进消息流的首条请求"
+        assert [item["taskId"] for item in messages] == [thread_id, thread_id], "同任务的问答共 taskId"
+        assert all(item["timestamp"] for item in messages)
+        assert set(messages[0]) == {"role", "content", "timestamp", "taskId"}
+        assert body["conversation"]["sessionId"] == "s-messages"
+        assert body["conversation"]["messageCount"] == len(messages)
+    async with _client(other_id, other_name) as client:
+        assert (await client.get("/api/conversations/s-messages/messages")).status_code == 404
 
 
 async def test_task_list_filters_by_session() -> None:

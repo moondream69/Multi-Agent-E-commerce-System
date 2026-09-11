@@ -127,6 +127,23 @@ async def test_conversation_meta_matches_contract() -> None:
     assert expected == {"sessionId", "title", "updatedAt", "messageCount"}
 
 
+async def test_conversation_messages_match_contract() -> None:
+    """GET /conversations/{id}/messages 响应键 == ts ConversationMessages/ConversationMessage(spec #20)。"""
+    from python_backend.core.auth import create_token
+    from tests.conftest import InMemorySessionMemory
+
+    memory = InMemorySessionMemory()
+    await memory.record("s-contract", 42, role="user", content="契约探针", task_id="t-contract")
+    client = TestClient(create_app(auth_required=False, conversation_store=memory))
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+
+    body = client.get("/api/conversations/s-contract/messages").json()
+
+    assert set(body) == _ts_interface_fields("ConversationMessages")
+    assert set(body["conversation"]) == _ts_interface_fields("ConversationMeta"), "元数据复用会话列表形状"
+    assert set(body["messages"][0]) == _ts_interface_fields("ConversationMessage")
+
+
 async def test_product_list_item_matches_contract() -> None:
     """GET /api/products 响应键 == ts ProductListItem(spec #9:模拟流量发现商品)。"""
     from fastapi.testclient import TestClient

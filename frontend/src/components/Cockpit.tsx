@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { BusinessSnapshot } from './BusinessSnapshot';
 import { EventWall } from './EventWall';
 import { SessionBar } from './SessionBar';
+import { SessionMessages } from './SessionMessages';
 import { useSessions } from '../hooks/useSessions';
 import { createTask, fetchTaskDetail, fetchTasks } from '../services/tasks';
 import { importCsv } from '../services/imports';
@@ -493,7 +494,12 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         <SessionBar
           current={sessionId}
           conversations={conversations}
-          onSelect={switchSession}
+          onSelect={(target) => {
+            switchSession(target);
+            // 点会话名 = 回到该会话的对话视图(spec #20 会话/任务双视图);换会话时下方 effect
+            // 已清选中,但点当前会话不改 sessionId、effect 不重跑,故须在此显式清
+            setSelected(null);
+          }}
           onNew={startNew}
           onDelete={(target) => void removeSession(target)}
           onRename={(target, title) => void renameSession(target, title)}
@@ -576,7 +582,7 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         </div>
       </div>
 
-      {/* 中栏:经营快照 + 切片时间线 */}
+      {/* 中栏:经营快照 + 会话视图(消息流)/ 任务视图(切片时间线) */}
       <div
         style={{
           flex: 1,
@@ -586,7 +592,11 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         }}
       >
         <BusinessSnapshot />
-        <SliceTimeline detail={detail} onOpenApprovals={onOpenApprovals} />
+        {selected ? (
+          <SliceTimeline detail={detail} onOpenApprovals={onOpenApprovals} />
+        ) : (
+          <SessionMessages sessionId={sessionId} />
+        )}
       </div>
 
       {/* 右栏:事件流实况墙 */}

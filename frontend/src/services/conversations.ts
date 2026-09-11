@@ -1,4 +1,4 @@
-import { ConversationMeta } from '../types/events';
+import { ConversationMessages, ConversationMeta } from '../types/events';
 import { apiFetch } from './auth';
 
 const BASE = '/api';
@@ -9,6 +9,19 @@ export async function fetchConversations(): Promise<ConversationMeta[]> {
   if (!res.ok) throw new Error(await res.text());
   const body = (await res.json()) as { conversations: ConversationMeta[] };
   return body.conversations;
+}
+
+/** 会话消息流(spec #20):该会话全部对话(原序=时间序)+ 会话元数据。 */
+export async function fetchConversationMessages(
+  sessionId: string,
+): Promise<ConversationMessages | null> {
+  const res = await apiFetch(
+    `${BASE}/conversations/${encodeURIComponent(sessionId)}/messages`,
+  );
+  // 404 = 会话未落库(空白会话惰性落库,未发言即无行)或不存在/非本人——按空态展示,不是故障
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as ConversationMessages;
 }
 
 /** 删除会话(A2):有挂起审批批次时后端 409,错误信息透传。 */

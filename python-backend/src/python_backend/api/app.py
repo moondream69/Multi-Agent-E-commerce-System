@@ -644,6 +644,21 @@ def create_app(
             return {"conversations": []}
         return {"conversations": await app.state.conversation_store.list_conversations(user_id)}
 
+    @app.get("/api/conversations/{session_id}/messages")
+    async def get_conversation_messages(session_id: str, request: Request) -> dict:
+        """会话消息流(spec #20 A2 延伸):该会话全部对话(原序=时间序)+ 会话元数据。
+
+        归属校验按 (user_id, session_id):不存在/非本人 404(与 PATCH/DELETE 同语义);
+        未认证 404 且不触存储(读端点缝纪律)。轨迹全量返回、不截断不加参(演示数据量级)。
+        """
+        user_id = _current_user_id(request)
+        if user_id is None:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        stream = await app.state.conversation_store.get_messages(user_id, session_id)
+        if stream is None:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        return stream
+
     @app.delete("/api/conversations/{session_id}")
     async def remove_conversation(session_id: str, request: Request) -> dict:
         """删除会话(spec #9 A2):有挂起审批批次 → 409(先决定再删);不存在 → 404。"""

@@ -1,7 +1,7 @@
-"""会话存储(spec #9 A2 + spec #11):会话列表/删除/重命名 + 挂起审批检查。
+"""会话存储(spec #9 A2 + spec #11 + spec #20):会话列表/删除/重命名 + 挂起审批检查 + 消息流读取。
 
 conversations 行由会话记忆在首条消息时惰性创建(memory.record,空白会话不落库);
-本模块只做驾驶舱会话切换条的读、删与改名。
+本模块只做驾驶舱会话切换条的读、删、改名与消息流读取。
 
 ConversationStore 协议:端点经 create_app 注入(生产 PostgresConversationStore,测试内存替身)
 ——离线快速套件不触库(issue #21,与 task_store 同形)。
@@ -29,6 +29,20 @@ def _conversation_payload(row: Conversation) -> dict:
     }
 
 
+def _message_payload(message: dict) -> dict:
+    """消息序列化(驼峰,与契约 events.ts ConversationMessage 字段一一对应)。
+
+    存储键为 task_id(memory.record 写入口径),对外契约键为 taskId;缺键按 null/空串兜底,
+    历史行(旧口径)不因取值失败 500。
+    """
+    return {
+        "role": message.get("role"),
+        "content": message.get("content", ""),
+        "timestamp": message.get("timestamp"),
+        "taskId": message.get("task_id"),
+    }
+
+
 class ConversationStore(Protocol):
     """会话存储协议(issue #21):四操作与端点可见语义一致。
 
@@ -50,6 +64,10 @@ class ConversationStore(Protocol):
 
     async def has_pending_batches(self, user_id: int, session_id: str) -> bool:
         """该会话所属线程是否仍有挂起审批批次(spec #9:有则拒删,先决定再删)。"""
+        ...
+
+    async def get_messages(self, user_id: int, session_id: str) -> dict | None:
+        """该会话的消息流(spec #20):{conversation, messages(原序=时间序)};不存在/非本人 None(端点 404)。"""
         ...
 
 
@@ -118,3 +136,18 @@ class PostgresConversationStore(ConversationStore):
             if await self._batch_store.list_pending(thread_id):
                 return True
         return False
+
+    async def get_messages(self, user_id: int, session_id: str) -> dict | None:
+        """消息流原序返回:memory.record 追加写,落库序即时间序(服务端不排序、不截断)。"""
+        async with SessionFactory() as session:
+            row = (
+                await session.execute(
+                    select(Conversation).where(Conversation.user_id == user_id, Conversation.session_id == session_id)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "conversation": _conversation_payload(row),
+                "messages": [_message_payload(message) for message in row.messages or []],
+            }
