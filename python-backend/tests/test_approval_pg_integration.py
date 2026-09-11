@@ -75,7 +75,7 @@ async def test_b4_batch_persisted_decided_and_applied_in_postgres() -> None:
     product = await _make_product()
     client, _store = await make_assemblage(product.id)
     created = (await client.post("/api/tasks", json={"request": "上架商品"})).json()
-    thread_id = created["thread_id"]
+    thread_id = created["threadId"]
     assert created["status"] == "interrupted"
 
     batches = await _pg_batches(thread_id)
@@ -104,7 +104,7 @@ async def test_b5_resume_survives_restart_without_replaying_effects() -> None:
     """B5:挂起后新建 saver/图/客户端实例(模拟重启)→ resume 从断点继续,apply 幂等(executed 跳过)。"""
     product = await _make_product()
     client_1, _store = await make_assemblage(product.id)
-    thread_id = (await client_1.post("/api/tasks", json={"request": "上架商品"})).json()["thread_id"]
+    thread_id = (await client_1.post("/api/tasks", json={"request": "上架商品"})).json()["threadId"]
     batch_id = (await _pg_batches(thread_id))[0].batch_id
     await client_1.aclose()
 

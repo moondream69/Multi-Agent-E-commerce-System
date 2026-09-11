@@ -112,7 +112,7 @@ async def test_authenticated_task_flow_uses_injected_store() -> None:
     response = client.post("/api/tasks", json={"request": "上架商品"})
 
     assert response.status_code == 201
-    thread_id = response.json()["thread_id"]
+    thread_id = response.json()["threadId"]
     row = await task_store.get_task(thread_id)
     assert row is not None, "认证态任务行须落注入替身(端点不得绕过注入直连 PG)"
     assert row.status is TaskStatus.COMPLETED

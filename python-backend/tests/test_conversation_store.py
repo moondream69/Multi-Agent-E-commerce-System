@@ -181,7 +181,7 @@ async def test_task_flow_creates_conversation_and_pending_approval_blocks_delete
         "/api/tasks", json={"request": "发起的任务请求标题超过二十个字用于截断断言", "session_id": "s-flow"}
     )
     assert created.status_code == 201
-    thread_id = created.json()["thread_id"]
+    thread_id = created.json()["threadId"]
 
     conversations = client.get("/api/conversations").json()["conversations"]
     assert [item["sessionId"] for item in conversations] == ["s-flow"]

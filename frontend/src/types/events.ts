@@ -124,6 +124,14 @@ export interface LoginResponse {
 
 // —— 驾驶舱(spec #8:任务列表/详情端点)——
 
+// POST /api/tasks 响应(发起任务;issue #26:顶层响应键驼峰化,对齐 TaskListItem/TaskDetail;终态四键/interrupted 二键)
+export interface TaskCreated {
+  threadId: string;
+  status: string;
+  error?: string | null;
+  summary?: string | null;
+}
+
 export interface TaskListItem {
   threadId: string;
   sessionId: string;

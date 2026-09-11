@@ -54,7 +54,7 @@ def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore, RecordingTask
 async def test_task_trace_spans_and_approval_events_recorded() -> None:
     """B14:任务 trace 内记录 manager 规划 span、切片 span、approval.requested 事件(带 batchId 互链)。"""
     client, store, tracer = make_client()
-    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
 
     assert tracer.traces == [thread_id], "REST 层以 thread_id 为名开启任务 trace"
     assert ("manager.plan", {"request": "上架商品"}) in tracer.spans

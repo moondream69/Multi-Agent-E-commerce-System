@@ -44,7 +44,7 @@ def _make_simulator(
             return httpx.Response(201, json={"order": {"id": 77, "status": "pending"}})
         if path == "/api/tasks":
             calls["tasks"].append(json.loads(request.content))
-            return httpx.Response(201, json={"thread_id": "abcdef123456", "status": "completed"})
+            return httpx.Response(201, json={"threadId": "abcdef123456", "status": "completed"})
         raise AssertionError(f"未预期请求:{path}")
 
     async def fake_sleep(seconds: float) -> None:
@@ -163,7 +163,7 @@ async def test_order_degrades_when_buyer_pool_query_fails() -> None:
             return httpx.Response(201, json={"order": {"id": 77, "status": "pending"}})
         if path == "/api/tasks":
             calls["tasks"].append(json.loads(request.content))
-            return httpx.Response(201, json={"thread_id": "abcdef123456", "status": "completed"})
+            return httpx.Response(201, json={"threadId": "abcdef123456", "status": "completed"})
         raise AssertionError(f"未预期请求:{path}")
 
     async def no_sleep(_seconds: float) -> None:

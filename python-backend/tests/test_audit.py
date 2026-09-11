@@ -60,7 +60,7 @@ async def test_slice_execution_and_decision_audited() -> None:
     audit = RecordingAudit()
     async with _client(audit) as client:
         created = await client.post("/api/tasks", json={"request": "上架商品"})
-        thread_id = created.json()["thread_id"]
+        thread_id = created.json()["threadId"]
         batches = await client.get(f"/api/threads/{thread_id}/approvals")
         batch_id = batches.json()["approvals"][0]["batchId"]
         resumed = await client.post(
@@ -130,7 +130,7 @@ async def test_plan_failed_recorded_in_task_result() -> None:
     )
     async with client:
         created = await client.post("/api/tasks", json={"request": "任意需求"})
-        thread_id = created.json()["thread_id"]
+        thread_id = created.json()["threadId"]
         assert created.json()["status"] == "failed"
         # 宪章「未完成+原因」语义:图 report_failure 加前缀
         assert created.json()["error"] == "未完成:规划失败:步数超限"

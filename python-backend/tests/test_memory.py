@@ -134,7 +134,7 @@ async def test_create_task_wires_memory_and_task_row() -> None:
     assert memory.recorded and memory.recorded[0]["role"] == "user"
     assert memory.recorded[0]["content"] == "上架商品"
     assert memory.recorded[0]["session_id"] == "mem-session"
-    thread_id = response.json()["thread_id"]
+    thread_id = response.json()["threadId"]
     async with SessionFactory() as session:
         task = (await session.execute(select(Task).where(Task.thread_id == thread_id))).scalar_one()
     assert task.user_id == user_id

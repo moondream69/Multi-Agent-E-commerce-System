@@ -54,7 +54,7 @@ async def test_task_list_and_detail() -> None:
     async with _client(user_id, username) as client:
         created = await client.post("/api/tasks", json={"request": request_text, "session_id": "cockpit-s"})
         assert created.status_code == 201
-        thread_id = created.json()["thread_id"]
+        thread_id = created.json()["threadId"]
 
         listing = await client.get("/api/tasks")
         assert listing.status_code == 200

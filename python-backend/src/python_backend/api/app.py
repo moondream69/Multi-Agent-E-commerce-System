@@ -424,7 +424,7 @@ def create_app(
                 app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"}),
                 "task.interrupted 广播",
             )
-            return {"thread_id": thread_id, "status": "interrupted"}
+            return {"threadId": thread_id, "status": "interrupted"}
         status = "failed" if result.get("error") else "completed"
         # 任务行写入失败(spec #11 分类 ②)→ 收敛 failed + 500;其后广播/记忆失败(分类 ③)不翻行、响应如实
         await _update_row_or_converge(
@@ -453,7 +453,7 @@ def create_app(
                 "助手消息落库",
             )
         return {
-            "thread_id": thread_id,
+            "threadId": thread_id,
             "status": status,
             "error": result.get("error"),
             "summary": result.get("summary"),

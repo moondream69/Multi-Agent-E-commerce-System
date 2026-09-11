@@ -182,7 +182,7 @@ class Simulator:
         if response.status_code != 201:
             logger.warning("任务发起失败(%s):%s", response.status_code, response.text[:200])
             return {"action": action, "detail": f"失败 {response.status_code}"}
-        return {"action": action, "detail": f"任务 {response.json()['thread_id'][:8]}:{text[:20]}"}
+        return {"action": action, "detail": f"任务 {response.json()['threadId'][:8]}:{text[:20]}"}
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -56,7 +56,7 @@ async def test_approval_batch_response_keys_match_contract() -> None:
         batch_store=store,
     )
     client = TestClient(create_app(graph=graph, batch_store=store, task_store=InMemoryTaskStore(), auth_required=False))
-    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
 
     approvals = client.get(f"/api/threads/{thread_id}/approvals").json()["approvals"]
 
@@ -198,7 +198,7 @@ async def test_task_detail_result_matches_contract() -> None:
     client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
 
     created = client.post("/api/tasks", json={"request": "查库存"}).json()
-    detail = client.get(f"/api/tasks/{created['thread_id']}").json()
+    detail = client.get(f"/api/tasks/{created['threadId']}").json()
 
     assert created["summary"] == "完成 1/1 个切片", "POST 响应摘要为字符串(issue #25)"
     assert set(detail) == _ts_interface_fields("TaskDetail"), "详情响应键 == 契约字段"
@@ -208,6 +208,42 @@ async def test_task_detail_result_matches_contract() -> None:
     assert [r["content"] for r in memory.records if r["role"] == "assistant"] == ["完成 1/1 个切片"], (
         "助手消息落库为可读文本(issue #25:不再是 Python repr)"
     )
+
+
+async def test_create_task_response_keys_match_contract() -> None:
+    """POST /api/tasks 响应键 == ts TaskCreated(issue #26:键名口径收口,顶层响应键全驼峰)。
+
+    终态键集恰为契约字段(四键);interrupted 早返回分支形状保持二键(⊆ 契约字段)。
+    """
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent()},  # 无审批动作 → 免审直行 → completed
+        checkpointer=InMemorySaver(),
+    )
+    client = TestClient(create_app(graph=graph, task_store=InMemoryTaskStore(), auth_required=False))
+    created = client.post("/api/tasks", json={"request": "查库存"}).json()
+
+    expected = _ts_interface_fields("TaskCreated")
+    assert set(created) == expected, f"POST 响应键 {set(created)} 应等于契约字段 {expected}"
+    assert created["threadId"], "threadId 非空(前端 setSelected 的直接消费值)"
+
+    batch_store = InMemoryApprovalBatchStore()
+    interrupted_graph = build_supervisor(
+        StubPlanner(),  # 默认计划含审批切片 → interrupt
+        agents={"order_management": slice_agent(actions=[{"action": "product.publish", "params": {"product_id": 1}}])},
+        checkpointer=InMemorySaver(),
+        batch_store=batch_store,
+    )
+    interrupted_client = TestClient(
+        create_app(
+            graph=interrupted_graph, batch_store=batch_store, task_store=InMemoryTaskStore(), auth_required=False
+        )
+    )
+    interrupted = interrupted_client.post("/api/tasks", json={"request": "上架商品"}).json()
+
+    assert set(interrupted) == {"threadId", "status"}, "interrupted 分支形状保持二键"
+    assert set(interrupted) <= expected, "interrupted 键集 ⊆ 契约字段(声明名必须是契约名)"
+    assert interrupted["status"] == "interrupted"
 
 
 async def test_drafting_response_matches_contract() -> None:

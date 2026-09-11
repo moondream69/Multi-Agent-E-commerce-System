@@ -98,7 +98,7 @@ async def test_rest_emits_task_lifecycle_events() -> None:
 async def test_resume_emits_decided_and_completed() -> None:
     """REST:resume 广播 approval.decided + task.completed。"""
     client, store, _apply, emitter = make_client()
-    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
     batch_id = (await store.list_pending(thread_id))[0].batch_id
 
     client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve", "comment": "没问题"}})
@@ -117,7 +117,7 @@ async def test_resume_emits_decided_and_completed() -> None:
 async def test_message_terminate_emits_decided_reject() -> None:
     """REST:自然消息终止 → 全部批次 decided(reject),任务失败终态事件。"""
     client, store, _apply, emitter = make_client()
-    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["thread_id"]
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
     batch_id = (await store.list_pending(thread_id))[0].batch_id
 
     client.post(f"/api/threads/{thread_id}/message", json={"text": "算了"})

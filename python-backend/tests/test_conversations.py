@@ -60,7 +60,7 @@ def _client(user_id: int, username: str, batch_store=None) -> AsyncClient:
 async def _run_task(client: AsyncClient, request: str, session_id: str) -> str:
     response = await client.post("/api/tasks", json={"request": request, "session_id": session_id})
     assert response.status_code == 201
-    return response.json()["thread_id"]
+    return response.json()["threadId"]
 
 
 async def test_conversation_list_and_lazy_creation() -> None:

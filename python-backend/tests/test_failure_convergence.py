@@ -116,7 +116,7 @@ def _make_client(
 
 def _start_and_approve(client: TestClient):
     """发起两切片任务 → 切片 1 挂审批 → 批准 → 切片 2 在恢复中执行;返回 resume 响应。"""
-    thread_id = client.post("/api/tasks", json={"request": "上架并回复"}).json()["thread_id"]
+    thread_id = client.post("/api/tasks", json={"request": "上架并回复"}).json()["threadId"]
     batch_id = client.get(f"/api/threads/{thread_id}/approvals").json()["approvals"][0]["batchId"]
     return client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve", "comment": ""}})
 
@@ -381,7 +381,7 @@ async def test_task_row_failed_on_llm_failure() -> None:
         assert created.status_code == 201
         assert created.json()["status"] == "failed"
 
-        detail = await client.get(f"/api/tasks/{created.json()['thread_id']}")
+        detail = await client.get(f"/api/tasks/{created.json()['threadId']}")
         assert detail.json()["status"] == "failed"
         assert "HTTP 400" in detail.json()["result"]["error"]
 
@@ -400,7 +400,7 @@ async def test_resume_row_failed_with_reason() -> None:
     )
     client.headers.update({"Authorization": f"Bearer {create_token(username, user_id)}"})
     async with client:
-        thread_id = (await client.post("/api/tasks", json={"request": "上架并回复"})).json()["thread_id"]
+        thread_id = (await client.post("/api/tasks", json={"request": "上架并回复"})).json()["threadId"]
         batch_id = (await client.get(f"/api/threads/{thread_id}/approvals")).json()["approvals"][0]["batchId"]
         resumed = await client.post(
             f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve", "comment": ""}}
