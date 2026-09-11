@@ -5,6 +5,7 @@
   ``::productstatus`` cast 而报 UndefinedObject;口径也随之按 name(大写)落库,
   与迁移声明 / server_default / JSON 契约相左。
 - 断言用裸 SQL(不经类型处理器)读回原始字符串,钉死小写口径,防回退。
+- 声明面(自动发现全部枚举列)与行为面分离:守卫本体在 ``conftest.py``,离线入口 ``test_enum_declarations.py``。
 依赖真 PG;离线秒 skip。
 """
 
@@ -14,7 +15,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import Enum, text
+from sqlalchemy import text
 
 from python_backend.db.models import (
     ApprovalBatch,
@@ -29,17 +30,15 @@ from python_backend.db.models import (
     User,
 )
 from python_backend.db.session import SessionFactory
+from tests.conftest import assert_enum_columns_declared_safely
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("requires_postgres")]
 
 
 async def test_enum_columns_batch_insert_stores_lowercase_values() -> None:
     """五个枚举表:同一 session 内多行 add_all + flush 成功,落库为小写 value,ORM 读回为成员。"""
-    # 声明面:与迁移 0001 对齐(非原生枚举,故批插不 cast)
-    for model in (Product, Order, Task, ApprovalBatch, Ticket):
-        col_type = model.__table__.c.status.type
-        assert isinstance(col_type, Enum)
-        assert col_type.native_enum is False
+    # 声明面:自动发现全部枚举列(非原生枚举,故批插不 cast);守卫本体见 conftest.py,离线入口见 test_enum_declarations.py
+    assert_enum_columns_declared_safely()
 
     tag = uuid.uuid4().hex[:8]
     user = User(username=f"enum-{tag}", password_hash="x")

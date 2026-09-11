@@ -112,7 +112,7 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 
 ## 数据库约定
 
-- 枚举 status 列一律经 `db/models.py` 的 `_status_column_type()` 声明(`native_enum=False` + `values_callable`,落库 = 小写 value,与迁移/server_default/JSON 契约一致);**新增枚举列照抄,勿靠 `Mapped[X]` 推断**(推断出原生枚举 → 批插渲染 `::<名>status` 报错,issue #12);改口径 = 数据迁移
+- 枚举 status 列一律经 `db/models.py` 的 `_status_column_type()` 声明(`native_enum=False` + `values_callable`,落库 = 小写 value,与迁移/server_default/JSON 契约一致);**新增枚举列照抄,勿靠 `Mapped[X]` 推断**(推断出原生枚举 → 批插渲染 `::<名>status` 报错,issue #12);改口径 = 数据迁移;声明面由离线用例 `tests/test_enum_declarations.py` 遍历 `Base.metadata` 自动守卫(无需登记清单)
 - dev 库 = `mae`(测试直写,带 tag 行会累积);`multi_agent_ecommerce` 是旧系统冻结库,**勿动**
 
 ## Agent skills

@@ -16,10 +16,6 @@ from python_backend.db.models import Task, TaskStatus
 from python_backend.db.session import SessionFactory
 
 
-class TaskStoreError(Exception):
-    """任务行不存在等数据异常。"""
-
-
 class TaskStore(Protocol):
     """任务行存储协议(issue #13):五操作与端点可见语义一致——未认证 create 跳过、缺行静默跳过、列表倒序。"""
 

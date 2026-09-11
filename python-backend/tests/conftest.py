@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import math
+import re
 import socket
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
+from sqlalchemy import Enum
 
 from python_backend.agents.executor import ApplyResult
 from python_backend.core.approvals import (
@@ -18,6 +20,7 @@ from python_backend.core.approvals import (
     initial_status,
 )
 from python_backend.core.planning import Slice, SlicePlan
+from python_backend.db.base import Base
 from python_backend.db.models import Task, TaskStatus
 from python_backend.db.notification_store import MAX_PER_KIND
 from python_backend.infrastructure.llm import ToolCallResult
@@ -55,6 +58,44 @@ def require_postgres() -> None:
 def requires_postgres() -> None:
     """integration 模块共享夹具(经 pytestmark usefixtures 挂载,等价原先各文件的 autouse 探测)。"""
     require_postgres()
+
+
+def assert_enum_columns_declared_safely() -> list[str]:
+    """枚举列声明面守卫(issue #22,离线):遍历 ``Base.metadata`` 自动发现全部 ``sa.Enum`` 列并断言口径。
+
+    口径 = ``db/models.py`` 的 ``_status_column_type()``(新增枚举列照该模式照抄);自动发现使
+    「新增枚举列即被守卫」,取代 #12 遗留的硬编码五表清单。范围取**全部枚举列**(不按 NOT NULL
+    或列名 status 筛选):原生枚举在多行批插渲染 ``::<名>`` cast,任何枚举列都须排除。
+
+    - ``native_enum is False`` —— 库内 VARCHAR,批插不 cast;
+    - 落库值 = 成员 ``.value``(小写口径)——期望自枚举成员取、不写字面量;缺 ``values_callable``
+      时 SQLAlchemy 取成员 name(大写),此处即报;
+    - 类型名 = 枚举类名的 snake_case —— 迁移 0001 五处先例(product_status / order_status / ...);
+      类名含连续大写缩写(如 ``SKUStatus``)时本规则会误判,届时改类名或放宽此处。
+
+    返回发现的列位置串(``表.列``),供调用方断言发现非空(防遍历失效导致守卫空转)。
+    """
+    discovered: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        for column in table.columns:
+            col_type = column.type
+            if not isinstance(col_type, Enum):
+                continue
+            where = f"{table.name}.{column.name}"
+            discovered.append(where)
+            assert col_type.native_enum is False, f"{where}: 枚举列须 native_enum=False(原生枚举批插会渲染 cast)"
+            enum_class = col_type.enum_class
+            assert enum_class is not None, f"{where}: 须以枚举类声明(字符串枚举无从校验 value 口径)"
+            expected_values = [member.value for member in enum_class]
+            assert list(col_type.enums) == expected_values, (
+                f"{where}: 落库口径须为成员 value {expected_values},实为 {list(col_type.enums)}"
+                " —— 照 _status_column_type() 补 values_callable"
+            )
+            expected_name = re.sub(r"(?<!^)(?=[A-Z])", "_", enum_class.__name__).lower()
+            assert col_type.name == expected_name, (
+                f"{where}: 类型名须随迁移命名约定 = 枚举类名 snake_case({expected_name}),实为 {col_type.name!r}"
+            )
+    return discovered
 
 
 class InMemorySessionMemory:
