@@ -29,9 +29,9 @@ cd frontend && npm run dev
 
 ## 硬约束与注意事项
 
-- **单 worker**:`uvicorn --workers 1` 是架构硬约束(run.py 统一入口)。EventBus 是进程内实现,
-  审批等待协程、WS sid→用户映射都依赖单进程。多 worker 会静默断开跨进程事件桥接。
-  扩容需先把 EventBus 换成 Redis pub/sub(明确列为后续项)。
+- **单 worker**:`uvicorn --workers 1` 是架构硬约束(run.py 统一入口)。事件通道是进程内实现
+  (`EventEmitter`),审批等待协程、WS sid→用户映射都依赖单进程。多 worker 会静默断开跨进程事件桥接。
+  扩容需先把事件通道换成 Redis pub/sub(明确列为后续项)。
 - **审批机制**:高危写操作(上架/下架/改价/删除/订单流转/取消)按切片打包为审批批次,
   经 durable interrupt 挂起(PostgresSaver 落库);批准/拒绝后用户指令驱动恢复(按钮或自然消息双入口),
   可跨进程重启恢复。批次不自动过期(approval_ttl_hours 为预留配置,暂无清扫任务)。
@@ -46,6 +46,8 @@ cd frontend && npm run dev
   并产生 fx_missing 通知(人工核对),不拒单。
 - **LLM 预算**:模拟流量默认每天 200 个 LLM 任务,达到后当天只浏览(`--daily-budget` 可调;
   下单与买家查询不计预算)。
+- **认证**:JWT 有效期 24h(`AUTH_TOKEN_TTL_HOURS`),**无吊销机制**——改 `AUTH_JWT_SECRET` 即全员下线;
+  改管理员密码需删 users 行后重启(启动时懒 seed)。
 
 ## 日常运维
 
@@ -99,10 +101,13 @@ docker compose exec postgres psql -U postgres mae -c \
 
 生成哈希:`uv run python -c "from python_backend.core.auth import hash_password; print(hash_password('密码'))"`
 
-## 已知取舍与待办(详见 ADR-0005)
+## 已知取舍与待办(逐条落点)
 
-- 全员平权审批:任何登录者可通过/拒绝,`decided_by`/`comment` 审计兜底
-- JWT 24h 无吊销:改 `AUTH_JWT_SECRET` 全员下线
-- 审批批次无自动过期清扫(approval_ttl_hours 预留)
-- 前端尚无生产托管(开发态 Vite 代理;部署形态待定),买家前台维持移除
-- 下单入口 REST `/api/orders` 保留且需认证,供模拟流量使用(旧「演示买家前台直购」叙述已过时)
+| 事项 | 落点 |
+|---|---|
+| 全员平权审批:任何登录者可通过/拒绝,`decided_by`/`comment` 审计兜底 | ADR-0005「前端」节:登录平权无角色 |
+| JWT 24h、无吊销:改 `AUTH_JWT_SECRET` 全员下线 | 本手册「硬约束与注意事项 → 认证」 |
+| 审批批次无自动过期清扫(`approval_ttl_hours` 预留) | 本手册「硬约束与注意事项 → 审批机制」 |
+| 前端尚无生产托管(开发态 Vite 代理,部署形态待定) | ADR-0005「部署」节:前端静态托管未落地 |
+| 下单入口 REST `/api/orders` 保留且需认证,供模拟流量使用 | ADR-0005「业务强化」节:数据入口 |
+| 买家前台维持移除(旧「演示买家前台直购」叙述已过时) | ADR-0005「被修订/取代的既有决策」节:ADR-0003 条 |
