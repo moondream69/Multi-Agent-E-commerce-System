@@ -317,7 +317,7 @@ export function SliceTimeline({
   );
 }
 
-function CsvImportCard() {
+export function CsvImportCard() {
   // CSV 批量导入(spec #8 B8 + spec #11):文件读取后以文本体上传,行级报告 {created, skipped, errors}
   const [kind, setKind] = useState<'products' | 'orders' | 'customers'>(
     'products',
@@ -353,7 +353,9 @@ function CsvImportCard() {
       <div style={{ fontSize: 13, fontWeight: 600, color: theme.color.text }}>
         CSV 数据导入
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      {/* 纵向堆叠(issue #30):左栏 ~280px,选择框固有宽度被最长选项文案撑到 200px+,
+          横排会把文件输入压成 42px 窄条、「选择文件」按钮文字被裁 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <select
           value={kind}
           onChange={(event) =>
@@ -379,7 +381,7 @@ function CsvImportCard() {
             const file = event.target.files?.[0];
             if (file) void upload(file);
           }}
-          style={{ fontSize: 12, flex: 1, minWidth: 0 }}
+          style={{ fontSize: 12 }}
         />
       </div>
       {busy && (
