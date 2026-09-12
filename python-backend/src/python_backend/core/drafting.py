@@ -113,6 +113,6 @@ class DraftingService:
                     ),
                 },
             ],
-            max_tokens=800,
+            max_tokens=2000,  # 思考模式推理与正文共享预算:低预算(原 800)有饿空正文风险,对齐默认档
         )
         return {"draft": draft, "evidence": evidence}

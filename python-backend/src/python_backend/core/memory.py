@@ -123,7 +123,7 @@ class PostgresSessionMemory:
                     },
                     {"role": "user", "content": history},
                 ],
-                max_tokens=400,
+                max_tokens=2000,  # 思考模式推理与正文共享预算:低预算(原 400)有饿空正文风险,对齐默认档
             )
         except LlmFailure as error:
             logger.warning("会话摘要失败(跳过,不阻断任务): %s", error)

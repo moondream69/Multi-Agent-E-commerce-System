@@ -700,7 +700,9 @@ class FakeLlm:
         max_tokens: int = 2000,
         json_mode: bool = False,
     ) -> str:
-        self.calls.append({"method": "complete", "messages": messages, "json_mode": json_mode})
+        self.calls.append(
+            {"method": "complete", "messages": messages, "json_mode": json_mode, "max_tokens": max_tokens}
+        )
         if not self._responses:
             raise AssertionError("FakeLlm.complete 未配置响应")
         response = self._responses[min(len(self.calls) - 1, len(self._responses) - 1)]

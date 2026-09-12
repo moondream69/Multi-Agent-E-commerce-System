@@ -270,7 +270,7 @@ class ToolExecutor:
                 {"role": "user", "content": text},
             ],
             temperature=0.3,
-            max_tokens=500,
+            max_tokens=2000,  # 思考模式推理与正文共享预算:低预算(原 500)会把正文饿成空,对齐默认档
         )
         return {"translated": translated}
 
@@ -287,7 +287,7 @@ class ToolExecutor:
                 {"role": "user", "content": json.dumps(params, ensure_ascii=False)},
             ],
             json_mode=True,
-            max_tokens=300,
+            max_tokens=2000,  # 思考模式推理与正文共享预算:300 实测 ~1/3 概率正文为空(走查缺陷),对齐默认档
         )
         return json.loads(raw)
 
@@ -297,7 +297,7 @@ class ToolExecutor:
                 {"role": "system", "content": "你是选品分析师,请基于给定情报生成结构化选品分析报告(含结论与风险)。"},
                 {"role": "user", "content": params.get("context", "")},
             ],
-            max_tokens=2000,
+            max_tokens=8000,  # 思考模式推理与正文共享预算:报告类实测推理 3200~5700 字符,2000 连推理都装不下(空正文)
         )
         return {"report": report}
 
@@ -311,7 +311,7 @@ class ToolExecutor:
                 {"role": "user", "content": params["text"]},
             ],
             temperature=0.1,
-            max_tokens=10,
+            max_tokens=2000,  # 思考模式推理与正文共享预算:10 必然被推理耗尽(空正文),对齐默认档
         )
         return {"sentiment": sentiment.strip()}
 

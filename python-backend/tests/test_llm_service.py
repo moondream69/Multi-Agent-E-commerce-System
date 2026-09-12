@@ -27,6 +27,20 @@ async def test_complete_returns_content() -> None:
     assert result == "你好"
 
 
+@pytest.mark.parametrize("content", [None, ""], ids=["none", "empty"])
+async def test_complete_raises_on_empty_content(content: str | None) -> None:
+    """走查缺陷(选品 scoring 崩溃根因):思考模式推理与正文共享 max_tokens,
+    预算被推理耗尽时 content 为空、finish_reason=length——不静默返回空串,如实上抛
+    (空串会把故障推给下游 json.loads("") 之类,违反「永不静默吞错」)。"""
+    transport, calls = counting_transport(
+        [httpx.Response(200, json={"choices": [{"message": {"content": content}, "finish_reason": "length"}]})]
+    )
+    svc = LlmService(transport=transport, retry_delays=(0, 0))
+    with pytest.raises(LlmFailure):
+        await svc.complete([{"role": "user", "content": "hi"}])
+    assert len(calls) == 1  # 空正文非瞬时错误(预算问题重试无益),不上重试路径
+
+
 def counting_transport(responses: list[httpx.Response]) -> tuple[httpx.MockTransport, list[int]]:
     calls: list[int] = []
 

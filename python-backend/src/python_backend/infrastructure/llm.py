@@ -127,7 +127,11 @@ class LlmService:
         max_tokens: int = 2000,
         json_mode: bool = False,
     ) -> str:
-        """纯文本补全。json_mode=True 时请求 JSON 输出(规划用)。"""
+        """纯文本补全。json_mode=True 时请求 JSON 输出(规划用)。
+
+        思考模型推理与正文共享 max_tokens:预算被推理耗尽时正文为空,此处上抛 LlmFailure
+        (不静默返回空串——空串会把故障推给下游 json.loads("") 之类)。调用方预算须覆盖推理。
+        """
         payload: dict[str, Any] = {
             "model": get_settings().llm_model,
             "messages": messages,
@@ -136,8 +140,11 @@ class LlmService:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        message = await self._with_gate(lambda: self._request(payload))
-        return message["content"] or ""
+        choice = await self._with_gate(lambda: self._request(payload))
+        content = choice["message"].get("content")
+        if content is None or not content.strip():
+            raise LlmFailure(f"LLM 返回空内容(finish_reason={choice.get('finish_reason')})")
+        return content
 
     async def complete_with_tools(
         self,
@@ -155,7 +162,8 @@ class LlmService:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        message = await self._with_gate(lambda: self._request(payload))
+        choice = await self._with_gate(lambda: self._request(payload))
+        message = choice["message"]
         return ToolCallResult(
             content=message.get("content"),
             tool_calls=message.get("tool_calls") or [],
@@ -163,6 +171,7 @@ class LlmService:
         )
 
     async def _request(self, payload: dict) -> dict:
+        """单次请求(含瞬时错误重试),成功返回 choices[0] 整个 choice(正文+finish_reason)。"""
         url = get_settings().llm_api_url.rstrip("/") + "/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_settings().llm_api_key}"}
         model = get_settings().llm_model
@@ -170,9 +179,11 @@ class LlmService:
             try:
                 response = await self._client.post(url, json=payload, headers=headers)
                 if response.status_code == 200:
-                    message = response.json()["choices"][0]["message"]
-                    self._tracer.record_generation("chat.completions", input=payload, output=message, model=model)
-                    return message
+                    choice = response.json()["choices"][0]
+                    self._tracer.record_generation(
+                        "chat.completions", input=payload, output=choice["message"], model=model
+                    )
+                    return choice
                 error: Exception = httpx.HTTPStatusError(
                     f"LLM 调用失败:HTTP {response.status_code}", request=response.request, response=response
                 )

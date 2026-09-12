@@ -89,6 +89,27 @@ async def test_execute_scoring_parses_json() -> None:
     assert result["grade"] == "A"
 
 
+@pytest.mark.parametrize(
+    ("action", "params", "response", "floor"),
+    [
+        ("scoring", {"product_title": "宠物饮水机"}, '{"score": 88, "grade": "A", "rationale": "需求旺盛"}', 1000),
+        ("translate", {"text": "你好", "target_locale": "英语"}, "hello", 1000),
+        ("sentiment_analysis", {"text": "物流太慢了"}, "negative", 1000),
+        ("generate_report", {"context": "情报与评分汇总"}, "# 选品报告", 8000),
+    ],
+    ids=["scoring", "translate", "sentiment", "report"],
+)
+async def test_llm_completion_budget_leaves_reasoning_headroom(
+    action: str, params: dict, response: str, floor: int
+) -> None:
+    """走查缺陷:思考模式(v4 flash)推理与正文共享 max_tokens——实测短任务推理 700~1200 字符、
+    报告类推理 3200~5700 字符且正文 2500~3500 字符;预算被推理耗尽即空正文(finish_reason=length),
+    各调用点须留足推理余量(下限见 floor,禁止回退到饿死档)。"""
+    llm = FakeLlm(responses=[response])
+    await make_executor(llm).execute(action, params)
+    assert llm.calls[0]["max_tokens"] >= floor
+
+
 async def test_execute_generate_report_and_draft() -> None:
     llm = FakeLlm(responses=["# 选品报告\\n\\n结论:值得做。", "买家您好,已为您查询。"])
     executor = make_executor(llm)
