@@ -27,6 +27,11 @@ docker compose --profile sim up -d
 cd frontend && npm run dev
 ```
 
+> ⚠️ **dev server 必须落在 5173**:后端 `cors_origins` 默认只放行 `http://localhost:5173`。
+> 5173 被占时 Vite 会自动跳到 5174+,此时 REST 仍通(代理直连),但 **socket.io 握手会被
+> 后端按来源拒绝**(WS 升级 403 + 轮询 400「session unknown」,界面显「实时通道未连接」)。
+> 现象极具误导性——看起来像 WS 坏了,实为端口/来源不匹配。多个 Vite 实例常驻时先杀掉再起。
+
 ## 硬约束与注意事项
 
 - **单 worker**:`uvicorn --workers 1` 是架构硬约束(run.py 统一入口)。事件通道是进程内实现
