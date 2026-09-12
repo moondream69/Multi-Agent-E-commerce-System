@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { kindLabel, useNotificationBells } from '../hooks/useNotificationBells';
 import { useSocket } from '../hooks/useSocket';
 import { EventType, NotificationMessage } from '../types/events';
-import { theme } from '../theme';
 
 // —— 通知铃铛(spec #9 A8/A9/A14;增量 8-T2/#17 服务端真源 + 多端已读同步)——
 
@@ -61,108 +60,39 @@ export function NotificationBell() {
   const groups = Object.entries(lists).filter(([, items]) => items.length > 0);
 
   return (
-    <div ref={rootRef} style={{ position: 'relative' }}>
+    <div ref={rootRef} className="relative">
       <button
         onClick={toggle}
         title="通知"
-        style={{
-          position: 'relative',
-          border: 'none',
-          background: 'transparent',
-          cursor: 'pointer',
-          fontSize: 16,
-          padding: '2px 4px',
-          lineHeight: 1,
-        }}
+        className="relative cursor-pointer rounded-lg border border-line px-2 py-1 text-sm leading-none text-ink-2 transition-colors hover:bg-surface-2"
       >
         🔔
         {unread > 0 && (
-          <span
-            style={{
-              position: 'absolute',
-              top: -8,
-              right: -8,
-              minWidth: 16,
-              height: 16,
-              borderRadius: theme.radius.full,
-              background: theme.color.danger,
-              color: '#fff',
-              fontSize: 10,
-              lineHeight: '16px',
-              textAlign: 'center',
-              padding: '0 4px',
-            }}
-          >
+          <span className="absolute -top-1.5 -right-1.5 min-w-4 rounded-full bg-st-failed px-1 text-center text-[10px] leading-4 font-medium text-white">
             {unread > 99 ? '99+' : unread}
           </span>
         )}
       </button>
       {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 28,
-            right: 0,
-            width: 320,
-            maxHeight: 420,
-            overflowY: 'auto',
-            background: theme.color.surface,
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.md,
-            boxShadow: theme.shadow.card,
-            padding: '8px 0',
-            zIndex: 20,
-          }}
-        >
+        <div className="absolute top-9 right-0 z-20 max-h-[420px] w-[330px] overflow-y-auto rounded-card border border-line bg-surface py-1.5 shadow-pop">
           {groups.length === 0 && (
-            <div
-              style={{
-                padding: '16px 14px',
-                fontSize: 12,
-                color: theme.color.textMuted,
-                textAlign: 'center',
-              }}
-            >
+            <div className="px-3.5 py-4 text-center text-xs text-ink-3">
               暂无通知。订单变更与库存告警会出现在这里。
             </div>
           )}
           {groups.map(([kind, items]) => (
-            <div key={kind} style={{ marginBottom: 4 }}>
-              <div
-                style={{
-                  padding: '6px 14px',
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: theme.color.textSecondary,
-                  background: theme.color.bg,
-                }}
-              >
+            <div key={kind} className="mb-1">
+              <div className="flex items-center gap-1.5 bg-surface-2 px-3.5 py-1.5 text-[11px] font-semibold text-ink-2">
                 {kindLabel(kind)}
-                <span style={{ marginLeft: 6, color: theme.color.textMuted }}>
-                  {items.length}
-                </span>
+                <span className="tnum text-ink-3">{items.length}</span>
               </div>
               {items.map((item) => (
                 <div
                   key={item.notificationId}
-                  style={{
-                    padding: '8px 14px',
-                    borderBottom: `1px solid ${theme.color.border}`,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 3,
-                  }}
+                  className="flex flex-col gap-0.5 border-b border-line px-3.5 py-2 last:border-b-0"
                 >
-                  <span style={{ fontSize: 12, color: theme.color.text }}>
-                    {item.message}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      fontFamily: theme.font.mono,
-                      color: theme.color.textMuted,
-                    }}
-                  >
+                  <span className="text-xs">{item.message}</span>
+                  <span className="font-mono text-[10px] text-ink-3">
                     {item.orderId != null && `订单 #${item.orderId} · `}
                     {formatTime(item.timestamp)}
                   </span>

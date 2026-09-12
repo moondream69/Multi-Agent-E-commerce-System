@@ -3,6 +3,7 @@ import { ApprovalCenter } from './components/ApprovalCenter';
 import { Cockpit } from './components/Cockpit';
 import { DraftingWorkbench } from './components/DraftingWorkbench';
 import { NotificationBell } from './components/NotificationBell';
+import { useTheme } from './hooks/useTheme';
 import {
   clearSession,
   getToken,
@@ -11,7 +12,6 @@ import {
   storeSession,
 } from './services/auth';
 import { clearCurrentSessionId } from './services/session';
-import { theme } from './theme';
 
 type View = 'cockpit' | 'drafting' | 'approvals';
 
@@ -42,38 +42,9 @@ function LoginView({ onLoggedIn }: { onLoggedIn: () => void }) {
   };
 
   return (
-    <div
-      style={{
-        height: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: theme.color.bg,
-      }}
-    >
-      <div
-        style={{
-          width: 320,
-          padding: '28px 24px',
-          background: theme.color.surface,
-          border: `1px solid ${theme.color.border}`,
-          borderRadius: theme.radius.md,
-          boxShadow: theme.shadow.card,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12,
-        }}
-      >
-        <h1
-          style={{
-            margin: 0,
-            fontSize: 16,
-            fontWeight: 600,
-            color: theme.color.text,
-          }}
-        >
-          电商运营台 · 登录
-        </h1>
+    <div className="flex h-screen items-center justify-center bg-bg">
+      <div className="flex w-[340px] flex-col gap-3 rounded-card border border-line bg-surface p-7 shadow-pop">
+        <h1 className="m-0 text-base font-semibold">电商运营台 · 登录</h1>
         <input
           value={username}
           onChange={(event) => setUsername(event.target.value)}
@@ -82,12 +53,7 @@ function LoginView({ onLoggedIn }: { onLoggedIn: () => void }) {
           }}
           placeholder="用户名"
           autoFocus
-          style={{
-            padding: '8px 12px',
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.sm,
-            fontSize: 14,
-          }}
+          className="rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25"
         />
         <input
           type="password"
@@ -97,37 +63,33 @@ function LoginView({ onLoggedIn }: { onLoggedIn: () => void }) {
             if (event.key === 'Enter') void submit();
           }}
           placeholder="密码"
-          style={{
-            padding: '8px 12px',
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.sm,
-            fontSize: 14,
-          }}
+          className="rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25"
         />
-        {error && (
-          <div style={{ fontSize: 12, color: theme.color.danger }}>{error}</div>
-        )}
+        {error && <div className="text-xs text-st-failed">{error}</div>}
         <button
           onClick={() => void submit()}
           disabled={busy || !username || !password}
-          style={{
-            padding: '8px 0',
-            border: 'none',
-            borderRadius: theme.radius.sm,
-            background: theme.color.brand,
-            color: '#fff',
-            cursor: busy ? 'not-allowed' : 'pointer',
-            fontSize: 14,
-            opacity: busy || !username || !password ? 0.6 : 1,
-          }}
+          className="cursor-pointer rounded-lg bg-brand py-2 text-sm font-medium text-brand-contrast transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? '登录中…' : '登录'}
         </button>
-        <div style={{ fontSize: 11, color: theme.color.textMuted }}>
-          局域网部署 · 内部工具
-        </div>
+        <div className="text-[11px] text-ink-3">局域网部署 · 内部工具</div>
       </div>
     </div>
+  );
+}
+
+function ThemeToggle() {
+  const { mode, toggle } = useTheme();
+  return (
+    <button
+      onClick={toggle}
+      title={mode === 'dark' ? '切换到浅色' : '切换到深色'}
+      aria-label="切换主题"
+      className="cursor-pointer rounded-lg border border-line px-2 py-1 text-xs text-ink-2 transition-colors hover:bg-surface-2"
+    >
+      {mode === 'dark' ? '☾' : '☀'}
+    </button>
   );
 }
 
@@ -135,100 +97,51 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const [view, setView] = useState<View>('approvals');
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100vh',
-        fontFamily: theme.font.body,
-        margin: 0,
-      }}
-    >
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-          padding: '0 16px',
-          height: 52,
-          borderBottom: `1px solid ${theme.color.border}`,
-          background: theme.color.surface,
-          flexShrink: 0,
-        }}
-      >
-        <h1
-          style={{
-            margin: '0 16px 0 0',
-            fontSize: 15,
-            fontWeight: 600,
-            letterSpacing: '0.01em',
-            color: theme.color.text,
-          }}
-        >
+    <div className="flex h-screen flex-col bg-bg">
+      <header className="flex h-13 shrink-0 items-center gap-1 border-b border-line bg-surface px-4">
+        <h1 className="mr-4 text-[15px] font-semibold tracking-wide">
           电商运营台
         </h1>
-        <nav style={{ display: 'flex', gap: 4 }}>
+        <nav className="flex gap-1">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.key}
               onClick={() => setView(item.key)}
-              style={{
-                padding: '6px 14px',
-                border: 'none',
-                borderRadius: theme.radius.sm,
-                cursor: 'pointer',
-                fontSize: 13,
-                background:
-                  view === item.key ? theme.color.brandSoft : 'transparent',
-                color:
-                  view === item.key
-                    ? theme.color.brand
-                    : theme.color.textSecondary,
-              }}
+              className={`cursor-pointer rounded-lg px-3.5 py-1.5 text-[13px] transition-colors ${
+                view === item.key
+                  ? 'bg-brand-soft font-medium text-brand'
+                  : 'text-ink-2 hover:bg-surface-2'
+              }`}
             >
               {item.label}
             </button>
           ))}
         </nav>
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontSize: 12,
-            fontFamily: theme.font.mono,
-            color: theme.color.textMuted,
-          }}
-        >
+        <span className="ml-auto font-mono text-xs text-ink-3">
           {getUsername()}
         </span>
+        <ThemeToggle />
         <NotificationBell />
         <button
           onClick={onLogout}
-          style={{
-            padding: '4px 10px',
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.sm,
-            background: 'transparent',
-            cursor: 'pointer',
-            fontSize: 12,
-            color: theme.color.textSecondary,
-          }}
+          className="cursor-pointer rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 transition-colors hover:bg-surface-2"
         >
           退出
         </button>
       </header>
 
       {view === 'cockpit' && (
-        <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        <div className="flex min-h-0 flex-1">
           <Cockpit onOpenApprovals={() => setView('approvals')} />
         </div>
       )}
       {view === 'drafting' && (
-        <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        <div className="flex min-h-0 flex-1">
           <DraftingWorkbench />
         </div>
       )}
       {view === 'approvals' && (
-        <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+        <div className="flex min-h-0 flex-1">
           <ApprovalCenter />
         </div>
       )}

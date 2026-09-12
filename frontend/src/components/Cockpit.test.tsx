@@ -66,9 +66,10 @@ describe('CsvImportCard(issue #30:窄栏下导入控件布局)', () => {
   it('控件纵向堆叠:选择框的固有宽度不再挤压文件输入', () => {
     render(<CsvImportCard />);
 
-    // 左栏宽 280px,选择框被最长选项文案撑到 202px;横排会把文件输入压成 42px 窄条
+    // 左栏宽 280px,选择框被最长选项文案撑到 202px;横排会把文件输入压成 42px 窄条。
+    // 2026-09 重绘:Tailwind 类替代内联样式,断言改查类名。
     const controls = screen.getByRole('combobox').parentElement as HTMLElement;
-    expect(controls.style.flexDirection).toBe('column');
+    expect(controls.className).toContain('flex-col');
   });
 
   it('导入路径照常:选类型 → 选文件 → 渲染行级报告', async () => {
@@ -87,5 +88,24 @@ describe('CsvImportCard(issue #30:窄栏下导入控件布局)', () => {
 
     expect(await screen.findByText(/新建 12 · 跳过 0 · 错误 0/)).toBeTruthy();
     expect(importCsvMock).toHaveBeenCalledWith('products', csv);
+  });
+
+  it('导入后重置文件输入 value:同名文件重选仍触发 change(走查缺陷:浏览器对同路径不派发 change)', async () => {
+    importCsvMock.mockResolvedValue({ created: 1, skipped: 0, errors: [] });
+    const { container } = render(<CsvImportCard />);
+    const fileInput = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    const file = new File(
+      ['sku,title,price,category\nDEMO-B,乙商品,2.00,家居'],
+      'products.csv',
+      { type: 'text/csv' },
+    );
+    const setterSpy = vi.spyOn(fileInput, 'value', 'set');
+
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(await screen.findByText(/新建 1 · 跳过 0 · 错误 0/)).toBeTruthy();
+    expect(setterSpy.mock.calls.some(([value]) => value === '')).toBe(true);
   });
 });

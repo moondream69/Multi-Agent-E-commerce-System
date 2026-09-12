@@ -2,16 +2,19 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTaskTerminalEvents } from '../hooks/useTaskTerminalEvents';
 import { fetchConversationMessages } from '../services/conversations';
 import { ConversationMessage, ConversationMessages } from '../types/events';
-import { theme } from '../theme';
 
-// —— 会话消息流(spec #20 A2 延伸):切会话即见当时聊了什么(用户原文 + 助手回复)——
+// —— 会话消息流(spec #20 A2 延伸 / 2026-09 重绘):切会话即见当时聊了什么 ——
 // 数据源 GET /api/conversations/{sessionId}/messages(原序=时间序);展示取最新在前,
 // 与任务列表/通知面板同惯例——进场无需滚动即见最近一句。实时性沿用现有任务终态事件重拉,
 // 本轮不新增 WS 事件。
 
-const ROLES: Record<string, { label: string; color: string }> = {
-  user: { label: '用户', color: theme.color.brand },
-  assistant: { label: '助手', color: theme.color.success },
+const ROLES: Record<string, { label: string; border: string; text: string }> = {
+  user: { label: '用户', border: 'border-l-brand', text: 'text-brand' },
+  assistant: {
+    label: '助手',
+    border: 'border-l-st-done',
+    text: 'text-st-done',
+  },
 };
 
 function shortId(id: string): string {
@@ -28,43 +31,22 @@ function formatTime(timestamp: string | null): string {
 function MessageRow({ message }: { message: ConversationMessage }) {
   const role = ROLES[message.role] ?? {
     label: message.role,
-    color: theme.color.textMuted,
+    border: 'border-l-line-strong',
+    text: 'text-ink-3',
   };
   const at = formatTime(message.timestamp);
   return (
     <div
-      style={{
-        background: theme.color.surface,
-        border: `1px solid ${theme.color.border}`,
-        borderLeft: `3px solid ${role.color}`,
-        borderRadius: theme.radius.sm,
-        padding: '9px 12px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4,
-      }}
+      className={`flex flex-col gap-1 rounded-lg border border-line border-l-[3px] bg-surface px-3 py-2.5 ${role.border}`}
     >
-      <span style={{ fontSize: 11, fontWeight: 600, color: role.color }}>
+      <span className={`text-[11px] font-semibold ${role.text}`}>
         {role.label}
       </span>
-      <span
-        style={{
-          fontSize: 13,
-          color: theme.color.text,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}
-      >
+      <span className="text-[13px] break-words whitespace-pre-wrap">
         {message.content}
       </span>
       {(message.taskId || at) && (
-        <span
-          style={{
-            fontSize: 10,
-            fontFamily: theme.font.mono,
-            color: theme.color.textMuted,
-          }}
-        >
+        <span className="font-mono text-[10px] text-ink-3">
           {message.taskId && `任务 ${shortId(message.taskId)} · `}
           {at}
         </span>
@@ -103,62 +85,28 @@ export function SessionMessages({ sessionId }: { sessionId: string }) {
   const messages = stream ? [...stream.messages].reverse() : [];
 
   return (
-    <div
-      style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 20px' }}
-    >
-      <div
-        style={{
-          fontSize: 13,
-          fontFamily: theme.font.mono,
-          color: theme.color.textMuted,
-          marginBottom: 4,
-        }}
-      >
+    <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div className="mb-1 font-mono text-xs text-ink-3">
         会话消息
         {stream && ` · ${stream.conversation.messageCount} 条`}
       </div>
-      <div
-        style={{
-          fontSize: 12,
-          color: theme.color.textMuted,
-          marginBottom: 12,
-        }}
-      >
+      <div className="mb-3 text-xs text-ink-3">
         点左侧任务卡查看该任务的切片时间线;点会话名回到这里。
       </div>
       {error && (
-        <div
-          style={{
-            marginBottom: 12,
-            padding: '8px 12px',
-            background: theme.color.dangerBg,
-            border: `1px solid ${theme.color.danger}`,
-            borderRadius: theme.radius.sm,
-            color: theme.color.danger,
-            fontSize: 13,
-          }}
-        >
+        <div className="mb-3 rounded-lg border border-st-failed/40 bg-st-failed-bg px-3 py-2 text-[13px] text-st-failed">
           消息流加载失败:{error}
         </div>
       )}
       {stream === undefined && !error && (
-        <div style={{ fontSize: 13, color: theme.color.textMuted }}>
-          加载中…
-        </div>
+        <div className="text-[13px] text-ink-3">加载中…</div>
       )}
       {stream !== undefined && messages.length === 0 && (
-        <div style={{ fontSize: 13, color: theme.color.textMuted }}>
+        <div className="text-[13px] text-ink-3">
           该会话暂无对话记录。在左侧输入需求即可开始。
         </div>
       )}
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 8,
-          maxWidth: 560,
-        }}
-      >
+      <div className="flex max-w-[620px] flex-col gap-2">
         {messages.map((message, index) => (
           <MessageRow key={index} message={message} />
         ))}

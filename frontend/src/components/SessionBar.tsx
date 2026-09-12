@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { ConversationMeta } from '../types/events';
-import { theme } from '../theme';
 
-// —— 会话切换条(A2):新建/切换/删除/重命名;当前会话高亮,空白会话显示为「新会话」——
+// —— 会话切换条(A2 / 2026-09 重绘):新建/切换/删除/重命名;当前会话高亮 ——
 
 interface Props {
   current: string;
@@ -31,56 +30,28 @@ function SessionRow({
 }) {
   return (
     <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 4,
-        borderLeft: `3px solid ${active ? theme.color.brand : 'transparent'}`,
-        background: active ? theme.color.brandSoft : 'transparent',
-      }}
+      className={`group flex items-center gap-1 border-l-[3px] pr-1 transition-colors ${
+        active
+          ? 'border-brand bg-brand-soft'
+          : 'border-transparent hover:bg-surface-2'
+      }`}
     >
       <button
         onClick={onClick}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          padding: '6px 9px',
-          border: 'none',
-          background: 'transparent',
-          cursor: 'pointer',
-          textAlign: 'left',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 2,
-        }}
+        className="flex min-w-0 flex-1 cursor-pointer flex-col gap-0.5 px-2.5 py-1.5 text-left"
       >
         <span
-          style={{
-            fontSize: 12,
-            color: active ? theme.color.brand : theme.color.text,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
+          className={`truncate text-xs ${active ? 'font-medium text-brand' : 'text-ink'}`}
         >
           {title}
         </span>
-        <span style={{ fontSize: 10, color: theme.color.textMuted }}>
-          {subtitle}
-        </span>
+        <span className="text-[10px] text-ink-3">{subtitle}</span>
       </button>
       {onRename && (
         <button
           onClick={onRename}
           title="重命名会话"
-          style={{
-            border: 'none',
-            background: 'transparent',
-            cursor: 'pointer',
-            fontSize: 12,
-            color: theme.color.textMuted,
-            padding: '2px 4px',
-          }}
+          className="cursor-pointer rounded px-1 py-0.5 text-xs text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
         >
           ✎
         </button>
@@ -89,14 +60,7 @@ function SessionRow({
         <button
           onClick={onDelete}
           title="删除会话"
-          style={{
-            border: 'none',
-            background: 'transparent',
-            cursor: 'pointer',
-            fontSize: 12,
-            color: theme.color.textMuted,
-            padding: '2px 8px',
-          }}
+          className="cursor-pointer rounded px-1.5 py-0.5 text-xs text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:text-st-failed"
         >
           ×
         </button>
@@ -127,132 +91,81 @@ export function SessionBar({
   };
 
   return (
-    <div
-      style={{
-        padding: '10px 0 6px',
-        borderBottom: `1px solid ${theme.color.border}`,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 2,
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '0 14px 6px',
-        }}
-      >
-        <span
-          style={{ fontSize: 13, fontWeight: 600, color: theme.color.text }}
-        >
-          会话
-        </span>
+    <div className="flex flex-col gap-0.5 border-b border-line pb-1.5">
+      <div className="flex items-center px-3.5 pt-3 pb-1.5">
+        <span className="text-[13px] font-semibold">会话</span>
         <button
           onClick={onNew}
-          style={{
-            marginLeft: 'auto',
-            padding: '3px 10px',
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.sm,
-            background: theme.color.surface,
-            cursor: 'pointer',
-            fontSize: 12,
-            color: theme.color.textSecondary,
-          }}
+          className="ml-auto cursor-pointer rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink-2 transition-colors hover:border-brand/40 hover:bg-brand-soft hover:text-brand"
         >
           + 新建
         </button>
       </div>
-      {renaming ? (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-            padding: '2px 8px 2px 3px',
-            borderLeft: `3px solid ${theme.color.brand}`,
-            background: theme.color.brandSoft,
-          }}
-        >
-          <input
-            autoFocus
-            value={draft}
-            maxLength={50}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                commitRename();
-              }
-              if (event.key === 'Escape') setRenaming(false);
-            }}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              padding: '5px 8px',
-              border: `1px solid ${theme.color.border}`,
-              borderRadius: theme.radius.sm,
-              fontSize: 12,
-            }}
-          />
-          <button
-            onClick={commitRename}
-            disabled={!draft.trim()}
-            title="提交重命名"
-            style={{
-              border: 'none',
-              background: 'transparent',
-              cursor: draft.trim() ? 'pointer' : 'not-allowed',
-              fontSize: 12,
-              color: draft.trim() ? theme.color.brand : theme.color.textMuted,
-              padding: '2px 8px',
-            }}
-          >
-            ✓
-          </button>
-        </div>
-      ) : (
-        <SessionRow
-          title={currentMeta?.title || '新会话'}
-          subtitle={
-            currentMeta
-              ? `${currentMeta.messageCount} 条消息`
-              : '尚未发言(惰性落库)'
-          }
-          active
-          onClick={() => onSelect(current)}
-          onDelete={() => onDelete(current)}
-          onRename={
-            currentMeta
-              ? () => {
-                  setDraft(currentMeta.title || '');
-                  setRenaming(true);
+      {/* 会话列表限高内滚:会话多时不挤占下方 Manager/导入/任务区(首屏走查:layout 溢出) */}
+      <div className="flex max-h-[240px] flex-col gap-0.5 overflow-y-auto">
+        {renaming ? (
+          <div className="flex items-center gap-1 border-l-[3px] border-brand bg-brand-soft px-2 py-0.5">
+            <input
+              autoFocus
+              value={draft}
+              maxLength={50}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  commitRename();
                 }
-              : undefined
-          }
-        />
-      )}
-      {others.map((item) => (
-        <SessionRow
-          key={item.sessionId}
-          title={item.title || '(无标题)'}
-          subtitle={`${item.messageCount} 条消息`}
-          active={false}
-          onClick={() => onSelect(item.sessionId)}
-          onDelete={() => onDelete(item.sessionId)}
-        />
-      ))}
+                if (event.key === 'Escape') setRenaming(false);
+              }}
+              className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-xs outline-none focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25"
+            />
+            <button
+              onClick={commitRename}
+              disabled={!draft.trim()}
+              title="提交重命名"
+              className={`px-2 py-0.5 text-xs ${
+                draft.trim()
+                  ? 'cursor-pointer text-brand'
+                  : 'cursor-not-allowed text-ink-3'
+              }`}
+            >
+              ✓
+            </button>
+          </div>
+        ) : (
+          <SessionRow
+            title={currentMeta?.title || '新会话'}
+            subtitle={
+              currentMeta
+                ? `${currentMeta.messageCount} 条消息`
+                : '尚未发言(惰性落库)'
+            }
+            active
+            onClick={() => onSelect(current)}
+            onDelete={() => onDelete(current)}
+            onRename={
+              currentMeta
+                ? () => {
+                    setDraft(currentMeta.title || '');
+                    setRenaming(true);
+                  }
+                : undefined
+            }
+          />
+        )}
+        {others.map((item) => (
+          <SessionRow
+            key={item.sessionId}
+            title={item.title || '(无标题)'}
+            subtitle={`${item.messageCount} 条消息`}
+            active={false}
+            onClick={() => onSelect(item.sessionId)}
+            onDelete={() => onDelete(item.sessionId)}
+          />
+        ))}
+      </div>
       {error && (
-        <div
-          style={{
-            padding: '4px 14px 0',
-            fontSize: 11,
-            color: theme.color.danger,
-          }}
-        >
-          {error}
-        </div>
+        <div className="px-3.5 pt-1 text-[11px] text-st-failed">{error}</div>
       )}
     </div>
   );

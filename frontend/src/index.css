@@ -1,9 +1,160 @@
-/* 全局样式:去掉 body 默认 margin(否则 100vh 布局溢出产生无用的外层滚动条) */
-html,
-body {
-  margin: 0;
-  height: 100%;
+@import 'tailwindcss';
+@import '@fontsource-variable/space-grotesk';
+
+/* ============================================================
+   设计系统 v2(2026-09 重绘):冷瓷白 + 深墨 + 松玉绿
+   双主题:变量驱动,`.dark` 挂 <html>;状态六色 = 全站语义基石。
+   ============================================================ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #f5f7f9;
+  --surface: #ffffff;
+  --surface-2: #fafbfc;
+  --border: #e4e8ed;
+  --border-strong: #ccd3dc;
+  --text: #16181d;
+  --text-2: #566070;
+  --text-3: #8a93a1;
+  --brand: #0e7a5b;
+  --brand-soft: #e3f2ec;
+  --brand-contrast: #ffffff;
+  --elev-card: 0 1px 2px rgb(16 18 23 / 0.05), 0 12px 32px -16px rgb(16 18 23 / 0.14);
+  --elev-pop: 0 4px 12px rgb(16 18 23 / 0.08), 0 24px 48px -24px rgb(16 18 23 / 0.24);
+  /* 状态六色(前景/底色):待命 规划 执行 审批 完成 失败 */
+  --st-idle: #7d8695;
+  --st-idle-bg: #eef1f4;
+  --st-planning: #5d51c9;
+  --st-planning-bg: #edebfa;
+  --st-running: #1f6feb;
+  --st-running-bg: #e8f1fd;
+  --st-approval: #b45309;
+  --st-approval-bg: #fdf1dc;
+  --st-done: #0e7a5b;
+  --st-done-bg: #e3f2ec;
+  --st-failed: #c2324a;
+  --st-failed-bg: #fbe9ed;
+  /* 协作管线 */
+  --pipe-line: #d5dbe3;
+  --pipe-flow: #1f6feb;
 }
-#root {
-  height: 100%;
+
+.dark {
+  --bg: #0b0d10;
+  --surface: #14171c;
+  --surface-2: #1a1e24;
+  --border: #262b33;
+  --border-strong: #39414d;
+  --text: #e9ebef;
+  --text-2: #a6aeb9;
+  --text-3: #6f7885;
+  --brand: #2fbf90;
+  --brand-soft: #12352a;
+  --brand-contrast: #06231a;
+  --elev-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 16px 40px -20px rgb(0 0 0 / 0.6);
+  --elev-pop: 0 8px 24px rgb(0 0 0 / 0.5), 0 32px 64px -32px rgb(0 0 0 / 0.7);
+  --st-idle: #8b95a3;
+  --st-idle-bg: #1c2027;
+  --st-planning: #9a8cf5;
+  --st-planning-bg: #201d38;
+  --st-running: #63a1ff;
+  --st-running-bg: #142338;
+  --st-approval: #e3ad4d;
+  --st-approval-bg: #322614;
+  --st-done: #2fbf90;
+  --st-done-bg: #12352a;
+  --st-failed: #f2687f;
+  --st-failed-bg: #371a21;
+  --pipe-line: #2c333d;
+  --pipe-flow: #63a1ff;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-contrast: var(--brand-contrast);
+  --color-st-idle: var(--st-idle);
+  --color-st-idle-bg: var(--st-idle-bg);
+  --color-st-planning: var(--st-planning);
+  --color-st-planning-bg: var(--st-planning-bg);
+  --color-st-running: var(--st-running);
+  --color-st-running-bg: var(--st-running-bg);
+  --color-st-approval: var(--st-approval);
+  --color-st-approval-bg: var(--st-approval-bg);
+  --color-st-done: var(--st-done);
+  --color-st-done-bg: var(--st-done-bg);
+  --color-st-failed: var(--st-failed);
+  --color-st-failed-bg: var(--st-failed-bg);
+  --color-pipe-line: var(--pipe-line);
+  --color-pipe-flow: var(--pipe-flow);
+
+  --font-sans:
+    'Space Grotesk Variable', system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+
+  --radius-card: 12px;
+  --shadow-card: var(--elev-card);
+  --shadow-pop: var(--elev-pop);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 数据质感:数字统一等宽对齐,更新时不跳动 */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* —— 氛围动效(组件级编排走 motion;这里放持续性的环境态) —— */
+
+/* 等待审批:呼吸提示「需要你」 */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.animate-breathe {
+  animation: breathe 1.8s ease-in-out infinite;
+}
+
+/* 执行中:管线流动(虚线顺流) */
+@keyframes flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+.animate-flow {
+  animation: flow 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-breathe,
+  .animate-flow {
+    animation: none;
+  }
 }
