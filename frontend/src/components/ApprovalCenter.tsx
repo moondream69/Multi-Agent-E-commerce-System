@@ -10,9 +10,14 @@ import {
   ApprovalActionSnapshot,
   ApprovalBatch,
   ApprovalBatchStatus,
+  SlicePlanSlice,
+  ThreadPlan,
 } from '../types/events';
-import { theme } from '../theme';
-import { ORDER_STATUS_LABELS } from '../labels';
+import {
+  AGENT_LABELS,
+  ORDER_STATUS_LABELS,
+  PRODUCT_STATUS_LABELS,
+} from '../labels';
 
 // —— 参数/状态的台账标签(系统术语 → 中文台账口径)——
 // 动作标签由 GET /api/actions 提供(spec #8 注册表单一化,不再硬编码)。
@@ -22,12 +27,6 @@ const PARAM_LABELS: Record<string, string> = {
   order_id: '订单',
   new_price: '新价格',
   to_status: '目标状态',
-};
-
-const PRODUCT_STATUS_LABELS: Record<string, string> = {
-  draft: '草稿',
-  active: '在售',
-  inactive: '已下架',
 };
 
 const STATUS_LABELS: Record<ApprovalBatchStatus, string> = {
@@ -56,8 +55,6 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-// —— 批次卡:状态脊线 + 流水号 + 动作台账 ——
-
 function displayValue(value: unknown): string {
   if (
     typeof value === 'string' ||
@@ -69,6 +66,16 @@ function displayValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   return JSON.stringify(value);
 }
+
+// —— 批次卡:状态脊线 + 流水号 + 动作台账 ——
+
+/** 批次卡左侧脊线四态(尾随批次状态与已作决定;显式静态映射,勿动态拼类名)。 */
+const SPINE_CLASS: Record<'shadow' | 'approve' | 'reject' | 'idle', string> = {
+  shadow: 'bg-st-approval',
+  approve: 'bg-brand',
+  reject: 'bg-st-failed',
+  idle: 'bg-line-strong',
+};
 
 function ActionRow({
   item,
@@ -100,28 +107,18 @@ function ActionRow({
   const title = snapshot && 'title' in snapshot ? String(snapshot.title) : null;
 
   return (
-    <div style={{ padding: '10px 14px 10px 22px' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
-        <span
-          style={{ fontSize: 13, color: theme.color.text, fontWeight: 500 }}
-        >
+    <div className="py-2.5 pr-3.5 pl-[22px]">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[13px] font-medium">
           {title ?? actionLabel(item.action, labels)}
         </span>
-        <span
-          style={{
-            fontSize: 11,
-            fontFamily: theme.font.mono,
-            color: theme.color.textMuted,
-          }}
-        >
+        <span className="font-mono text-[11px] text-ink-3">
           {params
             .map(([key, value]) => `${paramLabel(key)} ${displayValue(value)}`)
             .join(' · ')}
         </span>
       </div>
-      <div
-        style={{ marginTop: 3, fontSize: 12, color: theme.color.textSecondary }}
-      >
+      <div className="mt-0.5 text-xs text-ink-2">
         {baseline ? `现状 ${baseline}` : ''}
         {baseline && target ? ' ' : ''}
         {target}
@@ -154,70 +151,36 @@ function BatchCard({
 }) {
   const isShadow = batch.mode === 'shadow';
   const spine = isShadow
-    ? theme.color.warning
+    ? SPINE_CLASS.shadow
     : decision === 'approve'
-      ? theme.color.brand
+      ? SPINE_CLASS.approve
       : decision === 'reject'
-        ? theme.color.danger
-        : theme.color.border;
+        ? SPINE_CLASS.reject
+        : SPINE_CLASS.idle;
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        background: theme.color.surface,
-        border: `1px solid ${theme.color.border}`,
-        borderRadius: theme.radius.md,
-        boxShadow: theme.shadow.card,
-        overflow: 'hidden',
-      }}
-    >
-      <div style={{ width: 4, background: spine, flexShrink: 0 }} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '8px 14px 0',
-          }}
-        >
-          <span
-            style={{
-              fontSize: 11,
-              fontFamily: theme.font.mono,
-              color: theme.color.textMuted,
-            }}
-          >
+    <div className="flex overflow-hidden rounded-card border border-line bg-surface">
+      <div className={`w-1 shrink-0 ${spine}`} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 px-3.5 pt-2">
+          <span className="font-mono text-[11px] text-ink-3">
             #{shortId(batch.batchId)}
           </span>
           <span
-            style={{
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: '0.02em',
-              padding: '2px 8px',
-              borderRadius: theme.radius.sm,
-              background: isShadow
-                ? theme.color.warningBg
-                : theme.color.brandSoft,
-              color: isShadow ? theme.color.warning : theme.color.brand,
-            }}
+            className={`rounded-md px-2 py-0.5 text-[11px] font-semibold tracking-[0.02em] ${
+              isShadow
+                ? 'bg-st-approval-bg text-st-approval'
+                : 'bg-brand-soft text-brand'
+            }`}
           >
             {actionLabel(batch.actionType, labels)}
           </span>
           {isShadow && (
-            <span style={{ fontSize: 11, color: theme.color.warning }}>
+            <span className="text-[11px] text-st-approval">
               影子段 · 未执行
             </span>
           )}
-          <span
-            style={{
-              marginLeft: 'auto',
-              fontSize: 11,
-              color: theme.color.textMuted,
-            }}
-          >
+          <span className="ml-auto text-[11px] text-ink-3">
             {STATUS_LABELS[batch.status]}
           </span>
         </div>
@@ -228,31 +191,12 @@ function BatchCard({
             labels={labels}
           />
         ))}
-        <div
-          style={{
-            display: 'flex',
-            gap: 8,
-            alignItems: 'center',
-            padding: '0 14px 12px',
-            borderTop: `1px solid ${theme.color.border}`,
-            paddingTop: 10,
-            marginTop: 2,
-          }}
-        >
+        <div className="mt-0.5 flex items-center gap-2 border-t border-line px-3.5 pt-2.5 pb-3">
           {isShadow ? (
             <button
               onClick={onExecute}
               disabled={busy}
-              style={{
-                padding: '6px 16px',
-                border: 'none',
-                borderRadius: theme.radius.sm,
-                background: theme.color.warning,
-                color: '#fff',
-                cursor: busy ? 'not-allowed' : 'pointer',
-                fontSize: 13,
-                opacity: busy ? 0.6 : 1,
-              }}
+              className="cursor-pointer rounded-lg border border-st-approval/40 bg-st-approval-bg px-4 py-1.5 text-[13px] font-medium text-st-approval transition-colors hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busy ? '执行中…' : '补执行'}
             </button>
@@ -262,49 +206,27 @@ function BatchCard({
                 value={comment}
                 onChange={(event) => onComment(event.target.value)}
                 placeholder="备注(可选)"
-                style={{
-                  flex: 1,
-                  padding: '6px 10px',
-                  border: `1px solid ${theme.color.border}`,
-                  borderRadius: theme.radius.sm,
-                  fontSize: 13,
-                  background: theme.color.bg,
-                  color: theme.color.text,
-                }}
+                className="min-w-0 flex-1 rounded-lg border border-line bg-bg px-2.5 py-1.5 text-[13px] outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25"
               />
               <button
                 onClick={() => onDecision('reject')}
                 disabled={busy}
-                style={{
-                  padding: '6px 16px',
-                  border: `1px solid ${theme.color.danger}`,
-                  borderRadius: theme.radius.sm,
-                  background:
-                    decision === 'reject' ? theme.color.danger : 'transparent',
-                  color: decision === 'reject' ? '#fff' : theme.color.danger,
-                  cursor: busy ? 'not-allowed' : 'pointer',
-                  fontSize: 13,
-                  opacity: busy ? 0.6 : 1,
-                }}
+                className={`cursor-pointer rounded-lg border px-4 py-1.5 text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  decision === 'reject'
+                    ? 'border-st-failed bg-st-failed-bg font-medium text-st-failed'
+                    : 'border-st-failed/50 text-st-failed hover:bg-st-failed-bg'
+                }`}
               >
                 拒绝
               </button>
               <button
                 onClick={() => onDecision('approve')}
                 disabled={busy}
-                style={{
-                  padding: '6px 16px',
-                  border: 'none',
-                  borderRadius: theme.radius.sm,
-                  background:
-                    decision === 'approve'
-                      ? theme.color.brand
-                      : theme.color.brandSoft,
-                  color: decision === 'approve' ? '#fff' : theme.color.brand,
-                  cursor: busy ? 'not-allowed' : 'pointer',
-                  fontSize: 13,
-                  opacity: busy ? 0.6 : 1,
-                }}
+                className={`cursor-pointer rounded-lg border px-4 py-1.5 text-[13px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  decision === 'approve'
+                    ? 'border-brand bg-brand font-medium text-brand-contrast'
+                    : 'border-brand/40 bg-brand-soft text-brand hover:brightness-105'
+                }`}
               >
                 批准
               </button>
@@ -316,10 +238,61 @@ function BatchCard({
   );
 }
 
+// —— 任务上下文 + 后续计划预览(ADR-0005;spec #34)——
+
+/** 计划切片 chip 三态:已过(灰)/ 当前(审批色高亮)/ 后续。 */
+function sliceChipClass(no: number, current: number): string {
+  if (no === current)
+    return 'border-st-approval/50 bg-st-approval-bg text-st-approval';
+  if (no < current) return 'border-line bg-surface-2 text-ink-3';
+  return 'border-line bg-surface text-ink-2';
+}
+
+function PlanPreview({
+  plan,
+  currentSlice,
+}: {
+  plan: ThreadPlan;
+  currentSlice: number;
+}) {
+  return (
+    <div className="mb-2.5 rounded-lg border border-line bg-surface-2 px-3 py-2">
+      <div className="flex items-baseline gap-2">
+        <span className="shrink-0 text-[11px] text-ink-3">原始需求</span>
+        <span
+          className="truncate text-xs text-ink"
+          title={plan.request ?? undefined}
+        >
+          {plan.request ?? '(无请求文本)'}
+        </span>
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        <span className="shrink-0 text-[11px] text-ink-3">切片计划</span>
+        {plan.plan.slices.map((slice: SlicePlanSlice) => (
+          <span
+            key={slice.no}
+            title={
+              slice.depends_on.length > 0
+                ? `依赖段 ${slice.depends_on.join(', ')}`
+                : slice.description
+            }
+            className={`rounded-md border px-1.5 py-0.5 text-[11px] ${sliceChipClass(slice.no, currentSlice)}`}
+          >
+            <span className="font-mono">{slice.no}</span>{' '}
+            {AGENT_LABELS[slice.agent] ?? slice.agent}
+            {slice.no === currentSlice && ' · 本批'}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // —— 审批中心视图 ——
 
 export function ApprovalCenter() {
   const [batches, setBatches] = useState<ApprovalBatch[]>([]);
+  const [plans, setPlans] = useState<Record<string, ThreadPlan>>({});
   const [error, setError] = useState<string | null>(null);
   const [actionLabels, setActionLabels] = useState<Record<string, string>>({});
   const [decisions, setDecisions] = useState<
@@ -344,8 +317,9 @@ export function ApprovalCenter() {
 
   const refresh = useCallback(() => {
     fetchOpenApprovals()
-      .then((rows) => {
-        setBatches(rows);
+      .then((body) => {
+        setBatches(body.approvals);
+        setPlans(body.plans);
         setError(null);
       })
       .catch((reason: unknown) => {
@@ -422,96 +396,36 @@ export function ApprovalCenter() {
   };
 
   return (
-    <div
-      style={{
-        flex: 1,
-        minHeight: 0,
-        overflow: 'auto',
-        background: theme.color.bg,
-        padding: '20px 24px 32px',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          gap: 12,
-          maxWidth: 760,
-          margin: '0 auto 16px',
-        }}
-      >
-        <h2
-          style={{
-            margin: 0,
-            fontSize: 17,
-            fontWeight: 600,
-            color: theme.color.text,
-          }}
-        >
-          审批中心
-        </h2>
-        <span style={{ fontSize: 12, color: theme.color.textSecondary }}>
-          待批 {pendingCount}
-        </span>
+    <div className="min-h-0 flex-1 overflow-auto px-6 pt-5 pb-8">
+      <div className="mx-auto mb-4 flex max-w-[760px] items-baseline gap-3">
+        <h2 className="m-0 text-[17px] font-semibold">审批中心</h2>
+        <span className="text-xs text-ink-2">待批 {pendingCount}</span>
         {shadowCount > 0 && (
-          <span style={{ fontSize: 12, color: theme.color.warning }}>
-            影子 {shadowCount}
-          </span>
+          <span className="text-xs text-st-approval">影子 {shadowCount}</span>
         )}
         <span
-          style={{
-            marginLeft: 'auto',
-            fontSize: 12,
-            fontFamily: theme.font.mono,
-            color: connected ? theme.color.success : theme.color.textMuted,
-          }}
+          className={`ml-auto font-mono text-xs ${connected ? 'text-st-done' : 'text-ink-3'}`}
         >
           {connected ? '实时通道已连接' : '实时通道未连接'}
         </span>
       </div>
 
       {error && (
-        <div
-          style={{
-            maxWidth: 760,
-            margin: '0 auto 12px',
-            padding: '10px 14px',
-            border: `1px solid ${theme.color.danger}`,
-            borderRadius: theme.radius.sm,
-            background: theme.color.dangerBg,
-            color: theme.color.danger,
-            fontSize: 13,
-          }}
-        >
+        <div className="mx-auto mb-3 max-w-[760px] rounded-lg border border-st-failed/40 bg-st-failed-bg px-3.5 py-2.5 text-[13px] text-st-failed">
           {error}
         </div>
       )}
 
       {batches.length === 0 && !error && (
-        <div
-          style={{
-            maxWidth: 760,
-            margin: '64px auto',
-            textAlign: 'center',
-            color: theme.color.textMuted,
-            fontSize: 14,
-          }}
-        >
+        <div className="mx-auto mt-16 max-w-[760px] text-center text-sm text-ink-3">
           暂无待批事项。新的审批会实时出现在这里。
         </div>
       )}
 
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-          maxWidth: 760,
-          margin: '0 auto',
-        }}
-      >
+      <div className="mx-auto flex max-w-[760px] flex-col gap-4">
         {[...byThread.entries()].map(([threadId, threadBatches]) => {
           const first = threadBatches[0];
+          const plan = plans[threadId];
           const approvalBatches = threadBatches.filter(
             (b) => b.mode === 'approval' && b.status === 'pending',
           );
@@ -519,65 +433,28 @@ export function ApprovalCenter() {
           return (
             <section
               key={threadId}
-              style={{
-                background: theme.color.surface,
-                border: `1px solid ${theme.color.border}`,
-                borderRadius: theme.radius.md,
-                padding: '12px 14px 14px',
-              }}
+              className="rounded-card border border-line bg-surface p-3.5 shadow-card"
             >
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  alignItems: 'baseline',
-                  marginBottom: 10,
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontFamily: theme.font.mono,
-                    color: theme.color.textMuted,
-                  }}
-                >
+              <div className="mb-2.5 flex items-baseline gap-2">
+                <span className="font-mono text-[11px] text-ink-3">
                   任务 {shortId(threadId)}
                 </span>
-                <span
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 500,
-                    color: theme.color.text,
-                  }}
-                >
+                <span className="text-[13px] font-medium">
                   切片 {first.sliceNo}
                 </span>
-                <span
-                  style={{ fontSize: 12, color: theme.color.textSecondary }}
-                >
-                  {first.actionType}
+                <span className="text-xs text-ink-2">
+                  {actionLabel(first.actionType, actionLabels)}
                 </span>
               </div>
+              {/* 任务上下文 + 后续计划预览(ADR-0005):无任务行/无计划时不渲染该区 */}
+              {plan && <PlanPreview plan={plan} currentSlice={first.sliceNo} />}
               {typeof first.runOutput?.answer === 'string' &&
                 first.runOutput.answer.trim() !== '' && (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: theme.color.textSecondary,
-                      margin: '0 0 10px',
-                      background: theme.color.bg,
-                      border: `1px solid ${theme.color.border}`,
-                      borderRadius: theme.radius.sm,
-                      padding: '8px 10px',
-                      whiteSpace: 'pre-wrap',
-                    }}
-                  >
+                  <div className="mb-2.5 rounded-lg border border-line bg-bg px-2.5 py-2 text-xs whitespace-pre-wrap text-ink-2">
                     {first.runOutput.answer}
                   </div>
                 )}
-              <div
-                style={{ display: 'flex', flexDirection: 'column', gap: 10 }}
-              >
+              <div className="flex flex-col gap-2.5">
                 {threadBatches.map((batch) => (
                   <BatchCard
                     key={batch.batchId}
@@ -605,29 +482,11 @@ export function ApprovalCenter() {
                 ))}
               </div>
               {approvalBatches.length > 0 && (
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'flex-end',
-                    marginTop: 10,
-                  }}
-                >
+                <div className="mt-2.5 flex justify-end">
                   <button
                     onClick={() => void submitThread(threadId, threadBatches)}
                     disabled={!allDecided || busyThread === threadId}
-                    style={{
-                      padding: '8px 20px',
-                      border: 'none',
-                      borderRadius: theme.radius.sm,
-                      background: theme.color.brand,
-                      color: '#fff',
-                      cursor:
-                        allDecided && busyThread !== threadId
-                          ? 'pointer'
-                          : 'not-allowed',
-                      fontSize: 13,
-                      opacity: allDecided ? 1 : 0.5,
-                    }}
+                    className="cursor-pointer rounded-lg bg-brand px-5 py-2 text-[13px] font-medium text-brand-contrast transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {busyThread === threadId
                       ? '提交中…'

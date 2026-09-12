@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTaskTerminalEvents } from '../hooks/useTaskTerminalEvents';
 import { closeTicket, fetchTickets } from '../services/tickets';
 import { TicketItem } from '../types/events';
-import { theme } from '../theme';
 
 /** 工单时间落款(月-日 时:分;缺值留空)。 */
 function shortTime(value: string | null): string {
@@ -51,114 +50,57 @@ export function TicketList() {
   const openCount = tickets.filter((ticket) => ticket.status === 'open').length;
 
   return (
-    <div
-      style={{
-        borderTop: `1px solid ${theme.color.border}`,
-        padding: '10px 16px 6px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 6,
-        maxHeight: 200,
-        minHeight: 0,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span
-          style={{ fontSize: 13, fontWeight: 600, color: theme.color.text }}
-        >
-          升级工单
-        </span>
-        <span style={{ fontSize: 11, color: theme.color.textMuted }}>
+    <div className="flex max-h-[200px] min-h-0 flex-col gap-1.5 border-t border-line px-4 pt-2.5 pb-1.5">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[13px] font-semibold">升级工单</span>
+        <span className="text-[11px] text-ink-3">
           未结 {openCount} / 共 {tickets.length}
         </span>
       </div>
-      {error && (
-        <div style={{ fontSize: 12, color: theme.color.danger }}>{error}</div>
-      )}
-      <div
-        style={{
-          overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
-          minHeight: 0,
-        }}
-      >
+      {error && <div className="text-xs text-st-failed">{error}</div>}
+      <div className="flex min-h-0 flex-col gap-1 overflow-y-auto">
         {tickets.length === 0 && (
-          <div style={{ fontSize: 12, color: theme.color.textMuted }}>
+          <div className="text-xs text-ink-3">
             暂无工单(客服升级人工后出现在这里)
           </div>
         )}
-        {tickets.map((ticket) => (
-          <div
-            key={ticket.ticketId}
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 6,
-              fontSize: 12,
-              padding: '4px 8px',
-              border: `1px solid ${theme.color.border}`,
-              borderRadius: theme.radius.sm,
-              background:
-                ticket.status === 'open' ? theme.color.surface : theme.color.bg,
-            }}
-          >
-            <span
-              style={{
-                whiteSpace: 'nowrap',
-                color:
-                  ticket.status === 'open'
-                    ? theme.color.warning
-                    : theme.color.textMuted,
-              }}
+        {tickets.map((ticket) => {
+          const open = ticket.status === 'open';
+          return (
+            <div
+              key={ticket.ticketId}
+              className={`flex items-baseline gap-1.5 rounded-lg border border-line px-2 py-1 text-xs ${
+                open ? 'bg-surface' : 'bg-surface-2'
+              }`}
             >
-              {ticket.status === 'open' ? '未结' : '已结'}
-            </span>
-            <span
-              title={ticket.message}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                color: theme.color.text,
-              }}
-            >
-              {ticket.message}
-            </span>
-            {ticket.customerName && (
               <span
-                style={{ color: theme.color.textMuted, whiteSpace: 'nowrap' }}
+                className={`shrink-0 ${open ? 'text-st-approval' : 'text-ink-3'}`}
               >
-                {ticket.customerName}
+                {open ? '未结' : '已结'}
               </span>
-            )}
-            <span
-              style={{ color: theme.color.textMuted, whiteSpace: 'nowrap' }}
-            >
-              {shortTime(ticket.createdAt)}
-            </span>
-            {ticket.status === 'open' && (
-              <button
-                onClick={() => void close(ticket.ticketId)}
-                title="结单(记录处理时间)"
-                style={{
-                  border: 'none',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  color: theme.color.brand,
-                  whiteSpace: 'nowrap',
-                  padding: 0,
-                }}
-              >
-                结单
-              </button>
-            )}
-          </div>
-        ))}
+              <span className="min-w-0 flex-1 truncate" title={ticket.message}>
+                {ticket.message}
+              </span>
+              {ticket.customerName && (
+                <span className="shrink-0 text-ink-3">
+                  {ticket.customerName}
+                </span>
+              )}
+              <span className="tnum shrink-0 text-ink-3">
+                {shortTime(ticket.createdAt)}
+              </span>
+              {open && (
+                <button
+                  onClick={() => void close(ticket.ticketId)}
+                  title="结单(记录处理时间)"
+                  className="shrink-0 cursor-pointer border-none bg-transparent p-0 text-xs text-brand hover:underline"
+                >
+                  结单
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

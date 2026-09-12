@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { TicketList } from './TicketList';
 import { draftReply } from '../services/drafting';
 import { DraftingEvidence } from '../types/events';
-import { theme } from '../theme';
 
 // —— 起草工作台(B11/B19 + A11):双栏——左买家消息+查证证据+升级工单、右可编辑多语草稿+一键复制 ——
 
@@ -14,6 +13,9 @@ const LOCALES: Array<{ code: string; label: string }> = [
   { code: 'fr', label: '法语' },
 ];
 
+const inputClass =
+  'rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[13px] outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25';
+
 function display(value: unknown): string {
   return typeof value === 'string' || typeof value === 'number'
     ? String(value)
@@ -23,7 +25,7 @@ function display(value: unknown): string {
 function EvidenceBlock({ evidence }: { evidence: DraftingEvidence | null }) {
   if (!evidence) {
     return (
-      <div style={{ fontSize: 12, color: theme.color.textMuted }}>
+      <div className="text-xs text-ink-3">
         生成草稿后,这里展示查证证据(FAQ 命中与订单信息)。
       </div>
     );
@@ -32,52 +34,23 @@ function EvidenceBlock({ evidence }: { evidence: DraftingEvidence | null }) {
   const order = evidence.order;
   const product = order?.product as Record<string, unknown> | undefined;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: theme.color.text }}>
-        查证证据
-      </div>
+    <div className="flex flex-col gap-2.5">
+      <div className="text-xs font-semibold">查证证据</div>
       {order ? (
-        <div
-          style={{
-            fontSize: 12,
-            padding: '8px 10px',
-            background: theme.color.successBg,
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.sm,
-            color: theme.color.textSecondary,
-          }}
-        >
+        <div className="rounded-lg border border-st-done/30 bg-st-done-bg px-2.5 py-2 text-xs text-ink-2">
           订单 #{display(order.id)} · 状态 {display(order.status)} · 金额{' '}
           {display(order.total_amount)} {display(order.currency)}
           {product ? ` · 商品 ${display(product.title)}` : ''}
         </div>
       ) : (
         evidence.order_id != null && (
-          <div
-            style={{
-              fontSize: 12,
-              padding: '8px 10px',
-              background: theme.color.warningBg,
-              border: `1px solid ${theme.color.border}`,
-              borderRadius: theme.radius.sm,
-              color: theme.color.warning,
-            }}
-          >
+          <div className="rounded-lg border border-st-approval/40 bg-st-approval-bg px-2.5 py-2 text-xs text-st-approval">
             订单 #{display(evidence.order_id)} 未查到(未编造)
           </div>
         )
       )}
       {faq.length === 0 ? (
-        <div
-          style={{
-            fontSize: 12,
-            padding: '8px 10px',
-            background: theme.color.warningBg,
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.sm,
-            color: theme.color.warning,
-          }}
-        >
+        <div className="rounded-lg border border-st-approval/40 bg-st-approval-bg px-2.5 py-2 text-xs text-st-approval">
           FAQ 未命中(未编造)
         </div>
       ) : (
@@ -86,18 +59,9 @@ function EvidenceBlock({ evidence }: { evidence: DraftingEvidence | null }) {
           return (
             <div
               key={hit.id}
-              style={{
-                fontSize: 12,
-                padding: '8px 10px',
-                background: theme.color.bg,
-                border: `1px solid ${theme.color.border}`,
-                borderRadius: theme.radius.sm,
-                color: theme.color.textSecondary,
-              }}
+              className="rounded-lg border border-line bg-surface-2 px-2.5 py-2 text-xs text-ink-2"
             >
-              <div style={{ color: theme.color.text }}>
-                Q:{display(payload.question)}
-              </div>
+              <div className="text-ink">Q:{display(payload.question)}</div>
               <div>A:{display(payload.answer)}</div>
             </div>
           );
@@ -148,58 +112,23 @@ export function DraftingWorkbench() {
   };
 
   return (
-    <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+    <div className="flex min-h-0 flex-1">
       {/* 左栏:买家消息 + 查证证据 */}
-      <div
-        style={{
-          width: 420,
-          flexShrink: 0,
-          borderRight: `1px solid ${theme.color.border}`,
-          background: theme.color.surface,
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
-        }}
-      >
-        <div
-          style={{
-            padding: '12px 16px',
-            borderBottom: `1px solid ${theme.color.border}`,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-          }}
-        >
-          <div
-            style={{ fontSize: 13, fontWeight: 600, color: theme.color.text }}
-          >
-            买家消息
-          </div>
+      <div className="flex w-[420px] shrink-0 flex-col border-r border-line bg-surface">
+        <div className="flex flex-col gap-2 border-b border-line px-4 py-3">
+          <div className="text-[13px] font-semibold">买家消息</div>
           <textarea
             value={message}
             onChange={(event) => setMessage(event.target.value)}
             placeholder="粘贴买家消息原文(任意语言)…"
             rows={5}
-            style={{
-              padding: '8px 10px',
-              border: `1px solid ${theme.color.border}`,
-              borderRadius: theme.radius.sm,
-              fontSize: 13,
-              resize: 'none',
-              fontFamily: 'inherit',
-            }}
+            className={`resize-none ${inputClass}`}
           />
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="flex gap-2">
             <select
               value={locale}
               onChange={(event) => setLocale(event.target.value)}
-              style={{
-                padding: '6px 8px',
-                border: `1px solid ${theme.color.border}`,
-                borderRadius: theme.radius.sm,
-                fontSize: 13,
-                background: theme.color.surface,
-              }}
+              className={inputClass}
             >
               {LOCALES.map((item) => (
                 <option key={item.code} value={item.code}>
@@ -211,80 +140,34 @@ export function DraftingWorkbench() {
               value={orderId}
               onChange={(event) => setOrderId(event.target.value)}
               placeholder="订单号(可选,用于查证)"
-              style={{
-                flex: 1,
-                padding: '6px 10px',
-                border: `1px solid ${theme.color.border}`,
-                borderRadius: theme.radius.sm,
-                fontSize: 13,
-              }}
+              className={`min-w-0 flex-1 ${inputClass}`}
             />
           </div>
           <button
             onClick={() => void generate()}
             disabled={busy || !message.trim()}
-            style={{
-              padding: '7px 0',
-              border: 'none',
-              borderRadius: theme.radius.sm,
-              background: theme.color.brand,
-              color: '#fff',
-              cursor: busy ? 'not-allowed' : 'pointer',
-              fontSize: 13,
-              opacity: busy || !message.trim() ? 0.6 : 1,
-            }}
+            className="cursor-pointer rounded-lg bg-brand py-2 text-[13px] font-medium text-brand-contrast transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? '查证与起草中…' : '生成草稿'}
           </button>
-          {error && (
-            <div style={{ fontSize: 12, color: theme.color.danger }}>
-              {error}
-            </div>
-          )}
+          {error && <div className="text-xs text-st-failed">{error}</div>}
         </div>
         <TicketList />
-        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <EvidenceBlock evidence={evidence} />
         </div>
       </div>
 
       {/* 右栏:可编辑草稿 + 一键复制 */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          background: theme.color.bg,
-        }}
-      >
-        <div
-          style={{
-            padding: '12px 16px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}
-        >
-          <div
-            style={{ fontSize: 13, fontWeight: 600, color: theme.color.text }}
-          >
-            回复草稿(可编辑)
-          </div>
+      <div className="flex min-w-0 flex-1 flex-col bg-bg">
+        <div className="flex items-center gap-2 px-4 py-3">
+          <div className="text-[13px] font-semibold">回复草稿(可编辑)</div>
           <button
             onClick={() => void copy()}
             disabled={!draft}
-            style={{
-              marginLeft: 'auto',
-              padding: '6px 16px',
-              border: 'none',
-              borderRadius: theme.radius.sm,
-              background: copied ? theme.color.success : theme.color.brand,
-              color: '#fff',
-              cursor: draft ? 'pointer' : 'not-allowed',
-              fontSize: 13,
-              opacity: draft ? 1 : 0.5,
-            }}
+            className={`ml-auto cursor-pointer rounded-lg px-4 py-1.5 text-[13px] font-medium text-brand-contrast transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+              copied ? 'bg-st-done' : 'bg-brand hover:brightness-110'
+            }`}
           >
             {copied ? '已复制' : '一键复制'}
           </button>
@@ -293,18 +176,7 @@ export function DraftingWorkbench() {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="草稿将显示在这里,可直接编辑后复制发出"
-          style={{
-            flex: 1,
-            margin: '0 16px 16px',
-            padding: '12px 14px',
-            border: `1px solid ${theme.color.border}`,
-            borderRadius: theme.radius.md,
-            background: theme.color.surface,
-            fontSize: 14,
-            lineHeight: 1.7,
-            resize: 'none',
-            fontFamily: 'inherit',
-          }}
+          className="mx-4 mb-4 min-h-0 flex-1 resize-none rounded-card border border-line bg-surface px-3.5 py-3 text-sm leading-[1.7] outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25"
         />
       </div>
     </div>

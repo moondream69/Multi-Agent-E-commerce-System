@@ -1,4 +1,4 @@
-import { ActionMeta, ApprovalBatch } from '../types/events';
+import { ActionMeta, ApprovalListResponse } from '../types/events';
 import { apiFetch } from './auth';
 
 const BASE = '/api';
@@ -11,12 +11,11 @@ export async function fetchActionMetadata(): Promise<ActionMeta[]> {
   return body.actions;
 }
 
-/** 全量未决批次(pending + shadow,审批中心数据源)。 */
-export async function fetchOpenApprovals(): Promise<ApprovalBatch[]> {
+/** 全量未决批次(pending + shadow)+ 线程级计划旁挂(审批中心数据源,spec #34)。 */
+export async function fetchOpenApprovals(): Promise<ApprovalListResponse> {
   const res = await apiFetch(`${BASE}/approvals`);
   if (!res.ok) throw new Error(await res.text());
-  const body = (await res.json()) as { approvals: ApprovalBatch[] };
-  return body.approvals;
+  return (await res.json()) as ApprovalListResponse;
 }
 
 /** 对某线程的全部挂起批次一次提交决定(缺一不可,后端 422 拒绝部分提交)。 */
