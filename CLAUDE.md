@@ -42,7 +42,7 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
 > ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
 > CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
-> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**250 passed / 62 skipped / 49 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂;`/api/products` 契约用例原离线 skip,现经替身常跑——故 skip 63→62;**62 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
+> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**255 passed / 64 skipped / 49 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂、#35 product_lookup(注入替身 5 例;另有 2 例 PG 实查离线时计 skip,故 62→64);`/api/products` 契约用例原离线 skip,现经替身常跑——故 skip 63→62;**64 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
 
 ## 技术栈
 
@@ -63,7 +63,7 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 | `ManagerPlanner` | `core/planning.py` | LLM 规划切片计划(≤5 步)+ 校验重试 + fallback 关键词路由;`AGENTS` 元组为业务域清单 |
 | 监督图 | `core/graph.py` | manager → prepare → 逐层 Send 扇出 → execute_slice(子图挂接/批次打包/interrupt/apply)→ 拒后回流重规划(REPLAN_LIMIT=2) |
 | 业务子图 | `agents/{product_research,order_management,customer_service}/` | ReAct 循环(10 步上限,B17);客服为结构化 verify→draft 两节点(图级查证优先,B12) |
-| `ToolExecutor` | `agents/executor.py` | auto 直行 / approval 收集参数快照 / `apply_batch_actions`(事务+行锁+快照比对,漂移整批回滚,B18) |
+| `ToolExecutor` | `agents/executor.py` | auto 直行 / approval 收集参数快照 / `apply_batch_actions`(事务+行锁+快照比对,漂移整批回滚,B18);构造注入位 = llm / vector / embedding / `ProductLookupStore`(#35 商品定位,`db/product_lookup.py`,生产默认 PG) |
 | 审批批次 | `core/approvals.py` + `db/approval_store.py` | 三层风险分类、`ApprovalBatchStore` 协议(create/decide 幂等,重放安全)、PG 实现 |
 | `VectorRepository` | `vector_repo/base.py` | 向量访问抽象(Milvus 实现,pgvector 可切换) |
 | 事件与观测 | `core/events.py` / `infrastructure/tracing.py` | `EventEmitter`(WS 事件;协作轨迹三事件 task.planned / slice.started / slice.completed 由图内发射,B23)/ `TaskTracer`(Langfuse 层级,B14) |
@@ -79,6 +79,8 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 ```
 选品  build_product_agent: trend_query / competitor_analysis / scoring / generate_report / draft_create(报告→自动草稿,A4)
 订单  build_order_agent: 只读与 draft 编辑免审;上架/下架/改价/删除/订单流转/取消进审批(效果后置)
+      定位 product_lookup(SKU/标题→ID,免审直行,#35;多候选须列候选澄清)——切片 Send 不传依赖产出,
+      解析与操作须在同一 ReAct 循环内串联
 客服  build_customer_agent: verify(faq_search / order_lookup)→ draft 两节点,未查证不可达草稿(B12)
 ```
 
