@@ -64,11 +64,29 @@ def make_client(*, shadow_mode: bool = False) -> tuple[TestClient, InMemoryAppro
                 memory=InMemorySessionMemory(),  # 默认件是 PG 记忆;离线快速套件须注入内存实现
                 task_store=InMemoryTaskStore(),  # 默认件是 PG 任务行存储;同上(issue #13)
                 auth_required=False,
+                shadow_mode=shadow_mode,  # issue #37:剖面随图——影子段可见性与补执行同源
             )
         ),
         store,
         apply_fn,
     )
+
+
+def make_profile_client(*, shadow_mode: bool) -> tuple[TestClient, InMemoryApprovalBatchStore, FakeApply]:
+    """剖面过滤用例客户端(issue #37,验收 B15):空图,只需批次存储 + /api/approvals 与补执行两个端点。"""
+    store = InMemoryApprovalBatchStore()
+    apply_fn = FakeApply()
+    client = TestClient(
+        create_app(
+            batch_store=store,
+            apply_fn=apply_fn,
+            memory=InMemorySessionMemory(),  # 同 make_client:离线快速套件不触 PG
+            task_store=InMemoryTaskStore(),
+            auth_required=False,
+            shadow_mode=shadow_mode,
+        )
+    )
+    return client, store, apply_fn
 
 
 async def test_create_task_interrupts_with_batches() -> None:
@@ -321,9 +339,63 @@ async def test_shadow_batch_execute_endpoint() -> None:
 
 
 async def test_shadow_execute_unknown_batch_is_404() -> None:
-    client, _store, _apply = make_client()
+    """演练剖面下未知批次 404;生产剖面整体 403(剖面闸先于存在性,见下一用例)。"""
+    client, _store, _apply = make_client(shadow_mode=True)
     response = client.post("/api/threads/whatever/shadow-batches/no-such/execute")
     assert response.status_code == 404
+
+
+async def test_approvals_hides_shadow_batches_in_prod_profile() -> None:
+    """issue #37(验收 B15):生产剖面审批中心不显示影子段——只返回 pending;前端零剖面感知。"""
+    client, store, _apply = make_profile_client(shadow_mode=False)
+    await store.create_batch(
+        batch_id="a-1", thread_id="t-1", slice_no=1, action_type="product.publish", actions=[PUBLISH], mode="approval"
+    )
+    await store.create_batch(
+        batch_id="s-1", thread_id="t-1", slice_no=2, action_type="product.publish", actions=[PUBLISH], mode="shadow"
+    )
+
+    body = client.get("/api/approvals").json()
+
+    assert [batch["batchId"] for batch in body["approvals"]] == ["a-1"]
+
+
+async def test_approvals_shows_shadow_batches_in_dev_profile() -> None:
+    """演练剖面:影子段照常返回——前端「影子」标签与补执行按钮的数据源。"""
+    client, store, _apply = make_profile_client(shadow_mode=True)
+    await store.create_batch(
+        batch_id="a-1", thread_id="t-1", slice_no=1, action_type="product.publish", actions=[PUBLISH], mode="approval"
+    )
+    await store.create_batch(
+        batch_id="s-1", thread_id="t-1", slice_no=2, action_type="product.publish", actions=[PUBLISH], mode="shadow"
+    )
+
+    body = client.get("/api/approvals").json()
+
+    assert [batch["batchId"] for batch in body["approvals"]] == ["a-1", "s-1"]
+    assert [batch["mode"] for batch in body["approvals"]] == ["approval", "shadow"]
+
+
+async def test_shadow_execute_refused_in_prod_profile() -> None:
+    """issue #37:生产剖面补执行如实 403——影子批次未经人工批准,补执行即绕过审批锁;
+    拦截先于 apply,批次状态不被触碰。"""
+    client, store, apply_fn = make_profile_client(shadow_mode=False)
+    batch = await store.create_batch(
+        batch_id="s-1", thread_id="t-1", slice_no=1, action_type="product.publish", actions=[PUBLISH], mode="shadow"
+    )
+
+    response = client.post("/api/threads/t-1/shadow-batches/s-1/execute")
+
+    assert response.status_code == 403
+    assert apply_fn.calls == [], "拦截先于 apply"
+    assert batch.status == "shadow", "批次状态不被触碰"
+
+
+async def test_shadow_execute_refused_in_prod_profile_even_for_unknown_batch() -> None:
+    """剖面闸先于存在性:生产剖面下未知批次同为 403(能力整体关闭,不区分存在性)。"""
+    client, _store, _apply = make_profile_client(shadow_mode=False)
+    response = client.post("/api/threads/t-1/shadow-batches/no-such/execute")
+    assert response.status_code == 403
 
 
 async def test_shadow_batch_execute_emits_notifications() -> None:
@@ -350,6 +422,7 @@ async def test_shadow_batch_execute_emits_notifications() -> None:
             task_store=InMemoryTaskStore(),  # 同上:避免默认 PG 任务行存储触库
             notification_store=notification_store,  # 同上:避免默认 PG 通知存储触库(增量 8-T1)
             auth_required=False,
+            shadow_mode=True,  # issue #37:本用例走演练剖面补执行
         )
     )
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
@@ -389,6 +462,7 @@ async def test_shadow_batch_execute_survives_notification_store_failure() -> Non
             task_store=InMemoryTaskStore(),
             notification_store=FailingNotificationStore(),
             auth_required=False,
+            shadow_mode=True,  # issue #37:同上,演练剖面补执行
         )
     )
     thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]

@@ -108,6 +108,7 @@ def build_app() -> socketio.ASGIApp:
     app = create_app(
         emitter=emitter,
         drafting=DraftingService(vector=MilvusVectorRepository()),
+        shadow_mode=settings.shadow_mode,  # 验收 B15:影子段可见性与补执行随剖面(issue #37)
         static_dir=static_dir,
     )
     app.router.lifespan_context = lifespan

@@ -1,7 +1,7 @@
 """REST API(spec #6 D4 + spec #7):切片式人工环节端点。
 
 - POST /api/tasks:发起任务(生成 thread_id,图跑至中断/完成)
-- GET  /api/approvals:全量未决批次(pending + shadow,审批中心数据源)
+- GET  /api/approvals:全量未决批次(pending + shadow;影子段仅演练剖面,issue #37)
 - GET  /api/threads/{thread_id}/approvals:该 thread 挂起批次列表
 - POST /api/threads/{thread_id}/resume:结构化决定(按钮入口,多批一次提交)
 - POST /api/threads/{thread_id}/message:自然消息入口(关键词判定决定意图)
@@ -352,6 +352,7 @@ def create_app(
     tracer: TaskTracer | None = None,
     fx_service: FxProvider | FxQuoteProvider | None = None,
     auth_required: bool = True,
+    shadow_mode: bool = False,
     memory: SessionMemory | None = None,
     drafting: DraftingService | None = None,
     audit: AuditWriter | None = None,
@@ -374,6 +375,8 @@ def create_app(
     下单/apply 走 FxProvider.get_rate_cny、汇率卡片走 FxQuoteProvider.get_quote_cny,
     生产实现 FxService 二者皆备);
     auth_required 默认开(spec #8 A1 全门禁),非认证行为的测试显式关闭;
+    shadow_mode 默认关(prod-safe,与 graph 同名参数默认一致):开=演练剖面,审批中心显示影子段
+    且补执行可用;生产由 main 传 settings.shadow_mode(issue #37,验收 B15);
     memory 默认 PG 会话记忆(spec #8 B16 接缝,测试注入内存实现);
     drafting 默认真实起草服务(spec #8 B11 接缝,测试注入假实现);
     task_store 默认 PG 任务行存储(issue #13 接缝,测试注入内存实现——端点流程离线可跑);
@@ -394,6 +397,7 @@ def create_app(
     app.state.emitter = emitter or NullEmitter()
     app.state.tracer = tracer or NullTaskTracer()
     app.state.auth_enabled = auth_required
+    app.state.shadow_mode = shadow_mode
     app.state.fx_service = fx_service  # None 时由下单端点惰性解析(default_fx 需运行中事件循环)
     app.state.memory = memory or PostgresSessionMemory()
     app.state.drafting = drafting or DraftingService()
@@ -782,8 +786,12 @@ def create_app(
 
         spec #34:信封加线程级 `plans` 旁挂(原始需求 + 切片计划),补 ADR-0005 的
         「审批单携带任务上下文 + 后续计划预览」;批次载荷形状不变。
+        issue #37(验收 B15):影子段仅演练剖面显示——生产剖面在此过滤,前端零剖面感知。
         """
-        batches = [_serialize_batch(batch) for batch in await app.state.batch_store.list_open()]
+        rows = await app.state.batch_store.list_open()
+        if not app.state.shadow_mode:
+            rows = [row for row in rows if row.mode != "shadow"]
+        batches = [_serialize_batch(row) for row in rows]
         plans = await _thread_plans(app.state.task_store, [batch["threadId"] for batch in batches])
         return {"approvals": batches, "plans": plans}
 
@@ -904,7 +912,12 @@ def create_app(
 
     @app.post("/api/threads/{thread_id}/shadow-batches/{batch_id}/execute")
     async def execute_shadow_batch(thread_id: str, batch_id: str) -> dict:
-        """影子批次补执行(A15):演练环境高危建议由人工一键补执行。"""
+        """影子批次补执行(A15):演练剖面高危建议由人工一键补执行。
+
+        issue #37(验收 B15):生产剖面如实 403——影子批次未经人工批准,补执行即绕过审批锁。
+        """
+        if not app.state.shadow_mode:
+            raise HTTPException(status_code=403, detail="影子批次补执行仅演练剖面可用")
         record = await app.state.batch_store.get_batch(batch_id=batch_id)
         if record is None or record.thread_id != thread_id:
             raise HTTPException(status_code=404, detail=f"批次 {batch_id} 不存在")
