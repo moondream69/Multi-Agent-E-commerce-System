@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -67,6 +66,13 @@ async def test_approval_batch_response_keys_match_contract() -> None:
     assert action["action"] == "product.publish"
     assert action["params"] == {"product_id": 1}
     assert action["snapshot"] == {"exists": True, "status": "draft"}
+
+
+async def test_approval_list_envelope_matches_contract() -> None:
+    """审批列表信封键 == ts ApprovalListResponse;plans 元素 == ThreadPlan(spec #34)。"""
+    expected = _ts_interface_fields("ApprovalListResponse")
+    assert expected == {"approvals", "plans"}, f"信封字段 {expected} 应恰为 approvals + plans"
+    assert _ts_interface_fields("ThreadPlan") == {"request", "plan"}
 
 
 def test_approval_batch_status_values_match_contract() -> None:
@@ -149,20 +155,59 @@ async def test_conversation_messages_match_contract() -> None:
 
 
 async def test_product_list_item_matches_contract() -> None:
-    """GET /api/products 响应键 == ts ProductListItem(spec #9:模拟流量发现商品)。"""
+    """GET /api/products 响应键 == ts ProductListItem(spec #9;spec #34 起经注入替身,离线可跑)。"""
+    from decimal import Decimal
+
     from fastapi.testclient import TestClient
 
-    from python_backend.settings import get_settings
-    from tests.conftest import postgres_reachable
+    from python_backend.db.models import Product
+    from tests.conftest import InMemoryProductStore
 
-    if not postgres_reachable(get_settings().database_url):
-        pytest.skip("Postgres 离线:商品列表形状由序列化函数保证")
-    client = TestClient(create_app(auth_required=False))
+    store = InMemoryProductStore()
+    store.products.append(
+        Product(
+            id=1,
+            sku="CONTRACT-1",
+            title="契约商品",
+            price=Decimal("1.00"),
+            currency="USD",
+            category="测试",
+            stock=1,
+            alert_threshold=10,
+        )
+    )
+    client = TestClient(create_app(auth_required=False, product_store=store))
     products = client.get("/api/products").json()["products"]
     expected = _ts_interface_fields("ProductListItem")
-    if not products:
-        pytest.skip("测试库无商品:形状由接口序列化保证")
-    assert set(products[0]) == expected, f"响应键 {set(products[0])} 应等于契约字段 {expected}"
+    assert products and set(products[0]) == expected, f"响应键 {set(products[0])} 应等于契约字段 {expected}"
+
+
+async def test_order_list_item_matches_contract() -> None:
+    """GET /api/orders 信封键 == ts OrderListResponse;元素 == OrderListItem(spec #34)。"""
+    from decimal import Decimal
+
+    from fastapi.testclient import TestClient
+
+    from python_backend.db.models import Order, OrderStatus
+    from tests.conftest import InMemoryOrderStore
+
+    store = InMemoryOrderStore()
+    store.orders.append(
+        Order(
+            id=1,
+            reference="CONTRACT-ORD",
+            product_id=1,
+            status=OrderStatus.PENDING,
+            total_amount=Decimal("10.00"),
+            currency="USD",
+            fx_rate=Decimal("7.1234"),
+        )
+    )
+    client = TestClient(create_app(auth_required=False, order_store=store))
+    body = client.get("/api/orders").json()
+
+    assert set(body) == _ts_interface_fields("OrderListResponse"), "信封键 == 契约字段"
+    assert set(body["orders"][0]) == _ts_interface_fields("OrderListItem"), "元素键 == 契约字段"
 
 
 async def test_actions_metadata_matches_contract() -> None:

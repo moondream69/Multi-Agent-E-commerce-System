@@ -307,6 +307,91 @@ def _status_value(status) -> str:
     return str(getattr(status, "value", status))
 
 
+_EARLIEST = datetime.min.replace(tzinfo=UTC)
+
+
+class InMemoryProductStore:
+    """商品只读存储内存实现(spec #34 接缝;数据台商品表端点离线可跑,不触 PG)。
+
+    复现生产可见语义:created_at 倒序(本替身取插入倒排 = 最新在前,与 PG 侧排序等价);
+    响应键与 PostgresProductStore 同形(契约由 test_contract 对照 events.ts 钉死)。
+    """
+
+    def __init__(self) -> None:
+        self.products: list[Product] = []
+
+    async def list_products(self) -> list[dict]:
+        ordered = list(reversed(self.products))
+        return [
+            {
+                "id": product.id,
+                "sku": product.sku,
+                "title": product.title,
+                "price": str(product.price),
+                "currency": product.currency,
+                "category": product.category,
+                "status": _status_value(product.status),
+                "stock": product.stock,
+                "alertThreshold": product.alert_threshold,
+            }
+            for product in ordered
+        ]
+
+
+class InMemoryOrderStore:
+    """订单只读存储内存实现(spec #34 接缝;数据台订单表/汇率卡片走势端点离线可跑,不触 PG)。
+
+    复现生产可见语义:状态筛选、created_at 倒序(同刻按插入倒排,对应生产 id 次序 tie-breaker)、
+    分页切片 + 同筛选总数;日快照按日取当日最后一笔、缺汇率行跳过、无单日不产出点。
+    简化披露:窗口过滤按本替身收集的 Python 时间戳(生产为 SQL 表达式),``created_at`` 为 None 的行
+    按「最早」处理(生产 server_default 恒有值),date_trunc 的时区行为不复刻
+    ——SQL 侧正确性(集成用例)不在本文件证明范围内,此处只保证端点接线与替身语义可离线验证。
+    """
+
+    def __init__(self) -> None:
+        self.orders: list[Order] = []
+
+    async def list_orders(self, *, status: str | None, limit: int, offset: int) -> tuple[list[dict], int]:
+        rows = [order for order in self.orders if status is None or _status_value(order.status) == status]
+        # 倒序:created_at 优先,同刻取后插入者(生产 order_by created_at desc, id desc)
+        indexed = list(enumerate(rows))
+        indexed.sort(key=lambda pair: (pair[1].created_at or _EARLIEST, pair[0]), reverse=True)
+        page = [order for _, order in indexed[offset : offset + limit]]
+        return [_order_payload(order) for order in page], len(rows)
+
+    async def daily_fx_snapshots(self, *, days: int, currency: str) -> list[dict]:
+        window_start = datetime.now(UTC) - timedelta(days=days)
+        last_by_day: dict[str, Order] = {}
+        for order in self.orders:
+            created_at = order.created_at
+            if created_at is None or order.fx_rate is None or created_at < window_start:
+                continue
+            if str(order.currency).upper() != currency.upper():
+                continue
+            day = created_at.astimezone(UTC).strftime("%Y-%m-%d")
+            current = last_by_day.get(day)
+            if current is None or created_at >= current.created_at:
+                last_by_day[day] = order
+        return [{"date": day, "rate": str(last_by_day[day].fx_rate)} for day in sorted(last_by_day)]
+
+
+def _order_payload(order: Order) -> dict:
+    """订单序列化(与 PostgresOrderStore 同形:_order_payload 的替身副本)。"""
+    return {
+        "id": order.id,
+        "reference": order.reference,
+        "productId": order.product_id,
+        "customerId": order.customer_id,
+        "status": _status_value(order.status),
+        "totalAmount": str(order.total_amount),
+        "currency": order.currency,
+        "fxRate": str(order.fx_rate) if order.fx_rate is not None else None,
+        "fxBaseCurrency": order.fx_base_currency,
+        "platform": order.platform,
+        "createdAt": order.created_at.isoformat() if order.created_at else None,
+    }
+
+
 class InMemoryReportStore:
     """报表聚合内存实现(issue #21 接缝;快照端点离线可跑,不触 PG)。
 

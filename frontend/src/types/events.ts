@@ -96,6 +96,22 @@ export interface ApprovalDecidedPayload {
   comment?: string | null;
 }
 
+// —— 审批列表信封(spec #34:GET /api/approvals 与按线程端点同构)——
+// plans 为线程级旁挂(ADR-0005「审批单携带任务上下文 + 后续计划预览」):计划是线程属性,
+// 挂批次会按批次重复;无任务行的线程不入表(前端按缺省不渲染计划区)。
+
+export interface ThreadPlan {
+  /** 任务原始需求(任务上下文) */
+  request: string | null;
+  /** 切片计划(与 TaskDetail.plan 同形,复用 SlicePlanSlice) */
+  plan: { slices: SlicePlanSlice[] };
+}
+
+export interface ApprovalListResponse {
+  approvals: ApprovalBatch[];
+  plans: Record<string, ThreadPlan>;
+}
+
 // —— 通知铃铛(spec #9 A8/A9/A14:notification.created)——
 
 // kind 已知集合:order_status / inventory_alert / fx_missing;未知 kind 前端归入兜底组
@@ -216,7 +232,7 @@ export interface ImportReport {
   errors: Array<{ row: number; reason: string }>;
 }
 
-// —— 商品只读列表(spec #9:GET /api/products,模拟流量发现商品)——
+// —— 商品只读列表(spec #9:GET /api/products,模拟流量发现商品;spec #34:数据台盘货数据源)——
 
 export interface ProductListItem {
   id: number;
@@ -228,6 +244,46 @@ export interface ProductListItem {
   status: string;
   stock: number;
   alertThreshold: number;
+}
+
+// —— 订单只读列表(spec #34:GET /api/orders,数据台对账数据源;纯只读,ADR-0006 边界)——
+
+export interface OrderListItem {
+  id: number;
+  /** CSV 导入幂等键;手工/REST 下单为空 → 前端回落 #id 显示 */
+  reference: string | null;
+  productId: number;
+  customerId: number | null;
+  status: string;
+  totalAmount: string;
+  currency: string;
+  /** 落库汇率快照(基准 CNY);空 = 下单时汇率不可用,数据台显「待核」 */
+  fxRate: string | null;
+  fxBaseCurrency: string;
+  platform: string | null;
+  createdAt: string | null;
+}
+
+export interface OrderListResponse {
+  orders: OrderListItem[];
+  /** 同筛选条件下的总行数(服务端分页口径) */
+  total: number;
+}
+
+// —— 汇率卡片(ADR-0006 / spec #34:GET /api/fx,驾驶舱)——
+// rate=null = 汇率 API 与缓存双失效(前端显「待核」);cachedAt=null = 旧缓存无伴生时刻键;
+// source:cache 缓存命中 / live 本次实时拉取 / null 基准币自身。走势 = 订单快照按日聚合。
+
+export interface FxCardPayload {
+  base: string;
+  currency: string;
+  rate: string | null;
+  cachedAt: string | null;
+  source: 'cache' | 'live' | null;
+  trend: {
+    windowDays: number;
+    points: Array<{ date: string; rate: string }>;
+  };
 }
 
 // —— 工单(A11 收口:GET /api/tickets + PATCH 结单)——

@@ -81,6 +81,53 @@ async def test_create_task_interrupts_with_batches() -> None:
     assert body["threadId"]
 
 
+async def test_approvals_envelope_carries_thread_plan_context() -> None:
+    """信封 `plans` 旁挂:原始需求 + 切片计划(ADR-0005 任务上下文+后续计划预览;spec #34)。
+
+    任务行须认证上下文才落库(user_id None 跳过),故本用例显式带 token。
+    """
+    client, _store, _apply = make_client()
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+
+    body = client.get(f"/api/threads/{thread_id}/approvals").json()
+    global_body = client.get("/api/approvals").json()
+
+    assert set(body) == {"approvals", "plans"} and set(global_body) == {"approvals", "plans"}
+    assert body["plans"].keys() == {thread_id}
+    entry = body["plans"][thread_id]
+    assert entry["request"] == "上架商品", "任务上下文 = 原始需求"
+    assert [item["no"] for item in entry["plan"]["slices"]] == [1], "后续计划 = 切片计划(与详情 plan 同形)"
+    assert entry["plan"]["slices"][0]["agent"] == "order_management"
+    assert global_body["plans"] == body["plans"], "全局与按线程两个入口同源"
+
+
+async def test_suspended_task_row_carries_plan() -> None:
+    """挂起期任务行即落切片计划(spec #34 修复):否则审批中心计划预览恒空、
+    驾驶舱切片时间线在「等待审批」时显示 0 段且无「去审批」入口。"""
+    client, _store, _apply = make_client()
+    client.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+
+    detail = client.get(f"/api/tasks/{thread_id}").json()
+
+    assert detail["status"] == "interrupted"
+    assert detail["plan"] is not None, "挂起期计划不得为空(终态才写的旧行为已修)"
+    assert [item["no"] for item in detail["plan"]["slices"]] == [1]
+    assert detail["plan"]["slices"][0]["description"] == "上架商品"
+
+
+async def test_approvals_envelope_omits_unknown_threads() -> None:
+    """无任务行(未认证路径未落行)的线程不入 plans 旁挂 —— 前端按缺省不渲染计划区。"""
+    client, _store, _apply = make_client()
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+
+    body = client.get("/api/approvals").json()
+
+    assert body["plans"] == {}, "无行不伪造上下文"
+    assert [batch["threadId"] for batch in body["approvals"]] == [thread_id], "批次本体不受影响"
+
+
 async def test_list_open_and_per_thread_approvals() -> None:
     """GET /api/approvals(全局)+ GET /api/threads/{id}/approvals:真实参数快照形状。"""
     client, store, _apply = make_client()

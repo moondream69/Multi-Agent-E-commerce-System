@@ -56,15 +56,27 @@ from python_backend.core.notifications import emit_notifications
 from python_backend.db.audit_store import AuditWriter, NullAuditWriter
 from python_backend.db.conversation_store import ConversationStore, PostgresConversationStore
 from python_backend.db.customer_store import CustomerStore, PostgresCustomerStore
-from python_backend.db.models import Product, User
+from python_backend.db.models import OrderStatus, User
 from python_backend.db.notification_store import NotificationStore, PostgresNotificationStore
+from python_backend.db.order_store import (
+    DEFAULT_ORDER_LIMIT,
+    MAX_ORDER_LIMIT,
+    OrderStore,
+    PostgresOrderStore,
+)
+from python_backend.db.product_store import PostgresProductStore, ProductStore
 from python_backend.db.report_store import PostgresReportStore, ReportStore
 from python_backend.db.session import SessionFactory
 from python_backend.db.task_store import PostgresTaskStore, TaskStore
 from python_backend.db.ticket_store import PostgresTicketStore, TicketStore
+from python_backend.infrastructure.fx import FxQuoteProvider, FxUnavailableError
 from python_backend.infrastructure.tracing import NullTaskTracer, TaskTracer
 
 logger = logging.getLogger(__name__)
+
+FX_CARD_CURRENCY = "USD"  # 汇率卡片主体币种(订单默认计价币种;基准仍为 CNY —— ADR-0006)
+FX_TREND_WINDOW_DAYS = 7  # 与经营快照「近 7 日成交额」同窗(spec #34)
+BASE_CURRENCY = "CNY"
 
 
 class TaskCreateRequest(BaseModel):
@@ -206,7 +218,15 @@ async def _resume(
         await _converge_failed_task(task_store, thread_id, emitter, error)
         raise
     if "__interrupt__" in result:
-        # 下一层切片又挂起:如实广播(多层切片任务不只一次中断)
+        # 下一层切片又挂起:如实广播(多层切片任务不只一次中断);计划随行刷新(spec #34:
+        # 挂起期行内必须有计划,审批中心与切片时间线都读它)
+        await _update_row_or_converge(
+            task_store,
+            thread_id,
+            emitter,
+            status="interrupted",
+            slice_plan=_plan_payload(result.get("plan")),
+        )
         await _ancillary(
             emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"}),
             "task.interrupted 广播",
@@ -272,19 +292,21 @@ def _serialize_batch(record) -> dict:
     }
 
 
-def _product_payload(product: Product) -> dict:
-    """商品序列化(驼峰,与契约 events.ts ProductListItem 字段一一对应)。"""
-    return {
-        "id": product.id,
-        "sku": product.sku,
-        "title": product.title,
-        "price": str(product.price),
-        "currency": product.currency,
-        "category": product.category,
-        "status": product.status.value,
-        "stock": product.stock,
-        "alertThreshold": product.alert_threshold,
-    }
+async def _thread_plans(task_store: TaskStore, thread_ids: list[str]) -> dict[str, dict]:
+    """线程级任务上下文旁挂(spec #34;ADR-0005「审批单携带任务上下文+后续计划预览」)。
+
+    形状与任务详情的 ``plan`` 同源(切片计划原样透传,前端复用 SlicePlanSlice 类型),
+    外加原始需求 ``request``。计划是**线程**属性,故挂信封而非逐批次重复。
+    无任务行/无计划(未认证路径未落行)→ 该线程不入表,由前端按缺省不渲染计划区。
+    逐线程取行(N+1,判断级):审批中心线程量级(个位数)下可接受,换取缝的单一真源。
+    """
+    plans: dict[str, dict] = {}
+    for thread_id in dict.fromkeys(thread_ids):  # 去重且保序(同线程多批只查一次)
+        row = await task_store.get_task(thread_id)
+        if row is None or not row.slice_plan:
+            continue
+        plans[thread_id] = {"request": (row.input or {}).get("request"), "plan": row.slice_plan}
+    return plans
 
 
 def _interrupt_batch_ids(value: dict) -> list[str]:
@@ -326,7 +348,7 @@ def create_app(
     apply_fn: ApplyFunction | None = None,
     emitter: EventEmitter | None = None,
     tracer: TaskTracer | None = None,
-    fx_service: FxProvider | None = None,
+    fx_service: FxProvider | FxQuoteProvider | None = None,
     auth_required: bool = True,
     memory: SessionMemory | None = None,
     drafting: DraftingService | None = None,
@@ -337,13 +359,17 @@ def create_app(
     customer_store: CustomerStore | None = None,
     ticket_store: TicketStore | None = None,
     report_store: ReportStore | None = None,
+    product_store: ProductStore | None = None,
+    order_store: OrderStore | None = None,
 ) -> FastAPI:
     """构建 API 应用:graph/batch_store/apply_fn/emitter/tracer/fx_service/memory/drafting/audit/task_store/
-    notification_store/conversation_store/customer_store/ticket_store/report_store 可注入(测试)
-    或由 lifespan 装配(生产)。
+    notification_store/conversation_store/customer_store/ticket_store/report_store/product_store/order_store
+    可注入(测试)或由 lifespan 装配(生产)。
 
     apply_fn 默认真实 apply_batch_actions;emitter/tracer/audit 默认 no-op(spec #7/#8 接缝);
-    fx_service 默认由下单端点惰性解析(spec #8 接缝,测试注入假实现);
+    fx_service 默认由下单端点惰性解析(spec #8 接缝,测试注入假实现;两个子集协议的并集:
+    下单/apply 走 FxProvider.get_rate_cny、汇率卡片走 FxQuoteProvider.get_quote_cny,
+    生产实现 FxService 二者皆备);
     auth_required 默认开(spec #8 A1 全门禁),非认证行为的测试显式关闭;
     memory 默认 PG 会话记忆(spec #8 B16 接缝,测试注入内存实现);
     drafting 默认真实起草服务(spec #8 B11 接缝,测试注入假实现);
@@ -355,6 +381,7 @@ def create_app(
     conversation_store 例外:其挂起审批判定依赖批次存储,而 batch_store 生产由 lifespan 构建
     (create_app 时尚不存在)——此处仅在 batch_store 已给时装配 PG 实现,生产装配由
     main.lifespan 补接线(test_app_wiring 守卫该接线)。
+    product_store / order_store 默认 PG 实现(spec #34 数据台接缝:商品只读列表 + 订单列表/汇率走势)。
     """
     app = FastAPI(title="Multi-Agent E-commerce System(切片式人工环节)", version="0.1.0")
     app.state.graph = graph
@@ -376,6 +403,8 @@ def create_app(
     app.state.customer_store = customer_store or PostgresCustomerStore()
     app.state.ticket_store = ticket_store or PostgresTicketStore(app.state.customer_store)
     app.state.report_store = report_store or PostgresReportStore()
+    app.state.product_store = product_store or PostgresProductStore()
+    app.state.order_store = order_store or PostgresOrderStore()
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
@@ -419,7 +448,15 @@ def create_app(
             await _converge_failed_task(app.state.task_store, thread_id, app.state.emitter, error)
             raise
         if "__interrupt__" in result:
-            await _update_row_or_converge(app.state.task_store, thread_id, app.state.emitter, status="interrupted")
+            # 挂起期即落切片计划(spec #34):审批中心「后续计划预览」与驾驶舱切片时间线读的都是
+            # 任务行的 slice_plan,终态才写会让挂起中的任务显示空计划
+            await _update_row_or_converge(
+                app.state.task_store,
+                thread_id,
+                app.state.emitter,
+                status="interrupted",
+                slice_plan=_plan_payload(result.get("plan")),
+            )
             await _ancillary(
                 app.state.emitter.emit("task.interrupted", {"threadId": thread_id, "status": "interrupted"}),
                 "task.interrupted 广播",
@@ -581,10 +618,53 @@ def create_app(
 
     @app.get("/api/products")
     async def list_products() -> dict:
-        """商品列表(只读,spec #9):模拟流量发现商品 + 运营总览数据源。"""
-        async with SessionFactory() as session:
-            rows = (await session.execute(select(Product).order_by(Product.created_at.desc()))).scalars().all()
-        return {"products": [_product_payload(product) for product in rows]}
+        """商品列表(只读,spec #9 / #34):模拟流量发现商品 + 数据台盘货数据源(经注入存储)。"""
+        return {"products": await app.state.product_store.list_products()}
+
+    @app.get("/api/orders")
+    async def list_order_rows(status: str | None = None, limit: int = DEFAULT_ORDER_LIMIT, offset: int = 0) -> dict:
+        """订单列表(只读,spec #34):数据台对账数据源——状态筛选 + 分页 + 同筛选总数。
+
+        **纯只读**(ADR-0006 边界):对外状态变更仍走对话 + 审批护栏,本端点无任何写入口。
+        """
+        if status is not None and status not in {item.value for item in OrderStatus}:
+            raise HTTPException(status_code=422, detail=f"订单状态非法:{status}")
+        if not 1 <= limit <= MAX_ORDER_LIMIT:
+            raise HTTPException(status_code=422, detail=f"limit 须在 1~{MAX_ORDER_LIMIT} 之间")
+        if offset < 0:
+            raise HTTPException(status_code=422, detail="offset 不能为负")
+        orders, total = await app.state.order_store.list_orders(status=status, limit=limit, offset=offset)
+        return {"orders": orders, "total": total}
+
+    @app.get("/api/fx")
+    async def fx_card() -> dict:
+        """汇率卡片(驾驶舱,ADR-0006 / spec #34):当期汇率(基准 CNY)+ 缓存时刻 + 近 7 日走势。
+
+        走势 = 订单 fx_rate 快照按日聚合(当日最后一笔,真实成交口径):上游 er-api 免费端点
+        无时序能力(实测 /v6/history 404),这是唯一不新增外部依赖的时序源。
+        当期汇率不可用(API 失效且缓存为空)→ rate 置空由前端显「待核」,不让整卡失败。
+        """
+        service: FxQuoteProvider = app.state.fx_service or default_fx()
+        rate: str | None = None
+        cached_at: str | None = None
+        source: str | None = None
+        try:
+            quote = await service.get_quote_cny(FX_CARD_CURRENCY)
+        except FxUnavailableError as error:
+            logger.warning("汇率卡片:当期汇率不可用(%s)", error)
+        else:
+            rate = str(quote.rate)
+            cached_at = quote.cached_at.isoformat() if quote.cached_at else None
+            source = quote.source
+        points = await app.state.order_store.daily_fx_snapshots(days=FX_TREND_WINDOW_DAYS, currency=FX_CARD_CURRENCY)
+        return {
+            "base": BASE_CURRENCY,
+            "currency": FX_CARD_CURRENCY,
+            "rate": rate,
+            "cachedAt": cached_at,
+            "source": source,
+            "trend": {"windowDays": FX_TREND_WINDOW_DAYS, "points": points},
+        }
 
     @app.get("/api/customers")
     async def list_customer_rows() -> dict:
@@ -694,14 +774,21 @@ def create_app(
 
     @app.get("/api/approvals")
     async def list_all_open() -> dict:
-        """全量未决批次(pending + shadow):审批中心数据源(spec #7 用户故事 5/6)。"""
-        batches = await app.state.batch_store.list_open()
-        return {"approvals": [_serialize_batch(batch) for batch in batches]}
+        """全量未决批次(pending + shadow):审批中心数据源(spec #7 用户故事 5/6)。
+
+        spec #34:信封加线程级 `plans` 旁挂(原始需求 + 切片计划),补 ADR-0005 的
+        「审批单携带任务上下文 + 后续计划预览」;批次载荷形状不变。
+        """
+        batches = [_serialize_batch(batch) for batch in await app.state.batch_store.list_open()]
+        plans = await _thread_plans(app.state.task_store, [batch["threadId"] for batch in batches])
+        return {"approvals": batches, "plans": plans}
 
     @app.get("/api/threads/{thread_id}/approvals")
     async def list_approvals(thread_id: str) -> dict:
-        batches = await app.state.batch_store.list_pending(thread_id)
-        return {"approvals": [_serialize_batch(batch) for batch in batches]}
+        """该 thread 未决批次列表(信封同构:approvals + plans 旁挂,spec #34)。"""
+        batches = [_serialize_batch(batch) for batch in await app.state.batch_store.list_pending(thread_id)]
+        plans = await _thread_plans(app.state.task_store, [thread_id])
+        return {"approvals": batches, "plans": plans}
 
     @app.post("/api/threads/{thread_id}/resume")
     async def resume_thread(thread_id: str, body: dict[str, ResumeDecision]) -> dict:
