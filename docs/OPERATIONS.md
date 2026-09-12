@@ -145,6 +145,41 @@ docker compose exec postgres psql -U postgres mae -c \
 > Agent 会拒绝提交无意义批次(对 draft 商品下架无可撤销的对外可见状态)。先上架(如 1、4、9),
 > 再下架其中之一,才出审批批次。
 
+## 生产切换清单(试运行前)
+
+> 2026-09-13 本机**同库**实切演练已跑通(库未清、dev 遗留在场,正好覆盖「同库跨剖面」最难场景;
+> 证据 `docs/handoffs/evidence-2026-09-13-b15-profile/`)。
+
+**1. 库**:建议干净库(走上一节 runbook)——dev 遗留的任务/订单/通知在生产界面同样可见。
+影子段不必再担心:prod 剖面审批中心自动过滤、补执行端点 403(验收 B15,issue #37)。
+
+**2. 强凭据**(`.env`):`AUTH_JWT_SECRET` 用 `openssl rand -hex 32` 重生成(改它 = 全员下线);
+`AUTH_ADMIN_PASSWORD` 换强口令——⚠️ **懒 seed 只对空表生效,改密码须先删 users 行再重启**:
+
+```bash
+docker compose exec postgres psql -U postgres mae -c "DELETE FROM users WHERE username='admin';"
+docker compose up -d app   # 重启时按新口令重 seed
+```
+
+**3. CORS_ORIGINS**:列出浏览器实际访问的全部 origin(局域网部署即 `http://<局域网IP>:3000`)。
+⚠️ **`127.0.0.1` 与 `localhost` 不等价**(2026-09-13 实测:前者 400 / 后者 200)——未列出的
+origin 在 socket.io 握手被拒 400,而页面照常打开,症状是「登录页能进、实时通道不动」。访问地址一变即同步。
+
+**4. 切剖面**:`ENVIRONMENT=prod docker compose up -d app`(shell 环境优先于 `.env` 插值;回退 = 去掉前缀重跑)。
+
+**5. 关模拟流量**:别在 prod 下启 `--profile sim`(`ensure_demo_buyers` 亦仅 dev 生效)。
+
+**6. 验证点**(对照实测):
+
+| 项 | 命令 | 期望 |
+|---|---|---|
+| 剖面生效 | `curl -s localhost:3000/health` | `"environment":"prod"` |
+| 影子段隐藏 | `GET /api/approvals`(带 token) | 批次 mode 集合不含 `shadow` |
+| 补执行关闭 | `POST /api/threads/{tid}/shadow-batches/{bid}/execute` | 403「影子批次补执行仅演练剖面可用」 |
+| 审批锁死 | 发高危任务(如下架在售商品) | `status=interrupted`,不落 shadow |
+| 静态入口 | `curl -s -o /dev/null -w "%{http_code}" localhost:3000/` | 200(且含 `<div id="root">`) |
+| 实时通道 | `curl -s -o /dev/null -w "%{http_code}" -H "Origin: http://<实际访问地址>" "http://<实际访问地址>/socket.io/?EIO=4&transport=polling"` | 200(400 = 该 origin 未列入 CORS_ORIGINS) |
+
 ## 审计 SQL(跑一天后评估)
 
 ```bash
