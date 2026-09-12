@@ -338,6 +338,42 @@ class InMemoryProductStore:
         ]
 
 
+class InMemoryProductLookup:
+    """商品定位内存实现(issue #35 接缝;product_lookup 工具离线可跑,不触 PG)。
+
+    复现生产可见语义:SKU 大小写不敏感精确、标题大小写不敏感 contains、limit+1 探测截断、
+    两个入参至少给一(均缺显式报错——与 PostgresProductLookup 同口径)。
+    """
+
+    def __init__(self, products: list[Product]) -> None:
+        self.products = products
+
+    async def lookup(self, *, sku: str | None, title: str | None, limit: int) -> tuple[list[dict], bool]:
+        if sku:
+            hits = [p for p in self.products if (p.sku or "").lower() == sku.strip().lower()]
+        elif title:
+            hits = [p for p in self.products if title.strip().lower() in (p.title or "").lower()]
+        else:
+            raise ValueError("product_lookup 需提供 sku 或 title 至少其一")
+        hits.sort(key=lambda p: p.id)
+        truncated = len(hits) > limit
+        return [_lookup_payload(p) for p in hits[:limit]], truncated
+
+
+def _lookup_payload(product: Product) -> dict:
+    """与 db/product_lookup.py 的 _product_payload 同形。"""
+    return {
+        "id": product.id,
+        "sku": product.sku,
+        "title": product.title,
+        "price": str(product.price),
+        "currency": product.currency,
+        "category": product.category,
+        "status": _status_value(product.status),
+        "stock": product.stock,
+    }
+
+
 class InMemoryOrderStore:
     """订单只读存储内存实现(spec #34 接缝;数据台订单表/汇率卡片走势端点离线可跑,不触 PG)。
 

@@ -19,7 +19,13 @@ from python_backend.core.approvals import classify_action
 from python_backend.db.models import Order, OrderStatus, Product, ProductStatus, Ticket
 from python_backend.db.session import SessionFactory
 from python_backend.vector_repo.base import VectorRecord
-from tests.conftest import FakeEmbedding, FakeLlm, InMemoryVectorRepository, require_postgres
+from tests.conftest import (
+    FakeEmbedding,
+    FakeLlm,
+    InMemoryProductLookup,
+    InMemoryVectorRepository,
+    require_postgres,
+)
 
 
 def make_executor(llm: FakeLlm | None = None) -> ToolExecutor:
@@ -40,6 +46,7 @@ def test_classify_action_covers_all_exposed_tools() -> None:
         "draft.create",
         "draft.edit",
         "list_orders",
+        "product_lookup",
         "check_inventory",
         "detect_anomalies",
         "list_approvals",
@@ -143,6 +150,96 @@ async def test_execute_faq_search_returns_hits() -> None:
 async def test_execute_trend_query_empty_collection_returns_empty() -> None:
     result = await make_executor().execute("trend_query", {"query": "宠物用品"})
     assert result["hits"] == []
+
+
+# —— 单元:product_lookup(issue #35;注入替身直查 executor.execute 真工具链)——
+
+
+def _lookup_fixture(*, count: int) -> list[Product]:
+    """内存商品样本:1 条固定 SKU + N 条同前缀标题(测截断用),主键显式给定(不入库)。"""
+    rows = [
+        Product(
+            id=1,
+            sku="DEMO-OD-002",
+            title="防水手机壳",
+            price=Decimal("9.99"),
+            currency="USD",
+            category="配件",
+            status=ProductStatus.ACTIVE,
+            stock=3,
+        )
+    ]
+    for index in range(count):
+        rows.append(
+            Product(
+                id=100 + index,
+                sku=f"DEMO-OD-{1000 + index}",
+                title=f"宠物饮水机 {index:02d}",
+                price=Decimal("19.90"),
+                currency="USD",
+                category="宠物",
+                status=ProductStatus.DRAFT,
+                stock=5,
+            )
+        )
+    return rows
+
+
+def _lookup_executor(rows: list[Product]) -> ToolExecutor:
+    return ToolExecutor(
+        llm=FakeLlm(),
+        vector=InMemoryVectorRepository(),
+        embedding=FakeEmbedding(),
+        products=InMemoryProductLookup(rows),
+    )
+
+
+async def test_execute_product_lookup_by_sku() -> None:
+    """SKU 精确命中(大小写不敏感),返回定位所需字段。"""
+    executor = _lookup_executor(_lookup_fixture(count=0))
+    result = await executor.execute("product_lookup", {"sku": "demo-od-002"})
+    assert result["truncated"] is False
+    assert result["matches"] == [
+        {
+            "id": 1,
+            "sku": "DEMO-OD-002",
+            "title": "防水手机壳",
+            "price": "9.99",
+            "currency": "USD",
+            "category": "配件",
+            "status": "active",
+            "stock": 3,
+        }
+    ]
+
+
+async def test_execute_product_lookup_title_truncates_at_limit() -> None:
+    """标题模糊命中超上限:回前 10 条并如实标注 truncated(不静默截断)。"""
+    executor = _lookup_executor(_lookup_fixture(count=12))
+    result = await executor.execute("product_lookup", {"title": "饮水机"})
+    assert len(result["matches"]) == 10
+    assert result["truncated"] is True
+    assert all("饮水机" in match["title"] for match in result["matches"])
+
+
+async def test_execute_product_lookup_no_match_returns_empty() -> None:
+    executor = _lookup_executor(_lookup_fixture(count=0))
+    assert await executor.execute("product_lookup", {"sku": "NOT-EXIST"}) == {"matches": [], "truncated": False}
+    assert (await executor.execute("product_lookup", {"title": "饮水机"}))["matches"] == []
+
+
+async def test_execute_product_lookup_requires_sku_or_title() -> None:
+    """两个入参至少给一:均缺显式报错,不猜。"""
+    executor = _lookup_executor(_lookup_fixture(count=0))
+    with pytest.raises(ValueError, match="至少其一"):
+        await executor.execute("product_lookup", {})
+
+
+async def test_execute_product_lookup_sku_takes_precedence_over_title() -> None:
+    """二者同给以 sku 为准(精确优先于模糊):标题指向别处也不影响 SKU 定位。"""
+    executor = _lookup_executor(_lookup_fixture(count=0))
+    result = await executor.execute("product_lookup", {"sku": "DEMO-OD-002", "title": "饮水机"})
+    assert [match["id"] for match in result["matches"]] == [1]
 
 
 # —— integration:DB 工具(capture/apply 见下)——
@@ -352,6 +449,31 @@ async def test_execute_list_approvals_reads_batches(product: Product) -> None:
     )
     result = await make_executor().execute("list_approvals", {"status": "pending"})
     assert any(row["action_type"] == "product.publish" for row in result)
+
+
+# —— integration:product_lookup 真 PG 实现(issue #35)——
+
+
+async def test_postgres_product_lookup_case_insensitive_and_scoped(product: Product) -> None:
+    """PG 实现经工具链直查:SKU 大小写不敏感精确(不误命中同前缀 SKU)。"""
+    require_postgres()
+    executor = make_executor()
+    result = await executor.execute("product_lookup", {"sku": product.sku.lower()})
+    assert [match["id"] for match in result["matches"]] == [product.id]
+    assert (await executor.execute("product_lookup", {"sku": f"{product.sku}-x"}))["matches"] == []
+
+
+async def test_postgres_product_lookup_title_fuzzy(product: Product) -> None:
+    """标题 contains 直查 PG;搜索串取唯一随机后缀(库内多行同标题时模糊命中被上限截断)。"""
+    require_postgres()
+    token = uuid.uuid4().hex[:8]
+    async with SessionFactory() as session:
+        row = await session.get(Product, product.id)
+        assert row is not None
+        row.title = f"限定探针商品 {token}"
+        await session.commit()
+    result = await make_executor().execute("product_lookup", {"title": f"限定探针商品 {token}"})
+    assert [match["id"] for match in result["matches"]] == [product.id]
 
 
 # —— integration:capture 现状快照 ——

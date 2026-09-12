@@ -41,6 +41,7 @@ from python_backend.db.models import (
     ReplyTemplate,
     Ticket,
 )
+from python_backend.db.product_lookup import TITLE_MATCH_LIMIT, PostgresProductLookup, ProductLookupStore
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.embedding import EmbeddingClient, EmbeddingService
 from python_backend.infrastructure.fx import CNY, FxService, FxUnavailableError
@@ -249,10 +250,13 @@ class ToolExecutor:
         llm: LlmClient | None = None,
         vector: VectorRepository | None = None,
         embedding: EmbeddingClient | None = None,
+        products: ProductLookupStore | None = None,
     ) -> None:
         self._llm = llm or LlmService()
         self._vector = vector
         self._embedding = embedding or EmbeddingService()
+        # issue #35:product_lookup 数据源经此注入(默认 PG 实现;测试注入内存替身)
+        self._products: ProductLookupStore = products or PostgresProductLookup()
 
     # —— execute:auto 动作直行(分发读动作注册表)——
 
@@ -749,6 +753,17 @@ async def _execute_check_inventory(executor: ToolExecutor, params: dict) -> dict
     }
 
 
+async def _execute_product_lookup(executor: ToolExecutor, params: dict) -> dict:
+    """issue #35:按 SKU/标题定位商品(只读),把口语指代解析成 ID 供后续动作。
+
+    入参校验(至少给一、sku 优先)与截断语义在存储层 lookup 内统一(生产/替身同口径)。
+    """
+    hits, truncated = await executor._products.lookup(
+        sku=params.get("sku"), title=params.get("title"), limit=TITLE_MATCH_LIMIT
+    )
+    return {"matches": hits, "truncated": truncated}
+
+
 async def _execute_list_approvals(executor: ToolExecutor, params: dict) -> list[dict]:
     status = params.get("status")
     async with SessionFactory() as session:
@@ -848,6 +863,7 @@ REGISTRY.register("draft.create", risk="auto", label="创建商品草稿", execu
 REGISTRY.register("draft.edit", risk="auto", label="编辑商品草稿", execute=_execute_draft_edit)
 REGISTRY.register("list_orders", risk="auto", label="订单列表", execute=_execute_list_orders)
 REGISTRY.register("check_inventory", risk="auto", label="库存检查", execute=_execute_check_inventory)
+REGISTRY.register("product_lookup", risk="auto", label="商品查询", execute=_execute_product_lookup)
 REGISTRY.register("detect_anomalies", risk="auto", label="异常检测", execute=_execute_detect_anomalies)
 REGISTRY.register("list_approvals", risk="auto", label="审批批次列表", execute=_execute_list_approvals)
 REGISTRY.register("faq_search", risk="auto", label="FAQ 检索", execute=ToolExecutor._execute_faq_search)

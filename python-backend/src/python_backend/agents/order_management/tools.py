@@ -26,6 +26,17 @@ ORDER_TOOLS = [
         ),
     ),
     ToolDefinition(
+        name="product_lookup",
+        description=(
+            "按 SKU 或标题定位商品(只读),返回候选列表(含 id/sku/title/status/stock)。"
+            "用户以 SKU 或标题指代商品而你没有其商品 ID 时,先用本工具解析出 ID,再调用相应动作工具"
+        ),
+        parameters=_object(
+            sku={"type": "string", "description": "商品 SKU,精确匹配(sku 与 title 至少给一)(可选)"},
+            title={"type": "string", "description": "商品标题关键词,模糊匹配(sku 与 title 至少给一)(可选)"},
+        ),
+    ),
+    ToolDefinition(
         name="check_inventory",
         description="检查商品真实库存(读库,非自报):低于安全线给出五档告警文案;阈值缺省读商品自身设置",
         parameters=_object(
