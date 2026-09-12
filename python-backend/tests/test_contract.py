@@ -79,13 +79,17 @@ def test_approval_batch_status_values_match_contract() -> None:
 
 
 def test_ws_event_names_present() -> None:
-    """WS 事件名(审批/任务/通知)在契约中保留(spec #9:旧系统事件名已清理)。"""
+    """WS 事件名(审批/任务/通知/切片)在契约中保留(spec #9:旧系统事件名已清理)。"""
     text = EVENTS_TS.read_text(encoding="utf-8")
     assert "APPROVAL_REQUESTED: 'approval.requested'" in text
     assert "APPROVAL_DECIDED: 'approval.decided'" in text
     assert "NOTIFICATION_CREATED: 'notification.created'" in text
     assert "NOTIFICATION_READ: 'notification.read'" in text
     assert "TASK_INTERRUPTED: 'task.interrupted'" in text
+    # 协作面板数据源:规划/分派轨迹实时可见
+    assert "TASK_PLANNED: 'task.planned'" in text
+    assert "SLICE_STARTED: 'slice.started'" in text
+    assert "SLICE_COMPLETED: 'slice.completed'" in text
 
 
 def test_legacy_event_types_removed() -> None:

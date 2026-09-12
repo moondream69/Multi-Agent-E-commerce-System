@@ -5,9 +5,12 @@
 
 export const EventType = {
   TASK_CREATED: 'task.created',
+  TASK_PLANNED: 'task.planned',
   TASK_INTERRUPTED: 'task.interrupted',
   TASK_COMPLETED: 'task.completed',
   TASK_FAILED: 'task.failed',
+  SLICE_STARTED: 'slice.started',
+  SLICE_COMPLETED: 'slice.completed',
   APPROVAL_REQUESTED: 'approval.requested',
   APPROVAL_DECIDED: 'approval.decided',
   NOTIFICATION_CREATED: 'notification.created',
@@ -20,6 +23,32 @@ export interface TaskLifecyclePayload {
   threadId: string;
   status: 'created' | 'interrupted' | 'completed' | 'failed';
   error?: string | null;
+}
+
+// —— 协作面板数据源(规划/分派轨迹透明):计划产出即广播,不必等任务终态 ——
+
+export interface PlannedSlice {
+  no: number;
+  agent: string;
+  description: string;
+  dependsOn: number[];
+  approvalPoints: string[];
+}
+
+export interface TaskPlannedPayload {
+  threadId: string;
+  slices: PlannedSlice[];
+}
+
+export interface SliceStartedPayload {
+  threadId: string;
+  sliceNo: number;
+  agent: string;
+}
+
+// 切片终态:rejected > failed > completed(与图侧 _emit_completed 优先级一致)
+export interface SliceCompletedPayload extends SliceStartedPayload {
+  status: 'completed' | 'failed' | 'rejected';
 }
 
 // —— 切片式审批批次(spec #7:切片内同类高危动作打包真实参数快照,批内同进同退)——

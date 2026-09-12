@@ -115,26 +115,51 @@ def _brief(result: dict) -> str:
     return "已完成"
 
 
-def _manager_node(planner: Planner, tracer: TaskTracer) -> Callable[[SupervisorState], Awaitable[dict]]:
+def _plan_event_payload(thread_id: str, plan: SlicePlan) -> dict:
+    """task.planned 载荷(契约 camelCase):规划轨迹透明——计划产出即广播(含重规划)。"""
+    return {
+        "threadId": thread_id,
+        "slices": [
+            {
+                "no": s.no,
+                "agent": s.agent,
+                "description": s.description,
+                "dependsOn": s.depends_on,
+                "approvalPoints": s.approval_points,
+            }
+            for s in plan.slices
+        ],
+    }
+
+
+def _manager_node(
+    planner: Planner, tracer: TaskTracer, emitter: EventEmitter
+) -> Callable[[SupervisorState], Awaitable[dict]]:
     async def run(state: SupervisorState) -> dict:
         results = state.get("results", {})
         with tracer.span("manager.plan", input={"request": state["request"]}):
             if not any(r.get("rejected") for r in results.values()):
                 context = state.get("context")
                 if context:
-                    return {"plan": await planner.plan(state["request"], context)}
-                return {"plan": await planner.plan(state["request"])}
-
-            # 重规划路径:携拒因 + 已完成上下文;超限强制终止;切片号冲突强制终止
-            replan_count = state.get("replan_count", 0) + 1
-            if replan_count > REPLAN_LIMIT:
-                return {"plan": PlanFailed(f"重规划次数超限({REPLAN_LIMIT})"), "replan_count": replan_count}
-            plan = await planner.plan(_replan_prompt(state["request"], results))
+                    plan: SlicePlan | PlanFailed = await planner.plan(state["request"], context)
+                else:
+                    plan = await planner.plan(state["request"])
+                update: dict = {"plan": plan}
+            else:
+                # 重规划路径:携拒因 + 已完成上下文;超限强制终止;切片号冲突强制终止
+                replan_count = state.get("replan_count", 0) + 1
+                if replan_count > REPLAN_LIMIT:
+                    return {"plan": PlanFailed(f"重规划次数超限({REPLAN_LIMIT})"), "replan_count": replan_count}
+                plan = await planner.plan(_replan_prompt(state["request"], results))
+                if isinstance(plan, SlicePlan):
+                    conflicts = sorted(no for no in (s.no for s in plan.slices) if no in results)
+                    if conflicts:
+                        plan = PlanFailed(f"重规划切片号与已完成切片冲突:{conflicts}")
+                update = {"plan": plan, "replan_count": replan_count}
             if isinstance(plan, SlicePlan):
-                conflicts = sorted(no for no in (s.no for s in plan.slices) if no in results)
-                if conflicts:
-                    plan = PlanFailed(f"重规划切片号与已完成切片冲突:{conflicts}")
-            return {"plan": plan, "replan_count": replan_count}
+                # 协作面板数据源:计划实时可见(不必等任务终态拉详情)
+                await emitter.emit("task.planned", _plan_event_payload(state.get("thread_id", ""), plan))
+            return update
 
     return run
 
@@ -213,6 +238,8 @@ async def _execute_slice(
         run = existing[0].run_output or {}
         batches = [{"batch_id": r.batch_id, "action_type": r.action_type, "actions": r.actions} for r in existing]
     else:
+        # 协作面板数据源:分派信号(durable 重放不重发,避免 resume 时闪现「执行中」)
+        await emitter.emit("slice.started", {"threadId": thread_id, "sliceNo": slice_.no, "agent": slice_.agent})
         runner = agents.get(slice_.agent, _default_agent)
         with tracer.span(f"slice.{slice_.agent}", input={"description": slice_.description}):
             try:
@@ -287,10 +314,24 @@ async def _execute_slice(
         # 未完成如实上报(B17 步数超限 / issue #10 子图 LLM 失败),由 _aggregate 转 error
         merged["incomplete"] = run["incomplete"]
 
+    async def _emit_completed() -> None:
+        """切片终态广播(rejected > failed > completed):面板据此归位,防卡「执行中」。"""
+        if merged.get("rejected"):
+            status = "rejected"
+        elif merged.get("incomplete"):
+            status = "failed"
+        else:
+            status = "completed"
+        await emitter.emit(
+            "slice.completed",
+            {"threadId": thread_id, "sliceNo": slice_.no, "agent": slice_.agent, "status": status},
+        )
+
     if batches:
         assert batch_store is not None  # 有批次必有存储(创建/重放路径都经 store)
         if shadow_mode:
             merged["shadow_batches"] = len(batches)
+            await _emit_completed()
             return {"results": {slice_.no: merged}}
 
         decision = interrupt(
@@ -311,6 +352,7 @@ async def _execute_slice(
                     comment=comment,
                 )
             merged.update({"rejected": True, "terminated": True, "comment": comment})
+            await _emit_completed()
             return {"results": {slice_.no: merged}}
 
         decisions: dict = decision.get("decisions") or {}
@@ -340,6 +382,7 @@ async def _execute_slice(
             merged["comment"] = "; ".join(c for c in rejected_comments if c)
         if conflicts:
             merged["conflict"] = "; ".join(conflicts)
+    await _emit_completed()
     return {"results": {slice_.no: merged}}
 
 
@@ -434,7 +477,7 @@ def build_supervisor(
     # langgraph 的 StateLike/_Node 泛型上界在静态检查下对具体 TypedDict 与
     # 逆变节点函数必然报 invalid-argument-type(运行时合法且为官方文档模式),故精确忽略。
     builder = StateGraph(SupervisorState)  # ty: ignore
-    builder.add_node("manager", _manager_node(planner, tracer))  # ty: ignore
+    builder.add_node("manager", _manager_node(planner, tracer, emitter))  # ty: ignore
     builder.add_node("prepare", _prepare)
     builder.add_node("execute_slice", execute_slice)
     builder.add_node("check_layer", _check_layer)

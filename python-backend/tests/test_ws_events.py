@@ -62,6 +62,123 @@ async def test_graph_emits_approval_requested_once() -> None:
     assert len([e for e in emitter.events if e[0] == "approval.requested"]) == 1
 
 
+async def test_graph_emits_planned_and_slice_lifecycle() -> None:
+    """图侧(协作面板数据源):规划完成广播 task.planned(切片计划实时可见,不再等终态);
+    无审批切片 started/completed 成对,completed 携带终态 status。"""
+    emitter = RecordingEmitter()
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent([], answer="已执行")},
+        checkpointer=InMemorySaver(),
+        batch_store=InMemoryApprovalBatchStore(),
+        apply_fn=FakeApply(),
+        emitter=emitter,
+    )
+    await graph.ainvoke(
+        SupervisorState(request="查询订单", thread_id="ws-lifecycle"),
+        {"configurable": {"thread_id": "ws-lifecycle"}},
+    )
+
+    planned = [e for e in emitter.events if e[0] == "task.planned"]
+    assert len(planned) == 1
+    assert planned[0][1] == {
+        "threadId": "ws-lifecycle",
+        "slices": [
+            {
+                "no": 1,
+                "agent": "order_management",
+                "description": "上架商品",
+                "dependsOn": [],
+                "approvalPoints": ["上架审批"],
+            }
+        ],
+    }
+
+    started = [e for e in emitter.events if e[0] == "slice.started"]
+    assert len(started) == 1
+    assert started[0][1] == {"threadId": "ws-lifecycle", "sliceNo": 1, "agent": "order_management"}
+    completed = [e for e in emitter.events if e[0] == "slice.completed"]
+    assert len(completed) == 1
+    assert completed[0][1]["status"] == "completed"
+
+
+async def test_slice_completed_after_approval_resume() -> None:
+    """有审批切片:interrupt 挂起期间只发 started,不发 completed(等待审批是中间态,非完成);
+    approve resume 且 apply 完成后才发 completed。"""
+    store = InMemoryApprovalBatchStore()
+    emitter = RecordingEmitter()
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent([], actions=[PUBLISH], answer="已登记")},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        apply_fn=FakeApply(),
+        emitter=emitter,
+    )
+    config = {"configurable": {"thread_id": "ws-approval-lifecycle"}}
+    await graph.ainvoke(SupervisorState(request="上架商品", thread_id="ws-approval-lifecycle"), config)
+    assert "slice.started" in emitter.names()
+    assert "slice.completed" not in emitter.names(), "等待审批期间切片不得标记完成"
+
+    snapshot = await graph.aget_state(config)
+    interrupt_ = snapshot.tasks[0].interrupts[0]
+    batch_id = interrupt_.value["batches"][0]["batch_id"]
+    await graph.ainvoke(
+        Command(resume={interrupt_.id: {"terminate": False, "decisions": {batch_id: {"decision": "approve"}}}}),
+        config,
+    )
+    completed = [e for e in emitter.events if e[0] == "slice.completed"]
+    assert len(completed) == 1
+    assert completed[0][1]["status"] == "completed"
+
+
+async def test_slice_completed_failed_on_incomplete() -> None:
+    """未完成切片(步数超限/子图 LLM 失败)→ completed 事件 status=failed,面板如实显示。"""
+
+    async def incomplete_agent(slice_) -> dict:
+        return {"agent": slice_.agent, "incomplete": "步数超限(10)"}
+
+    emitter = RecordingEmitter()
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": incomplete_agent},
+        checkpointer=InMemorySaver(),
+        batch_store=InMemoryApprovalBatchStore(),
+        apply_fn=FakeApply(),
+        emitter=emitter,
+    )
+    await graph.ainvoke(
+        SupervisorState(request="查询订单", thread_id="ws-incomplete"),
+        {"configurable": {"thread_id": "ws-incomplete"}},
+    )
+    completed = [e for e in emitter.events if e[0] == "slice.completed"]
+    assert len(completed) == 1
+    assert completed[0][1]["status"] == "failed"
+
+
+async def test_slice_completed_rejected_on_terminate() -> None:
+    """用户终止(terminate)→ 切片 completed 事件 status=rejected(拒绝归属可见,非卡在执行中)。"""
+    store = InMemoryApprovalBatchStore()
+    emitter = RecordingEmitter()
+    graph = build_supervisor(
+        StubPlanner(),
+        agents={"order_management": slice_agent([], actions=[PUBLISH], answer="已登记")},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        apply_fn=FakeApply(),
+        emitter=emitter,
+    )
+    config = {"configurable": {"thread_id": "ws-terminated"}}
+    await graph.ainvoke(SupervisorState(request="上架商品", thread_id="ws-terminated"), config)
+    snapshot = await graph.aget_state(config)
+    interrupt_ = snapshot.tasks[0].interrupts[0]
+    await graph.ainvoke(Command(resume={interrupt_.id: {"terminate": True, "decisions": {}}}), config)
+
+    completed = [e for e in emitter.events if e[0] == "slice.completed"]
+    assert len(completed) == 1
+    assert completed[0][1]["status"] == "rejected"
+
+
 def make_client() -> tuple[TestClient, InMemoryApprovalBatchStore, FakeApply, RecordingEmitter]:
     store = InMemoryApprovalBatchStore()
     apply_fn = FakeApply()
