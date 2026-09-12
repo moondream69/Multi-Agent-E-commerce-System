@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { BusinessSnapshot } from './BusinessSnapshot';
 import { CollabPipeline } from './CollabPipeline';
 import { EventWall } from './EventWall';
+import { FxCard } from './FxCard';
 import { SessionBar } from './SessionBar';
 import { SessionMessages } from './SessionMessages';
 import { useCollabPipeline } from '../hooks/useCollabPipeline';
 import { useSessions } from '../hooks/useSessions';
 import { createTask, fetchTaskDetail, fetchTasks } from '../services/tasks';
 import { importCsv } from '../services/imports';
+import { AGENT_LABELS } from '../labels';
 import {
   ImportReport,
   SlicePlanSlice,
@@ -16,12 +18,6 @@ import {
 } from '../types/events';
 
 // —— 驾驶舱(spec #8 / 2026-09 重绘):协作管线(签名)+ Manager 第 4 角色 + 切片时间线 + 事件墙 ——
-
-const AGENT_LABELS: Record<string, string> = {
-  product_research: '选品',
-  order_management: '订单',
-  customer_service: '客服',
-};
 
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -252,7 +248,16 @@ export function CsvImportCard() {
   );
 }
 
-export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
+export function Cockpit({
+  onOpenApprovals,
+  prefill,
+  onPrefillConsumed,
+}: {
+  onOpenApprovals: () => void;
+  /** 数据台「问 Agent」预填的 Manager 输入(spec #34):只预填,不代发 */
+  prefill: string | null;
+  onPrefillConsumed: () => void;
+}) {
   const pipeline = useCollabPipeline();
   const {
     sessionId,
@@ -287,6 +292,13 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
     setDetail(null);
     refreshTasks();
   }, [refreshTasks]);
+
+  // 数据台行级「问 Agent」:落到输入框即消费(不自动提交,由运营确认后发起)
+  useEffect(() => {
+    if (prefill === null) return;
+    setInput(prefill);
+    onPrefillConsumed();
+  }, [prefill, onPrefillConsumed]);
 
   useEffect(() => {
     if (!selected) return;
@@ -378,9 +390,14 @@ export function Cockpit({ onOpenApprovals }: { onOpenApprovals: () => void }) {
           </div>
         </div>
 
-        {/* 中栏:经营快照 + 会话消息流 / 切片时间线 */}
+        {/* 中栏:经营快照 + 汇率卡片(口径相邻:成交额即 CNY 快照口径)/ 会话消息流 */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
-          <BusinessSnapshot />
+          <div className="flex shrink-0 items-stretch gap-4">
+            <div className="min-w-0 flex-1">
+              <BusinessSnapshot />
+            </div>
+            <FxCard />
+          </div>
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface shadow-card">
             {selected ? (
               <SliceTimeline
