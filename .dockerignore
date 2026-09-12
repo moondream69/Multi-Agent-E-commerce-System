@@ -1,0 +1,26 @@
+# 构建上下文裁剪(app / simulator 共用根 context)。
+# 不裁则每次 build 都要把 ~486MB 送给 daemon:node_modules 169MB + .venv 306MB + .git 7.4MB + 走查证据 3.4MB。
+# 注意:.gitignore 对 Docker 构建完全无效(git 语义 ≠ 构建上下文语义),这里必须独立声明。
+# 另:node 阶段 `COPY frontend/ ./` 是「合并」语义——不排 node_modules 会用宿主的 win32 树盖掉 npm ci 的产物。
+
+frontend/node_modules
+python-backend/.venv
+frontend/dist
+
+# 含密钥(.env 为 compose 运行期 env_file 读取,与构建无关);.env.example 亦非构建所需
+.env
+.env.*
+
+.git
+.github
+.claude
+docs
+
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+.screenshots
+.playwright-cli
+.idea
+*.log

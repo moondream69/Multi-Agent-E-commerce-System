@@ -1,6 +1,6 @@
 # 运维手册:内部卖家工具(局域网部署)
 
-> 定位:2-5 人跨境卖家团队内部工具。后端单容器(Docker Compose),前端开发态经 Vite 代理访问。
+> 定位:2-5 人跨境卖家团队内部工具。单容器(Docker Compose)同源托管前端静态产物与 API——**浏览器直接开 `http://<主机>:3000`**;开发态另可用 Vite 代理(见快速启动第 5 步)。
 
 ## 快速启动
 
@@ -23,14 +23,20 @@ docker compose exec ollama ollama pull bge-m3
 # 4. 可选:开启模拟流量(每 300 秒一轮随机买家行为,烧真 DeepSeek token)
 docker compose --profile sim up -d
 
-# 5. 前端(开发态):npm run dev(5173,/api 与 /socket.io 代理到 3000)
-cd frontend && npm run dev
+# 5. 前端:生产形态已随 app 镜像托管——浏览器开 http://localhost:3000 即可(前端 + API 同源)
+#    改前端代码须 docker compose build app(镜像内是构建产物,无挂载);要 HMR 才用下面的 Vite:
+cd frontend && npm run dev   # 开发态:5173,/api 与 /socket.io 代理到 3000
 ```
 
 > ⚠️ **dev server 必须落在 5173**:后端 `cors_origins` 默认只放行 `http://localhost:5173`。
 > 5173 被占时 Vite 会自动跳到 5174+,此时 REST 仍通(代理直连),但 **socket.io 握手会被
 > 后端按来源拒绝**(WS 升级 403 + 轮询 400「session unknown」,界面显「实时通道未连接」)。
 > 现象极具误导性——看起来像 WS 坏了,实为端口/来源不匹配。多个 Vite 实例常驻时先杀掉再起。
+
+> ⚠️ **换 origin 访问(局域网 IP / 域名)须列入 `CORS_ORIGINS`**:单端口同源后 REST 不再跨域,
+> 但 socket.io 对**每个带 Origin 的握手**都校验来源——用 `http://192.168.x.x:3000` 打开而白名单
+> 只有 localhost 时,症状与上条同款(页面能开、事件流不动)。**不可置空绕过**:空值等于跳过校验,
+> 而事件是全局广播、无房间、无鉴权。
 
 ## 硬约束与注意事项
 
@@ -131,6 +137,14 @@ docker compose exec postgres psql -U postgres mae -c \
 驾驶舱左栏「CSV 数据导入」选「商品(sku 幂等,落草稿)」上传 → 商品落 draft,
 上架经任务走审批护栏(顺带验收批量审批打包)。买家 张伟 已由 seed 提供,模拟流量即可下单。
 
+> ⚠️ **演示前须知(issue #36 会话实测补记,两条都实测踩过)**:
+> ① **投诉/工单演示需要库里有订单**——空库 + 只导商品 CSV 时,客服 Agent 查不到订单会如实拒建单
+> (自述「缺少必要输入参数,非业务不可处理」),起草工作台显示「未结 0」。先跑一轮模拟流量
+> (`cd python-backend && uv run python -m python_backend.simulator --once`)补出订单与工单再演。
+> ② **演示下架要挑「在售」商品**——商品 CSV 导入后全为 `draft`,此时说「把商品 N 下架」是空操作,
+> Agent 会拒绝提交无意义批次(对 draft 商品下架无可撤销的对外可见状态)。先上架(如 1、4、9),
+> 再下架其中之一,才出审批批次。
+
 ## 审计 SQL(跑一天后评估)
 
 ```bash
@@ -174,6 +188,6 @@ docker compose exec postgres psql -U postgres mae -c \
 | 全员平权审批:任何登录者可通过/拒绝,`decided_by`/`comment` 审计兜底 | ADR-0005「前端」节:登录平权无角色 |
 | JWT 24h、无吊销:改 `AUTH_JWT_SECRET` 全员下线 | 本手册「硬约束与注意事项 → 认证」 |
 | 审批批次无自动过期清扫(`approval_ttl_hours` 预留) | 本手册「硬约束与注意事项 → 审批机制」 |
-| 前端尚无生产托管(开发态 Vite 代理,部署形态待定) | ADR-0005「部署」节:前端静态托管未落地 |
+| 跨 origin 访问须手工维护 `CORS_ORIGINS`(局域网 IP/域名一变就要同步,否则实时通道静默失效) | 本手册「快速启动」第 5 步下第二条警告;`.env.example` 同注 |
 | 下单入口 REST `/api/orders` 保留且需认证,供模拟流量使用 | ADR-0005「业务强化」节:数据入口 |
 | 买家前台维持移除(旧「演示买家前台直购」叙述已过时) | ADR-0005「被修订/取代的既有决策」节:ADR-0003 条 |

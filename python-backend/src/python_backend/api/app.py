@@ -16,11 +16,13 @@ import logging
 import uuid
 from collections.abc import Awaitable
 from decimal import Decimal
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
@@ -361,6 +363,7 @@ def create_app(
     report_store: ReportStore | None = None,
     product_store: ProductStore | None = None,
     order_store: OrderStore | None = None,
+    static_dir: Path | None = None,
 ) -> FastAPI:
     """构建 API 应用:graph/batch_store/apply_fn/emitter/tracer/fx_service/memory/drafting/audit/task_store/
     notification_store/conversation_store/customer_store/ticket_store/report_store/product_store/order_store
@@ -381,7 +384,8 @@ def create_app(
     conversation_store 例外:其挂起审批判定依赖批次存储,而 batch_store 生产由 lifespan 构建
     (create_app 时尚不存在)——此处仅在 batch_store 已给时装配 PG 实现,生产装配由
     main.lifespan 补接线(test_app_wiring 守卫该接线)。
-    product_store / order_store 默认 PG 实现(spec #34 数据台接缝:商品只读列表 + 订单列表/汇率走势)。
+    product_store / order_store 默认 PG 实现(spec #34 数据台接缝:商品只读列表 + 订单列表/汇率走势);
+    static_dir 默认 None(不托管):生产形态由 main 指向镜像内前端构建产物,同源托管单端口。
     """
     app = FastAPI(title="Multi-Agent E-commerce System(切片式人工环节)", version="0.1.0")
     app.state.graph = graph
@@ -913,5 +917,22 @@ def create_app(
             raise HTTPException(status_code=409, detail=outcome.reason)
         await emit_notifications(app.state.notification_store, app.state.emitter, outcome.effects)  # 提交后通知
         return {"status": "executed", "result": {"applied": True}}
+
+    # 生产形态(ADR-0005「部署」节):前端构建产物由本进程同源托管——单端口,WS 免反代,CORS 退出关键路径。
+    # 开发/离线(无 dist)不挂载:根路径保持 404,前端走 Vite(5173 代理)。
+    # 有意不加 SPA 回退:前端无 URL 驱动导航;且 /health 由 main 在本函数返回后才注册,
+    # 此处任何 catch-all 都会按注册序吞掉它。dist 根级新增资源须在此扩挂(前端无 public/ 目录)。
+    if static_dir is not None and (static_dir / "index.html").is_file():
+        index_file = static_dir / "index.html"
+
+        @app.get("/", include_in_schema=False)
+        def root_page() -> FileResponse:
+            """入口须每次回源:重建后 hash 资源名变更,启发式缓存旧入口会白屏。"""
+            return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
+
+        # 单独守卫:StaticFiles 构造期即校验目录存在,裸挂缺失目录会直接抛 RuntimeError
+        assets = static_dir / "assets"
+        if assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
     return app

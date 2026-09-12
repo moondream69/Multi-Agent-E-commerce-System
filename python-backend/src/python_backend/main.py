@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import psycopg
 import socketio
@@ -55,6 +56,15 @@ def build_agents() -> dict[str, AgentRunner]:
     }
 
 
+def _resolve_static_dir() -> Path | None:
+    """前端构建产物目录:多阶段构建 COPY 至镜像 /app/dist(本文件 parents[2] 即 /app)。
+
+    本地 uv 开发指向 python-backend/dist(不存在)→ None,前端仍走 Vite(ADR-0005「部署」节)。
+    """
+    dist = Path(__file__).resolve().parents[2] / "dist"
+    return dist if dist.is_dir() else None
+
+
 def build_app() -> socketio.ASGIApp:
     settings = get_settings()
     socketio_server = build_socketio(settings.cors_origin_list)
@@ -94,8 +104,14 @@ def build_app() -> socketio.ASGIApp:
         await engine.dispose()
 
     # drafting 接真实向量仓库:查证优先硬约束的生产装配(spec #8 B11)
-    app = create_app(emitter=emitter, drafting=DraftingService(vector=MilvusVectorRepository()))
+    static_dir = _resolve_static_dir()
+    app = create_app(
+        emitter=emitter,
+        drafting=DraftingService(vector=MilvusVectorRepository()),
+        static_dir=static_dir,
+    )
     app.router.lifespan_context = lifespan
+    logger.info("前端静态托管:%s", static_dir or "未启用(开发态走 Vite 5173)")
 
     @app.get("/health")
     async def health() -> dict:

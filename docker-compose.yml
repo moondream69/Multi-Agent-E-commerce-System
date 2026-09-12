@@ -201,7 +201,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ---- 应用(重构骨架:仅后端 API;前端静态托管在前端增量接入)----
+  # ---- 应用(多阶段镜像:前端静态产物 + 后端 API 同源单端口)----
 
   app:
     build:
@@ -216,6 +216,10 @@ services:
       MILVUS_URI: http://milvus:19530
       LANGFUSE_HOST: http://langfuse-server:3000
       EMBEDDING_API_URL: http://ollama:11434
+      # 剖面与跨域走插值(shell 环境优先于 .env):ENVIRONMENT=prod docker compose up -d app 即切生产。
+      # CORS_ORIGINS 必须含浏览器实际访问的 origin(含局域网 IP 时的 :3000),否则 socket.io 握手 400 bad-origin。
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
     ports:
       - "3000:3000"
     depends_on:

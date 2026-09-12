@@ -22,8 +22,8 @@ uv run ruff check .                                # Lint (无 --fix,自动修�
 uv run ruff format .                               # 格式化
 uv run ty check .                                  # 类型检查 (Alembic 迁移已排除)
 
-# 前端 (另开终端)
-cd frontend && npm run dev                           # Vite (5173)
+# 前端:生产形态已随 app 镜像同源托管——浏览器直接开 http://<主机>:3000(前端 + API 同端口)
+cd frontend && npm run dev                           # 开发态 Vite (5173,/api 与 /socket.io 代理到 3000;要 HMR 才用)
 cd frontend && npm run lint / lint:fix               # ESLint 检查/自动修复 (前端,无 --fix 不改写)
 cd frontend && npm run format / format:check         # Prettier 格式化/只检查
 cd frontend && npm test                              # vitest 组件测试(新增/修改组件;test:watch 监听)
@@ -38,11 +38,11 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 > lint/format 已移入前端:所有 npm 命令须在 `frontend/` 下执行(仓库根已无 package.json)。
 > Python 侧规范工具为 ruff(lint+format)与 ty(type check),配置在 `python-backend/pyproject.toml`。
 > uv 在 PATH(`E:\Python\Scripts\uv.exe`)。PyPI 直连不畅时:`HTTPS_PROXY=http://127.0.0.1:7897 uv sync`。
-> ⚠️ 改后端代码后须 `docker compose build app && docker compose up -d app`——app 镜像 COPY 源码、无挂载,不重建即跑旧码。
+> ⚠️ 改后端**或前端**代码后须 `docker compose build app && docker compose up -d app`——镜像 COPY 源码 + 构建期打包前端产物(`Dockerfile` 多阶段),无挂载,不重建即跑旧码。生产形态前端与 API 同源单端口(`create_app(static_dir=...)` 注入位挂载);跨 origin 访问须列入 `CORS_ORIGINS`,否则 socket.io 握手 400。
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
 > ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
 > CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
-> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**255 passed / 64 skipped / 49 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂、#35 product_lookup(注入替身 5 例;另有 2 例 PG 实查离线时计 skip,故 62→64);`/api/products` 契约用例原离线 skip,现经替身常跑——故 skip 63→62;**64 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
+> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**265 passed / 64 skipped / 49 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂、#35 product_lookup(注入替身 5 例;另有 2 例 PG 实查离线时计 skip,故 62→64)、#36 前端静态托管(create_app 的 static_dir 注入位 + dist 解析 10 例);`/api/products` 契约用例原离线 skip,现经替身常跑——故 skip 63→62;**64 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
 
 ## 技术栈
 
