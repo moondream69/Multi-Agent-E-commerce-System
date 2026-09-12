@@ -65,6 +65,67 @@ docker compose logs -f simulator      # 模拟流量
 docker compose up -d --build app
 ```
 
+## dev 库清库 runbook(演示/交接前)
+
+把 dev 库恢复到「零业务数据 + 幂等重 seed」的可展示状态——不清则驾驶舱/报表/通知铃铛满屏历史数据
+(测试 tag 行与模拟流量长期累积,notifications 尤甚:按用户全量扇出)。
+
+> ⚠️ 只清 `mae`(dev 库)。`multi_agent_ecommerce` 是**旧系统冻结库,任何情况下不要碰**
+> (它不参与新系统运行,也不充当新库的备份)。
+
+### 清理范围
+
+13 张业务表 + 3 张 checkpoint 数据表:
+
+```
+users, products, customers, orders, conversations, tasks, approval_batches,
+tickets, reply_templates, faq, market_intel, agent_tasks, notifications,
+checkpoints, checkpoint_blobs, checkpoint_writes
+```
+
+**有意保留:**
+
+| 表 | 保留理由 |
+|---|---|
+| `checkpoint_migrations` | LangGraph checkpoint 的 DDL 版本台账;清掉会让 `saver.setup()` 在下次启动时重放建表 DDL |
+| `alembic_version` | Alembic 迁移台账;表结构归 Alembic 管——清库只 `TRUNCATE`,不做任何 DDL |
+
+### 执行
+
+```bash
+docker compose exec postgres psql -U postgres mae -c "TRUNCATE TABLE \
+  users, products, customers, orders, conversations, tasks, approval_batches, \
+  tickets, reply_templates, faq, market_intel, agent_tasks, notifications, \
+  checkpoints, checkpoint_blobs, checkpoint_writes RESTART IDENTITY CASCADE;"
+```
+
+`RESTART IDENTITY` 复位自增序列(id 从 1 重计),`CASCADE` 连带清外键引用行。
+
+### 重 seed
+
+```bash
+docker compose restart app
+```
+
+启动 lifespan 幂等重 seed:
+
+- **管理员**:`ensure_admin_user`(core/auth.py)——按 `AUTH_ADMIN_USERNAME` 建行,密码取 `AUTH_ADMIN_PASSWORD`(留空则跳过,登录不可用)
+- **演示买家**:张伟 / zhangwei@example.com(`ensure_demo_buyers`,core/customer_store.py;仅 `ENVIRONMENT=dev`)
+
+验收(期望 `users ≥ 1` 含 admin、customers 含张伟):
+
+```bash
+docker compose exec postgres psql -U postgres mae -c \
+  "SELECT username FROM users; SELECT name, email FROM customers;"
+```
+
+### 清库后灌演示底料(空库演示必做)
+
+空库没有商品,审批/下单链路无对象可动。演示商品集在 `docs/demo-data/products.csv`
+(12 件,含售罄/严重不足/偏低/接近安全线各档,便于展示库存告警与低库存聚合):
+驾驶舱左栏「CSV 数据导入」选「商品(sku 幂等,落草稿)」上传 → 商品落 draft,
+上架经任务走审批护栏(顺带验收批量审批打包)。买家 张伟 已由 seed 提供,模拟流量即可下单。
+
 ## 审计 SQL(跑一天后评估)
 
 ```bash

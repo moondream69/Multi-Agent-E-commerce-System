@@ -1,0 +1,13 @@
+sku,title,price,category,currency,platform,stock,alert_threshold,description
+DEMO-KT-001,便携咖啡机,45.90,厨房,USD,amazon,10,10,胶囊与咖啡粉两用 一键萃取
+DEMO-KT-002,手冲咖啡壶套装,28.50,厨房,USD,amazon,24,10,耐热玻璃壶配滤杯
+DEMO-KT-003,不锈钢保温杯 500ml,12.99,厨房,USD,amazon,3,10,316 不锈钢 12 小时保温
+DEMO-OD-001,折叠露营椅,39.00,户外,USD,amazon,18,10,承重 150kg 附收纳袋
+DEMO-OD-002,防水双肩包 30L,52.00,户外,USD,amazon,8,10,防泼水面料 可挂登山杖
+DEMO-OD-003,便携户外气炉,33.50,户外,USD,amazon,15,5,2300W 大火力 带电子点火
+DEMO-PT-001,宠物自动喂食器,66.00,宠物,USD,amazon,0,10,定时定量 支持手机远程投喂
+DEMO-PT-002,三层猫爬架,89.00,宠物,USD,amazon,7,10,实木剑麻柱 稳固防倾倒
+DEMO-DG-001,主动降噪蓝牙耳机,59.99,数码配件,USD,amazon,30,10,42dB 降噪 续航 38 小时
+DEMO-DG-002,65W 氮化镓充电器,25.00,数码配件,USD,amazon,42,10,双口快充 兼容笔记本
+DEMO-HM-001,记忆棉颈枕,19.90,家居,CNY,taobao,22,10,慢回弹 可拆洗枕套
+DEMO-HM-002,折叠收纳箱 大号,15.00,家居,CNY,taobao,4,10,可折叠 承重 20kg
