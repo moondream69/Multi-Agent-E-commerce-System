@@ -1,6 +1,6 @@
 """客服 Agent(spec #7):结构化两节点子图,查证优先(B12)。
 
-verify 节点只暴露 faq_search/order_lookup;未产生查证证据时 draft 节点不可达
+verify 节点只暴露 faq_search/order_lookup/product_lookup;未产生查证证据时 draft 节点不可达
 (图级边约束,非提示词):无证据 → nudge 节点明确提示后拉回 verify。
 draft 节点暴露翻译/草稿/模板/情感/工单工具,产出最终草稿。
 """
@@ -25,6 +25,8 @@ from python_backend.domain.tools import ToolRegistry
 VERIFY_SYSTEM = """你是跨境电商客服的查证助手。买家消息需要先查证再作答:
 - 涉及订单问题:调用 order_lookup 查订单真实状态
 - 涉及政策/流程问题:调用 faq_search 查知识库
+- 涉及具体商品(价格/库存/在售状态)问题:调用 product_lookup 按 SKU 或标题查证;
+  标题命中多条候选时列出候选,不得任选其一
 - 查证完成前不得输出最终回复;查证证据会交给起草环节。"""
 
 DRAFT_SYSTEM = """你是跨境电商客服的多语言起草助手。基于买家消息与查证证据起草回复:
@@ -104,7 +106,9 @@ def build_customer_agent(
             "messages": [
                 {
                     "role": "user",
-                    "content": "你尚未调用 faq_search 或 order_lookup 完成查证,不能进入草稿环节。请先查证。",
+                    "content": (
+                        "你尚未调用 faq_search、order_lookup 或 product_lookup 完成查证,不能进入草稿环节。请先查证。"
+                    ),
                 }
             ]
         }

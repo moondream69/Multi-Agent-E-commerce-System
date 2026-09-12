@@ -1,6 +1,7 @@
 """客服 Agent 工具清单(spec #7):verify 节点只暴露查证工具,draft 节点暴露起草工具。
 
 查证优先硬约束(B12)由图级边约束实现:未查证(evidence 为 0)不可达 draft 节点。
+查证工具 = faq_search / order_lookup / product_lookup(issue #38:商品查证计入证据集合)。
 """
 
 from python_backend.domain.tools import ToolDefinition
@@ -24,6 +25,19 @@ VERIFY_TOOLS = [
         parameters=_object(
             order_id={"type": "integer", "description": "订单 ID(order_id 与 customer_id 二选一)(可选)"},
             customer_id={"type": "integer", "description": "客户 ID(order_id 与 customer_id 二选一)(可选)"},
+        ),
+    ),
+    # issue #38:同名工具按各 Agent 各自声明(order_management/tools.py 同款先例),
+    # 动作经全局 REGISTRY 解析(product_lookup = risk auto 免审直行,#35 已注册)
+    ToolDefinition(
+        name="product_lookup",
+        description=(
+            "按 SKU 或标题定位商品(只读),返回候选列表(含 id/sku/title/price/status/stock)。"
+            "买家消息涉及具体商品(价格/库存/在售状态)时用本工具查证"
+        ),
+        parameters=_object(
+            sku={"type": "string", "description": "商品 SKU,精确匹配(sku 与 title 至少给一)(可选)"},
+            title={"type": "string", "description": "商品标题关键词,模糊匹配(sku 与 title 至少给一)(可选)"},
         ),
     ),
 ]

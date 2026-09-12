@@ -187,9 +187,10 @@ async def test_react_step_limit_produces_incomplete() -> None:
 
 async def test_customer_verify_tools_only_in_verify_node() -> None:
     _graph, reg = build_customer_agent(executor=FakeExecutor(), llm=FakeLlm())
-    assert [t.name for t in reg.visible_for("verify")] == ["faq_search", "order_lookup"]
+    assert [t.name for t in reg.visible_for("verify")] == ["faq_search", "order_lookup", "product_lookup"]
     draft_tools = [t.name for t in reg.visible_for("draft")]
     assert "faq_search" not in draft_tools and "order_lookup" not in draft_tools
+    assert "product_lookup" not in draft_tools
     assert "generate_draft" in draft_tools
 
 
@@ -221,6 +222,24 @@ async def test_customer_verify_then_draft_flow() -> None:
     assert result["answer"] == "尊敬的客户,经查证您的订单已发货,预计 3 天送达。"
     assert ("faq_search", {"query": "退货"}) in executor.executed
     assert ("order_lookup", {"order_id": 1}) in executor.executed
+
+
+async def test_customer_product_lookup_counts_as_evidence_and_reaches_draft() -> None:
+    """issue #38:商品查证计入 B12 证据集合——买家商品类提问(product_lookup)查完即可进草稿。"""
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("product_lookup", {"title": "咖啡"})),
+            round_text(""),
+            round_text("亲,该商品售价 129.00 元,现货充足。"),
+        ]
+    )
+    executor = FakeExecutor(results={"product_lookup": {"matches": [{"id": 7, "title": "挂耳咖啡"}]}})
+    graph, _ = build_customer_agent(executor=executor, llm=llm)
+    result = await run(graph)
+
+    assert result["evidence_count"] == 1
+    assert result["answer"] == "亲,该商品售价 129.00 元,现货充足。"
+    assert ("product_lookup", {"title": "咖啡"}) in executor.executed
 
 
 async def test_customer_replayed_assistant_messages_keep_reasoning_content() -> None:
