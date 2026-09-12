@@ -41,6 +41,20 @@ def merge_lists(current: list, update: list) -> list:
     return result
 
 
+def assistant_message(result: ToolCallResult) -> dict:
+    """LLM 轮次结果 → 助手消息(两个子图共用,别各写一份)。
+
+    issue #27:思考模式的 reasoning_content 须在下轮请求里原样回传(空串也要保留该键),
+    否则 DeepSeek V4 类思考模型返 400;响应无该键(非思考模式)则不写字段。
+    """
+    message: dict = {"role": "assistant", "content": result.content or ""}
+    if result.reasoning_content is not None:
+        message["reasoning_content"] = result.reasoning_content
+    if result.tool_calls:
+        message["tool_calls"] = result.tool_calls
+    return message
+
+
 class AgentState(TypedDict, total=False):
     """业务子图状态:ReAct 消息史 + 审批动作收集 + 终态(答案/未完成)。"""
 
@@ -151,15 +165,11 @@ def build_react_agent(
         result = await llm.complete_with_tools(messages, _tools_for_llm())
         step = {"step_count": state.get("step_count", 0) + 1}
         if result.tool_calls:
-            return {
-                **step,
-                "messages": [{"role": "assistant", "content": result.content or "", "tool_calls": result.tool_calls}],
-                "tool_calls": result.tool_calls,
-            }
+            return {**step, "messages": [assistant_message(result)], "tool_calls": result.tool_calls}
         # 作答轮须清空 tool_calls:该键无 reducer,上一轮的陈旧值会误导条件边
         return {
             **step,
-            "messages": [{"role": "assistant", "content": result.content or ""}],
+            "messages": [assistant_message(result)],
             "tool_calls": [],
             "answer": result.content or "",
         }

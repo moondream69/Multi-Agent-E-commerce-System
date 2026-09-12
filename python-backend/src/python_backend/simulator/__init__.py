@@ -43,6 +43,9 @@ FOLLOW_UP_DELAY: tuple[int, int] = (30, 90)
 # 运营指令概率(--include-ops 开启后每轮):分析类指令烧 token 较多,低概率混发
 OPS_PROBABILITY = 0.1
 
+# HTTP 客户端超时(秒):须覆盖同步端点 POST /api/tasks 的真实耗时(图跑完才响应,慢响应可超 30s)
+CLIENT_TIMEOUT = 120.0
+
 
 def choose_action(rng: random.Random, budget_left: int) -> str:
     """按权重选择本轮行为;预算耗尽 → 只浏览(browse 不消耗 LLM)。"""
@@ -77,7 +80,7 @@ class Simulator:
         self.budget_spent = 0
         self.recent_order_ids: list[int] = []
         self._rng = rng or random.Random()
-        self._client = client or httpx.AsyncClient(base_url=self.base_url, timeout=30.0)
+        self._client = client or httpx.AsyncClient(base_url=self.base_url, timeout=CLIENT_TIMEOUT)
         self._sleep = sleep or asyncio.sleep  # 催单延迟的时钟(测试注入,免真实等待)
 
     async def close(self) -> None:

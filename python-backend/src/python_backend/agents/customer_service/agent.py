@@ -12,7 +12,12 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from python_backend.agents.base import ToolCallingLlmClient, merge_lists, resolve_tool_calls
+from python_backend.agents.base import (
+    ToolCallingLlmClient,
+    assistant_message,
+    merge_lists,
+    resolve_tool_calls,
+)
 from python_backend.agents.customer_service.tools import DRAFT_TOOLS, VERIFY_TOOLS
 from python_backend.agents.executor import Executor
 from python_backend.domain.tools import ToolRegistry
@@ -75,11 +80,11 @@ def build_customer_agent(
         if result.tool_calls:
             return {
                 **step,
-                "messages": [{"role": "assistant", "content": result.content or "", "tool_calls": result.tool_calls}],
+                "messages": [assistant_message(result)],
                 "tool_calls": result.tool_calls,
             }
         # 无调用轮须清空 tool_calls:该键无 reducer,陈旧值会误导 after_verify 条件边
-        return {**step, "messages": [{"role": "assistant", "content": result.content or ""}], "tool_calls": []}
+        return {**step, "messages": [assistant_message(result)], "tool_calls": []}
 
     async def verify_tools(state: CustomerState) -> dict:
         observations, collected, executed = await resolve_tool_calls(
@@ -114,12 +119,12 @@ def build_customer_agent(
         if result.tool_calls:
             return {
                 **step,
-                "messages": [{"role": "assistant", "content": result.content or "", "tool_calls": result.tool_calls}],
+                "messages": [assistant_message(result)],
                 "tool_calls": result.tool_calls,
             }
         return {
             **step,
-            "messages": [{"role": "assistant", "content": result.content or ""}],
+            "messages": [assistant_message(result)],
             "tool_calls": [],
             "answer": result.content or "",
         }

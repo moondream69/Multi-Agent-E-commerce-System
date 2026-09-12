@@ -17,6 +17,7 @@ from python_backend.infrastructure.fx import (
     FxService,
     FxUnavailableError,
 )
+from python_backend.settings import Settings
 
 
 class FakeFxClient:
@@ -112,6 +113,24 @@ def test_erapi_client_parses_rates_offline() -> None:
 
     rates = asyncio.run(run())
     assert rates == {"USD": Decimal("0.139"), "EUR": Decimal("0.12"), "CNY": Decimal(1)}
+
+
+async def test_default_api_url_composes_to_base_endpoint() -> None:
+    """issue #29:默认 fx_api_url + 客户端追加 /{base} 须拼出 .../v6/latest/CNY。
+    配置里若含基准币,会拼成 .../latest/CNY/CNY → 404,汇率快照恒失效。"""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"result": "success", "rates": {"USD": 0.139}})
+
+    default = Settings.model_fields["fx_api_url"].default
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = ErApiFxClient(api_url=default, http_client=http)
+    rates = await client.latest("CNY")
+
+    assert seen == ["/v6/latest/CNY"]
+    assert rates == {"USD": Decimal("0.139"), "CNY": Decimal(1)}
 
 
 async def test_erapi_client_rejects_missing_rates() -> None:

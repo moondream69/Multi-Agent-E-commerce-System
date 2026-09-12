@@ -212,6 +212,18 @@ async def test_login_failure_is_loud() -> None:
     await simulator.close()
 
 
+async def test_default_client_timeout_covers_sync_task_endpoint() -> None:
+    """issue #28:POST /api/tasks 是同步端点(图跑完才响应),默认客户端超时须覆盖真实任务耗时
+    ——30s 会在慢响应时抛 ReadTimeout,把服务端已完成的任务误判为失败并中断整轮循环。"""
+    simulator = Simulator("http://sim", "admin", "pw")
+    try:
+        read_timeout = simulator._client.timeout.read
+        assert read_timeout is not None, "默认客户端未设读超时"
+        assert read_timeout >= 120
+    finally:
+        await simulator.close()
+
+
 async def _run_action(simulator: Simulator, action: str) -> dict:
     """驱动指定行为(绕过随机选择,直接调对应内部动作)。"""
     if action == "order":

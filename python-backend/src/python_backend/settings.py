@@ -42,8 +42,8 @@ class Settings(BaseSettings):
     auth_admin_password: str = ""
     # 审批
     approval_ttl_hours: int = 4
-    # 汇率(实时 API,基准 CNY;失效降级用缓存)
-    fx_api_url: str = "https://open.er-api.com/v6/latest/CNY"
+    # 汇率(实时 API,基准 CNY;失效降级用缓存)。基址不含基准币:客户端自行追加 /{base}(issue #29)
+    fx_api_url: str = "https://open.er-api.com/v6/latest"
     # 跨域(前端 dev 服务器)
     cors_origins: str = "http://localhost:5173"
 

@@ -128,6 +128,22 @@ async def test_complete_with_tools_returns_tool_calls() -> None:
     assert result.tool_calls[0]["function"]["name"] == "faq_search"
 
 
+async def test_complete_with_tools_preserves_empty_reasoning_content() -> None:
+    """issue #27 思考模式:响应带 reasoning_content → 原样透传(空串保留该键,不当作缺失)。"""
+    message = {"content": None, "reasoning_content": "", "tool_calls": []}
+    svc = LlmService(transport=mock_transport(lambda _r: httpx.Response(200, json={"choices": [{"message": message}]})))
+    result = await svc.complete_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert result.reasoning_content == ""
+
+
+async def test_complete_with_tools_reasoning_content_absent_is_none() -> None:
+    """非思考模式响应无该键 → None(回传时须省略,不得凭空造字段)。"""
+    message = {"content": "答案", "tool_calls": []}
+    svc = LlmService(transport=mock_transport(lambda _r: httpx.Response(200, json={"choices": [{"message": message}]})))
+    result = await svc.complete_with_tools([{"role": "user", "content": "hi"}], tools=[])
+    assert result.reasoning_content is None
+
+
 class FakeTracer:
     """埋点探针:tracer 协议(record_generation)的实现记录,验证 Langfuse 埋点开关与调用。"""
 

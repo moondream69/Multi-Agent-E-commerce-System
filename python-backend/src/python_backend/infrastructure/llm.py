@@ -44,10 +44,15 @@ class LlmFailure(Exception):
 
 @dataclass
 class ToolCallResult:
-    """工具调用轮次的结果:content 在纯作答时存在,tool_calls 为 OpenAI 原始格式。"""
+    """工具调用轮次的结果:content 在纯作答时存在,tool_calls 为 OpenAI 原始格式。
+
+    reasoning_content:思考模式模型的思维链(issue #27)。该字段须在下轮请求里原样回传
+    (空串也要保留键),否则 provider 返 400;非思考模式响应无此键 → None(回传时省略)。
+    """
 
     content: str | None
     tool_calls: list[dict]
+    reasoning_content: str | None = None
 
 
 class LlmTracer(Protocol):
@@ -151,7 +156,11 @@ class LlmService:
             "max_tokens": max_tokens,
         }
         message = await self._with_gate(lambda: self._request(payload))
-        return ToolCallResult(content=message.get("content"), tool_calls=message.get("tool_calls") or [])
+        return ToolCallResult(
+            content=message.get("content"),
+            tool_calls=message.get("tool_calls") or [],
+            reasoning_content=message.get("reasoning_content"),
+        )
 
     async def _request(self, payload: dict) -> dict:
         url = get_settings().llm_api_url.rstrip("/") + "/v1/chat/completions"

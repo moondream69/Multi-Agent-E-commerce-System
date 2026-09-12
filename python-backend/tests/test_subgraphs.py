@@ -223,6 +223,66 @@ async def test_customer_verify_then_draft_flow() -> None:
     assert ("order_lookup", {"order_id": 1}) in executor.executed
 
 
+async def test_customer_replayed_assistant_messages_keep_reasoning_content() -> None:
+    """issue #27:回灌的助手消息须原样带 reasoning_content(思考模式下缺它 → provider 400)。
+
+    触发位 = verify→draft:verify 的结论助手消息成为 draft 首轮的最后一条消息。
+    """
+    llm = FakeLlm(
+        tool_rounds=[
+            ToolCallResult(
+                content="", tool_calls=[call("faq_search", {"query": "退货"})], reasoning_content="查知识库"
+            ),
+            ToolCallResult(content="查证结论:无命中", tool_calls=[], reasoning_content="证据不足,如实说明"),
+            ToolCallResult(content="草稿正文", tool_calls=[], reasoning_content="起草"),
+        ]
+    )
+    graph, _ = build_customer_agent(executor=FakeExecutor(results={"faq_search": {"hits": []}}), llm=llm)
+    await run(graph)
+
+    draft_messages = llm.calls[-1]["messages"]  # 最后一次调用 = draft 首轮
+    assistants = [m for m in draft_messages if m["role"] == "assistant"]
+    assert [m["reasoning_content"] for m in assistants] == ["查知识库", "证据不足,如实说明"]
+
+
+async def test_customer_assistant_message_keeps_empty_reasoning_content() -> None:
+    """issue #27:空串 reasoning_content 也须保留该键(provider 明示空串同样要求回传)——真值判断会漏掉它。"""
+    empty = ToolCallResult(content="", tool_calls=[call("faq_search", {"query": "退货"})], reasoning_content="")
+    llm = FakeLlm(
+        tool_rounds=[
+            empty,
+            ToolCallResult(content="查证结论", tool_calls=[], reasoning_content=""),
+            ToolCallResult(content="草稿正文", tool_calls=[], reasoning_content=""),
+        ]
+    )
+    graph, _ = build_customer_agent(executor=FakeExecutor(results={"faq_search": {"hits": []}}), llm=llm)
+    await run(graph)
+
+    assistants = [m for m in llm.calls[-1]["messages"] if m["role"] == "assistant"]
+    assert [m["reasoning_content"] for m in assistants] == ["", ""]
+
+
+async def test_react_replayed_assistant_messages_keep_reasoning_content() -> None:
+    """issue #27:ReAct 线与客服线共用同一助手消息构造,同样不得丢 reasoning_content。"""
+    llm = FakeLlm(
+        tool_rounds=[
+            ToolCallResult(content="", tool_calls=[call("lookup", {})], reasoning_content="先查"),
+            ToolCallResult(content="完成", tool_calls=[], reasoning_content="作答"),
+        ]
+    )
+    graph = build_react_agent(
+        name="order_management",
+        system_prompt="测试",
+        registry=registry("lookup"),
+        executor=FakeExecutor(results={"lookup": {"ok": True}}),
+        llm=llm,
+    )
+    await run(graph)
+
+    assistants = [m for m in llm.calls[-1]["messages"] if m["role"] == "assistant"]
+    assert [m["reasoning_content"] for m in assistants] == ["先查"]
+
+
 # —— 工具清单与动作映射(B7:禁做不存在)——
 
 
