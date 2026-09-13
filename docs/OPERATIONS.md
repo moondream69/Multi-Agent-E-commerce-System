@@ -145,16 +145,52 @@ docker compose exec postgres psql -U postgres mae -c \
 > Agent 会拒绝提交无意义批次(对 draft 商品下架无可撤销的对外可见状态)。先上架(如 1、4、9),
 > 再下架其中之一,才出审批批次。
 
+## 试运行数据 provisioning(合成数据集,确定性可复现)
+
+> 2026-09-13 大档(500 商品 / 200 买家 / 2000 订单)全链路实测:导入零错误、重导幂等、
+> 报表/汇率走势成形。**定位**:规模化演练数据——ADR-0005「真实数据 CSV 导入」一环仍欠,
+> 真实数据到手后走同一路径导入即可。
+
+```bash
+# 1. 生成(确定性 seed=20260913;输出 docs/demo-data/synth-{products,customers,orders}.csv,不覆盖演示集)
+cd python-backend && uv run python scripts/gen_synth_data.py
+
+# 2. 按序导入(驾驶舱导入卡或直接 POST /api/import/*;顺序硬约束:商品→买家→订单)
+#    导入报告 created=500/200/2000,零 errors;重导一次全 skipped(幂等键 sku/email/reference)
+
+# 3. 批量激活:商品入库为 draft,上架走审批需 ~11 个 Agent 任务(切片 ≤10 步),
+#    故试运行数据以 provisioning 直写激活为主(与订单 CSV 同样绕开下单链路的既有先例),
+#    保留末 25 件 draft 供「上架审批」演示:
+docker compose exec postgres psql -U postgres mae -c \
+  "UPDATE products SET status='active' WHERE id NOT IN (SELECT id FROM products ORDER BY id DESC LIMIT 25);"
+
+# 4. 时间轴与汇率快照回填(导入入口按设计不取快照/统一 now();合成口径:近 14 天铺开、
+#    当日汇率 ±0.5% 正弦曲线——真实数据导入时改为按当日真实汇率回填,勿造波动):
+docker compose exec postgres psql -U postgres mae -c "
+UPDATE orders SET created_at = now() - (interval '1 day' * (id % 14));
+UPDATE orders SET fx_base_currency='CNY', fx_rate = CASE currency
+    WHEN 'CNY' THEN 1 WHEN 'USD' THEN 6.73078865 WHEN 'EUR' THEN 7.80152910 WHEN 'GBP' THEN 9.08884344
+  END * (1 + 0.005 * sin(2*pi()*(id%14)/7)) WHERE fx_rate IS NULL;"
+
+# 5. 验收:五档分布(38/63/52/86/261)、七态齐全、/api/reports/summary 成交额非零且缺汇率待核=0
+```
+
+> ⚠️ 回填 SQL 的汇率常量按回填当日实际值替换(取 `/api/fx` 或 `default_fx()`);上面是 2026-09-13 快照。
+
 ## 生产切换清单(试运行前)
 
 > 2026-09-13 本机**同库**实切演练已跑通(库未清、dev 遗留在场,正好覆盖「同库跨剖面」最难场景;
 > 证据 `docs/handoffs/evidence-2026-09-13-b15-profile/`)。
+> **同日第二轮**:清库重 seed + 合成数据集在库 + 强凭据轮换 + 局域网 origin,**六项验证二度全绿**;
+> 证据 `docs/handoffs/evidence-2026-09-13-trial/`(含 dev 影子段 4 条在 prod 隐藏、dev 复现回归)。
 
 **1. 库**:建议干净库(走上一节 runbook)——dev 遗留的任务/订单/通知在生产界面同样可见。
 影子段不必再担心:prod 剖面审批中心自动过滤、补执行端点 403(验收 B15,issue #37)。
 
 **2. 强凭据**(`.env`):`AUTH_JWT_SECRET` 用 `openssl rand -hex 32` 重生成(改它 = 全员下线);
-`AUTH_ADMIN_PASSWORD` 换强口令——⚠️ **懒 seed 只对空表生效,改密码须先删 users 行再重启**:
+`AUTH_ADMIN_PASSWORD` 换强口令——⚠️ **懒 seed 只对空表生效,改密码须先删 users 行再重启**
+(2026-09-13 实测三证:旧口令 401 / 新口令 200 / **持旧密钥自签的 token 401**——pyjwt 同时警告
+旧密钥 20 字节低于 SHA256 推荐下限,正是要换的理由):
 
 ```bash
 docker compose exec postgres psql -U postgres mae -c "DELETE FROM users WHERE username='admin';"
@@ -164,6 +200,9 @@ docker compose up -d app   # 重启时按新口令重 seed
 **3. CORS_ORIGINS**:列出浏览器实际访问的全部 origin(局域网部署即 `http://<局域网IP>:3000`)。
 ⚠️ **`127.0.0.1` 与 `localhost` 不等价**(2026-09-13 实测:前者 400 / 后者 200)——未列出的
 origin 在 socket.io 握手被拒 400,而页面照常打开,症状是「登录页能进、实时通道不动」。访问地址一变即同步。
+⚠️ 2026-09-13 实测经 `http://192.168.1.100:3000` 本机访问已通(握手 200、静态入口 200);
+**第二设备实访(含 Windows 防火墙入站放行)尚未验证**——若另一台设备打不开,先查防火墙
+入站规则(tcp 3000),再核对对应 origin 是否在白名单。
 
 **4. 切剖面**:`ENVIRONMENT=prod docker compose up -d app`(shell 环境优先于 `.env` 插值;回退 = 去掉前缀重跑)。
 

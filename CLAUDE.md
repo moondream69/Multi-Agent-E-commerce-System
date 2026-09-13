@@ -32,6 +32,9 @@ cd frontend && npm run build                         # 前端构建 (tsc + vite)
 # 模拟流量 (需后端已启动;容器内为 docker compose --profile sim up -d)
 cd python-backend && uv run python -m python_backend.simulator --once             # 冒烟一轮
 cd python-backend && uv run python -m python_backend.simulator --loop 300         # 每 300 秒一轮
+
+# 试运行合成数据(确定性 seed=20260913,500/200/2000;导入顺序·批量激活·回填 SQL 见 docs/OPERATIONS.md)
+cd python-backend && uv run python scripts/gen_synth_data.py
 ```
 
 > ⚠️ `npm run lint` 只检查、不自动改写——需要自动修复时用 `npm run lint:fix`。
@@ -42,7 +45,7 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
 > ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
 > CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
-> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**270 passed / 64 skipped / 49 deselected**(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂、#35 product_lookup(注入替身 5 例;另有 2 例 PG 实查离线时计 skip,故 62→64)、#36 前端静态托管(create_app 的 static_dir 注入位 + dist 解析 10 例)、#37 影子段剖面过滤 + 补执行端点闸(create_app 的 shadow_mode 注入位 4 例)、#38 客服 product_lookup 查证(1 例);`/api/products` 契约用例原离线 skip,现经替身常跑——故 skip 63→62;**64 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
+> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫;离线自检命令与背景见 issue #13。当前基线(死端口仿真)**270 passed / 66 skipped / 49 deselected**(在线同口径 336 passed;含 #39 起草台商品查证 2 例 PG 门控,故 64→66)(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂、#35 product_lookup(注入替身 5 例;另有 2 例 PG 实查离线时计 skip,故 62→64)、#36 前端静态托管(create_app 的 static_dir 注入位 + dist 解析 10 例)、#37 影子段剖面过滤 + 补执行端点闸(create_app 的 shadow_mode 注入位 4 例)、#38 客服 product_lookup 查证(1 例);`/api/products` 契约用例原离线 skip,现经替身常跑——故 skip 63→62;**64 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
 
 ## 技术栈
 
