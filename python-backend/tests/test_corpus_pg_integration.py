@@ -2,6 +2,7 @@
 
 - 迁移 0006:``faq`` / ``market_intel`` 溯源列齐(六项)、``market_intel.source`` 放宽、台账表在
 - PG 投影幂等:同一批切块 upsert 两次,行数不变(``chunk_id`` 自然键覆盖)—— B27 幂等的 PG 侧
+- faq 投影列拆包:问答两段 + locale + tags 各归其列(票 #49 的 FAQ 形态)
 - 台账唯一:同 (批次 id, 文档标识) 重记即报错(批次 id 一次摄入一个,重复即暴露)
 
 自清理:本用例只写 ``pgtest-corpus`` 前缀的切块与 ``pgtest-`` 前缀的批次,用完即删——不留残留。
@@ -78,6 +79,7 @@ async def _cleanup() -> AsyncIterator[None]:
     yield
     async with SessionFactory() as session, session.begin():
         await session.execute(text("delete from market_intel where doc_id = :doc"), {"doc": DOC_ID})
+        await session.execute(text("delete from faq where doc_id = :doc"), {"doc": DOC_ID})
         await session.execute(text("delete from corpus_batches where batch_id like 'pgtest-%'"))
 
 
@@ -139,3 +141,31 @@ async def test_batch_ledger_rejects_same_batch_twice() -> None:
 
     with pytest.raises(IntegrityError, match=r"uq_corpus_batches_batch_id_doc_id|unique"):
         await store.record_batch(batch_id="pgtest-dup", doc_id=DOC_ID, content_hash="b" * 64, chunk_count=1)
+
+
+async def test_faq_projection_keeps_locale_and_tags() -> None:
+    """faq 投影列拆包:问答两段 + locale + tags 各归其列(票 #49 的 FAQ 形态)。"""
+    chunk = CorpusChunk(
+        chunk_id=f"{DOC_ID}#0",
+        chunk_index=0,
+        doc_id=DOC_ID,
+        kind="faq",
+        title="包裹多久能到?",
+        source="自造 FAQ 语料库",
+        published_at=date(2026, 9, 14),
+        section="物流配送",
+        category="物流配送",
+        content="Q: 包裹多久能到?\nA: 东南亚一般 5-10 个工作日。",
+        question="包裹多久能到?",
+        answer="东南亚一般 5-10 个工作日。",
+        locale="zh-CN",
+        tags=("时效", "物流"),
+    )
+
+    await PostgresCorpusStore().upsert_chunks("faq", [chunk])
+
+    rows = await _rows(
+        "select question, answer, locale, tags from faq where doc_id = :doc",
+        doc=DOC_ID,
+    )
+    assert rows == [("包裹多久能到?", "东南亚一般 5-10 个工作日。", "zh-CN", ["时效", "物流"])]

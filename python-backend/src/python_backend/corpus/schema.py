@@ -12,9 +12,10 @@ PG(`faq` / `market_intel`)与 Milvus 都是它的投影——重灌以文件为�
         source: <来源渠道>                      # 溯源:来源渠道(报告出版方 / 自造语料库)
         published_at: 'YYYY-MM-DD'             # 溯源:发布日期
         category: <情报四类之一 | FAQ 七主题之一>
-        # —— 以下 intel 侧取材凭证(直链、署名、源文件哈希) ——
+        # —— 以下 intel 侧取材凭证(直链、署名、条款依据、源文件哈希) ——
         url: <直链>
         attribution: <署名/许可文本>
+        license_note: <条款依据一句话>          # 复核用:为什么这份材料可收
         source_sha256: <源 PDF 字节哈希>
         pages:                                 # intel:逐页正文(pypdf 抽取后冻结)
           - page: 1
@@ -24,6 +25,7 @@ PG(`faq` / `market_intel`)与 Milvus 都是它的投影——重灌以文件为�
         entries:                               # faq:一问一答为一个知识单元(不切)
           - question: ...
             answer: ...
+            locale: zh-CN                      # 语种(暂只造中文语料;bge-m3 跨语言检索)
             tags: [...]
 """
 
@@ -54,6 +56,7 @@ class Page:
 class FaqEntry:
     question: str
     answer: str
+    locale: str = "zh-CN"  # 语料只造中文(ADR-0007:bge-m3 跨语言检索,不造多语)
     tags: list[str] = field(default_factory=list)
 
 
@@ -71,6 +74,7 @@ class CorpusDocument:
     entries: tuple[FaqEntry, ...] = ()
     url: str | None = None
     attribution: str | None = None
+    license_note: str | None = None
     source_sha256: str | None = None
 
 
@@ -78,8 +82,8 @@ class CorpusDocument:
 class CorpusChunk:
     """一个切块 + 六项完整溯源(Milvus payload 与 PG 行共用的形状)。
 
-    ``content`` 是喂嵌入与供引用的正文;faq 侧另有问答两段(``question`` / ``answer``),
-    供 PG 投影的 question/answer 列直接取用(不在存储层反解正文)。
+    ``content`` 是喂嵌入与供引用的正文;faq 侧另有问答两段(``question`` / ``answer``)
+    与语种/标签,供 PG 投影的 question/answer/locale/tags 列直接取用(不在存储层反解正文)。
     """
 
     chunk_id: str
@@ -94,6 +98,8 @@ class CorpusChunk:
     content: str
     question: str | None = None
     answer: str | None = None
+    locale: str | None = None
+    tags: tuple[str, ...] = ()
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -139,12 +145,28 @@ def save_document(path: Path, document: CorpusDocument) -> None:
 
 
 def content_hash(document: CorpusDocument) -> str:
-    """文档内容哈希(sha256):语料批次台账据此绑定版本,重灌同内容即同哈希。"""
+    """文档内容哈希(sha256):覆盖**投影面**(文档级溯源字段 + 正文/问答单元),任一处改动即换哈希。
+
+    语料批次台账据此绑定版本(评测跑批记录当此哈希)。改标签、语种这类不进正文却进投影的字段
+    同样换哈希——否则「同哈希不同投影」会让版本绑定误判为同一版。
+    """
+    header = "\n".join(
+        (
+            document.doc_id,
+            document.kind,
+            document.title,
+            document.source,
+            document.published_at.isoformat(),
+            document.category,
+        )
+    )
     if document.kind == "faq":
-        canonical = "\n".join(f"{entry.question}\n{entry.answer}" for entry in document.entries)
+        body = "\n".join(
+            f"{entry.question}\n{entry.answer}\n{entry.locale}\n{','.join(entry.tags)}" for entry in document.entries
+        )
     else:
-        canonical = "\n".join(f"{page.number}\n{page.text}" for page in document.pages)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        body = "\n".join(f"{page.number}\n{page.text}" for page in document.pages)
+    return hashlib.sha256(f"{header}\n{body}".encode()).hexdigest()
 
 
 class _LiteralDumper(yaml.SafeDumper):
@@ -168,7 +190,7 @@ def _to_entry(document: CorpusDocument) -> dict[str, Any]:
         "published_at": document.published_at.isoformat(),
         "category": document.category,
     }
-    for name in ("url", "attribution", "source_sha256"):
+    for name in ("url", "attribution", "license_note", "source_sha256"):
         value = getattr(document, name)
         if value is not None:
             entry[name] = value
@@ -176,7 +198,13 @@ def _to_entry(document: CorpusDocument) -> dict[str, Any]:
         entry["pages"] = [{"page": page.number, "text": page.text} for page in document.pages]
     if document.entries:
         entry["entries"] = [
-            {"question": item.question, "answer": item.answer, "tags": item.tags} for item in document.entries
+            {
+                "question": item.question,
+                "answer": item.answer,
+                "locale": item.locale,
+                "tags": item.tags,
+            }
+            for item in document.entries
         ]
     return entry
 
@@ -190,7 +218,12 @@ def _build_document(entry: dict[str, Any], path: Path) -> CorpusDocument:
         raise ValueError(f"{path}:{doc_id} 的 kind 非法({kind!r};可选 {KINDS})")
     pages = tuple(Page(number=int(page["page"]), text=str(page["text"]).rstrip()) for page in entry.get("pages", []))
     entries = tuple(
-        FaqEntry(question=str(item["question"]), answer=str(item["answer"]), tags=list(item.get("tags", [])))
+        FaqEntry(
+            question=str(item["question"]),
+            answer=str(item["answer"]),
+            locale=str(item.get("locale", "zh-CN")),
+            tags=list(item.get("tags", [])),
+        )
         for item in entry.get("entries", [])
     )
     if kind == "intel" and not pages:
@@ -208,5 +241,6 @@ def _build_document(entry: dict[str, Any], path: Path) -> CorpusDocument:
         entries=entries,
         url=entry.get("url"),
         attribution=entry.get("attribution"),
+        license_note=entry.get("license_note"),
         source_sha256=entry.get("source_sha256"),
     )

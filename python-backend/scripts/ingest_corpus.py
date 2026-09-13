@@ -50,6 +50,7 @@ def freeze(args: argparse.Namespace) -> None:
     pages = extract_pages(data)
     if not pages:
         raise SystemExit(f"PDF 未抽出任何文本层:{args.pdf}(扫描件需 OCR,不在范围内)")
+    out = _resolve(args.out)
     document = CorpusDocument(
         doc_id=args.doc_id,
         kind="intel",
@@ -60,15 +61,16 @@ def freeze(args: argparse.Namespace) -> None:
         pages=pages,
         url=args.pdf if args.pdf.startswith("http") else args.pages_url,
         attribution=args.attribution,
+        license_note=args.license_note,
         source_sha256=hashlib.sha256(data).hexdigest(),
     )
-    save_document(args.out, document)
+    save_document(out, document)
 
     # 自检:回读真源 + 离线预演切块(不触任何服务)——坏语料当场暴露
-    [stored] = [doc for doc in load_corpus([args.out]) if doc.doc_id == document.doc_id]
+    [stored] = [doc for doc in load_corpus([out]) if doc.doc_id == document.doc_id]
     chunks = chunk_document(stored)
     lengths = [len(chunk.content) for chunk in chunks]
-    print(f"冻结 {args.doc_id} → {args.out}")
+    print(f"冻结 {args.doc_id} → {out}")
     print(f"  页数 {len(stored.pages)} / 字符 {sum(len(page.text) for page in stored.pages)}")
     print(f"  预演切块 {len(chunks)} 块(长度 {min(lengths)}~{max(lengths)} 字符)")
 
@@ -84,8 +86,13 @@ def _read_pdf_bytes(source: str) -> bytes:
     return response.content
 
 
+def _resolve(path: Path) -> Path:
+    """显式路径相对**仓库根**解析(与 DEFAULT_OUT 同基准)——相对 CWD 在 python-backend/ 下找不到 docs/。"""
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
 async def ingest(args: argparse.Namespace) -> None:
-    paths = [Path(item) for item in args.corpus] if args.corpus else sorted(CORPUS_DIR.glob("*.yaml"))
+    paths = [_resolve(Path(item)) for item in args.corpus] if args.corpus else sorted(CORPUS_DIR.glob("*.yaml"))
     if not paths:
         raise SystemExit(f"{CORPUS_DIR} 下没有语料文件——先跑 freeze")
     documents = load_corpus(paths)
@@ -122,6 +129,7 @@ def main() -> None:
     freeze_parser.add_argument("--category", required=True, help="情报四类之一")
     freeze_parser.add_argument("--pages-url", help="报告页链接(PDF 为本地文件时记这里)")
     freeze_parser.add_argument("--attribution", help="署名 / 许可文本")
+    freeze_parser.add_argument("--license-note", help="条款依据一句话(复核用:为什么这份材料可收)")
     freeze_parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     freeze_parser.set_defaults(func=freeze)
 

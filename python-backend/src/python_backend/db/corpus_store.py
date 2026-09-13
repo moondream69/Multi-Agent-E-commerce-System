@@ -54,7 +54,7 @@ class PostgresCorpusStore(CorpusStore):
 
 
 def _to_row(chunk: CorpusChunk) -> dict:
-    """切块 → 表行:列名差异在此收口(faq 的标题列 = question,正文列 = question/answer)。"""
+    """切块 → 表行:列名差异在此收口(faq 无 category 列——主题落 section;标题列 = question)。"""
     row = {
         "chunk_id": chunk.chunk_id,
         "doc_id": chunk.doc_id,
@@ -62,8 +62,13 @@ def _to_row(chunk: CorpusChunk) -> dict:
         "published_at": chunk.published_at,
         "section": chunk.section,
         "chunk_index": chunk.chunk_index,
-        "category": chunk.category,
     }
     if chunk.kind == "faq":
-        return {**row, "question": chunk.question, "answer": chunk.answer}
-    return {**row, "title": chunk.title, "content": chunk.content}
+        return {
+            **row,
+            "question": chunk.question,
+            "answer": chunk.answer,
+            "locale": chunk.locale,
+            "tags": list(chunk.tags),
+        }
+    return {**row, "category": chunk.category, "title": chunk.title, "content": chunk.content}

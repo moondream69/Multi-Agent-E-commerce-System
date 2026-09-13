@@ -38,6 +38,8 @@ def _faq_chunk(doc: CorpusDocument, index: int, entry: FaqEntry) -> CorpusChunk:
         content=f"Q: {entry.question}\nA: {entry.answer}",
         question=entry.question,
         answer=entry.answer,
+        locale=entry.locale,
+        tags=tuple(entry.tags),
     )
 
 
@@ -79,6 +81,8 @@ def _chunk(
     content: str,
     question: str | None = None,
     answer: str | None = None,
+    locale: str | None = None,
+    tags: tuple[str, ...] = (),
 ) -> CorpusChunk:
     """切块构造的唯一出口:文档级溯源五字段逐块同源,块级字段由调用方给。"""
     return CorpusChunk(
@@ -94,6 +98,8 @@ def _chunk(
         content=content,
         question=question,
         answer=answer,
+        locale=locale,
+        tags=tags,
     )
 
 
