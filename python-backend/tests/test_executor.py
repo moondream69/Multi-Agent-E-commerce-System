@@ -51,6 +51,7 @@ def test_classify_action_covers_all_exposed_tools() -> None:
         "detect_anomalies",
         "list_approvals",
         "faq_search",
+        "knowledge_search",
         "order_lookup",
         "translate",
         "sentiment_analysis",
@@ -172,6 +173,47 @@ async def test_execute_competitor_analysis_returns_market_intel_hits() -> None:
     result = await executor.execute("competitor_analysis", {"query": "宠物饮水机 竞品"})
     assert [hit["id"] for hit in result["hits"]] == ["m1"]
     assert "竞品价格带" in result["hits"][0]["payload"]["title"]
+
+
+# —— 单元:统一检索工具(issue #50:一次查 faq + market_intel 两集合) ——
+
+
+class _FixedEmbedding:
+    """固定查询向量(仅测接线):记录向量决定得分,让合并后的顺序可断言。"""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+
+async def test_execute_knowledge_search_merges_both_collections_by_score() -> None:
+    """#50:一次查询同时命中两集合,合并后按 score 降序;id 在 hit 层(不在 payload 内)。"""
+    vector = InMemoryVectorRepository()
+    await vector.upsert(
+        "faq", [VectorRecord(id="faq-returns#6", vector=[0.6, 0.8], payload={"question": "退款多久到账?"})]
+    )
+    await vector.upsert(
+        "market_intel", [VectorRecord(id="adb-carec#46", vector=[1.0, 0.0], payload={"title": "区域电商趋势"})]
+    )
+    result = await ToolExecutor(vector=vector, embedding=_FixedEmbedding()).execute(
+        "knowledge_search", {"query": "退款与区域电商趋势"}
+    )
+
+    assert [hit["id"] for hit in result["hits"]] == ["adb-carec#46", "faq-returns#6"]  # 两集合混合 + 降序
+    assert set(result["hits"][0]) == {"id", "score", "payload"}  # id 在 hit 层:#51 的引用标记锚它
+    assert result["hits"][0]["payload"]["title"] == "区域电商趋势"
+
+
+async def test_execute_knowledge_search_dedups_same_id_keeping_higher_score() -> None:
+    """合并去重:同 id 出现在两集合时只留一条,取高分那条(cosine 1.0 > 0.707)。"""
+    vector = InMemoryVectorRepository()
+    await vector.upsert("faq", [VectorRecord(id="dup-1", vector=[1.0, 0.0], payload={"from": "faq"})])
+    await vector.upsert("market_intel", [VectorRecord(id="dup-1", vector=[1.0, 1.0], payload={"from": "intel"})])
+    result = await ToolExecutor(vector=vector, embedding=_FixedEmbedding()).execute(
+        "knowledge_search", {"query": "重复 id"}
+    )
+
+    assert len(result["hits"]) == 1
+    assert result["hits"][0]["payload"] == {"from": "faq"}
 
 
 # —— 单元:product_lookup(issue #35;注入替身直查 executor.execute 真工具链)——

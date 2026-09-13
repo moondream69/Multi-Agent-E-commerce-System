@@ -1,6 +1,6 @@
 """客服 Agent(spec #7):结构化两节点子图,查证优先(B12)。
 
-verify 节点只暴露 faq_search/order_lookup/product_lookup;未产生查证证据时 draft 节点不可达
+verify 节点只暴露 faq_search/knowledge_search/order_lookup/product_lookup;未产生查证证据时 draft 节点不可达
 (图级边约束,非提示词):无证据 → nudge 节点明确提示后拉回 verify。
 draft 节点暴露翻译/草稿/模板/情感/工单工具,产出最终草稿。
 """

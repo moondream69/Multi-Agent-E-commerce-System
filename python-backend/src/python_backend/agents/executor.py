@@ -47,7 +47,10 @@ from python_backend.infrastructure.embedding import EmbeddingClient, EmbeddingSe
 from python_backend.infrastructure.fx import CNY, FxService, FxUnavailableError
 from python_backend.infrastructure.llm import LlmClient, LlmService
 from python_backend.settings import get_settings
-from python_backend.vector_repo.base import VectorRepository
+from python_backend.vector_repo.base import SearchHit, VectorRepository
+
+# 统一检索覆盖的集合(issue #50:客服域一次查两库):既有三工具各自单集合,保持原样
+KNOWLEDGE_COLLECTIONS = ("faq", "market_intel")
 
 # 工具名 → 动作标识:仅草稿与对外状态变更动作用 dotted 标识(增量 3 钉死),
 # 其余工具动作标识与工具名相同(如 list_orders / faq_search)。
@@ -353,6 +356,22 @@ class ToolExecutor:
 
     async def _execute_faq_search(self, params: dict) -> dict:
         return await self._execute_search("faq", params["query"])
+
+    async def _execute_knowledge_search(self, params: dict) -> dict:
+        """issue #50 统一检索:两集合各取 top-k → 合并去重(同 id 取高分)→ 按 score 降序。
+
+        返回形状与既有检索工具一致(id 在 hit 层,#51 的引用标记锚它);首版不做 rerank / 混合检索。
+        """
+        if self._vector is None:
+            raise ValueError("向量仓库未注入(faq/market_intel 检索不可用)")
+        [vector] = await self._embedding.embed([params["query"]])
+        best: dict[str, SearchHit] = {}
+        for collection in KNOWLEDGE_COLLECTIONS:
+            for hit in await self._vector.search(collection, vector, top_k=5):
+                if hit.id not in best or hit.score > best[hit.id].score:
+                    best[hit.id] = hit
+        hits = sorted(best.values(), key=lambda hit: hit.score, reverse=True)
+        return {"hits": [{"id": hit.id, "score": hit.score, "payload": hit.payload} for hit in hits]}
 
     # —— capture:approval 动作现状快照(apply 漂移比对基准;分发读动作注册表)——
 
@@ -871,6 +890,9 @@ REGISTRY.register("product_lookup", risk="auto", label="商品查询", execute=_
 REGISTRY.register("detect_anomalies", risk="auto", label="异常检测", execute=_execute_detect_anomalies)
 REGISTRY.register("list_approvals", risk="auto", label="审批批次列表", execute=_execute_list_approvals)
 REGISTRY.register("faq_search", risk="auto", label="FAQ 检索", execute=ToolExecutor._execute_faq_search)
+REGISTRY.register(
+    "knowledge_search", risk="auto", label="知识库统一检索", execute=ToolExecutor._execute_knowledge_search
+)
 REGISTRY.register("order_lookup", risk="auto", label="订单查询", execute=_execute_order_lookup)
 REGISTRY.register("translate", risk="auto", label="翻译", execute=ToolExecutor._execute_translate)
 REGISTRY.register("sentiment_analysis", risk="auto", label="情感分析", execute=ToolExecutor._execute_sentiment_analysis)

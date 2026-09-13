@@ -188,11 +188,28 @@ async def test_react_step_limit_produces_incomplete() -> None:
 
 async def test_customer_verify_tools_only_in_verify_node() -> None:
     _graph, reg = build_customer_agent(executor=FakeExecutor(), llm=FakeLlm())
-    assert [t.name for t in reg.visible_for("verify")] == ["faq_search", "order_lookup", "product_lookup"]
+    # issue #50:统一检索工具进客服 verify 清单(工具清单层面的既有断言随暴露面更新)
+    assert [t.name for t in reg.visible_for("verify")] == [
+        "faq_search",
+        "knowledge_search",
+        "order_lookup",
+        "product_lookup",
+    ]
     draft_tools = [t.name for t in reg.visible_for("draft")]
     assert "faq_search" not in draft_tools and "order_lookup" not in draft_tools
     assert "product_lookup" not in draft_tools
     assert "generate_draft" in draft_tools
+
+
+async def test_unified_search_exposed_only_in_customer_domain() -> None:
+    """#50 图级暴露守卫:统一检索只进客服 verify;选品域 / 订单域的工具清单不含它(ADR-0007 边界)。"""
+    _, product_reg = build_product_agent(executor=FakeExecutor(), llm=FakeLlm())
+    _, order_reg = build_order_agent(executor=FakeExecutor(), llm=FakeLlm())
+    _, customer_reg = build_customer_agent(executor=FakeExecutor(), llm=FakeLlm())
+
+    assert "knowledge_search" in [t.name for t in customer_reg.visible_for("verify")]
+    for reg in (product_reg, order_reg):
+        assert "knowledge_search" not in [t.name for t in reg.visible_for("agent")]
 
 
 async def test_customer_draft_unreachable_without_evidence() -> None:
@@ -241,6 +258,31 @@ async def test_customer_product_lookup_counts_as_evidence_and_reaches_draft() ->
     assert result["evidence_count"] == 1
     assert result["answer"] == "亲,该商品售价 129.00 元,现货充足。"
     assert ("product_lookup", {"title": "咖啡"}) in executor.executed
+
+
+async def test_customer_unified_search_hits_both_collections_as_evidence() -> None:
+    """#50:客服 verify 调用 knowledge_search —— 真实 ToolExecutor 一次查两集合,混合命中计入 B12 证据。"""
+    vector = InMemoryVectorRepository()
+    await vector.upsert(
+        "faq", [VectorRecord(id="faq-payment#14", vector=[1.0] * 8, payload={"question": "支持哪些支付方式?"})]
+    )
+    await vector.upsert(
+        "market_intel", [VectorRecord(id="adb-carec#46", vector=[1.0] * 8, payload={"title": "数字支付基础设施"})]
+    )
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("knowledge_search", {"query": "跨境支付与退款"})),
+            round_text(""),
+            round_text("亲,我们支持信用卡与 PayPal 支付。"),
+        ]
+    )
+    graph, _ = build_customer_agent(executor=ToolExecutor(vector=vector, embedding=FakeEmbedding()), llm=llm)
+    result = await run(graph)
+
+    assert result["evidence_count"] == 1
+    assert result["answer"] == "亲,我们支持信用卡与 PayPal 支付。"
+    observation = json.loads(next(m["content"] for m in result["messages"] if m["role"] == "tool"))
+    assert {hit["id"] for hit in observation["hits"]} == {"faq-payment#14", "adb-carec#46"}
 
 
 async def test_customer_replayed_assistant_messages_keep_reasoning_content() -> None:

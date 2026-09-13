@@ -1,7 +1,8 @@
 """客服 Agent 工具清单(spec #7):verify 节点只暴露查证工具,draft 节点暴露起草工具。
 
 查证优先硬约束(B12)由图级边约束实现:未查证(evidence 为 0)不可达 draft 节点。
-查证工具 = faq_search / order_lookup / product_lookup(issue #38:商品查证计入证据集合)。
+查证工具 = faq_search / knowledge_search / order_lookup / product_lookup
+(issue #38:商品查证计入证据集合;issue #50:统一检索一次查 FAQ + 市场情报)。
 """
 
 from python_backend.domain.tools import ToolDefinition
@@ -18,6 +19,13 @@ VERIFY_TOOLS = [
         name="faq_search",
         description="检索 FAQ 知识库(Milvus),获取与买家问题相关的标准解答",
         parameters=_object(query={"type": "string", "description": "买家问题的检索关键词"}),
+    ),
+    # issue #50 统一检索:一次查 FAQ + 市场情报两集合——只暴露给客服域(ADR-0007 边界);
+    # 既有三工具原样不动(票面要求:不删、不改返回结构),本工具是客服侧的两集合入口
+    ToolDefinition(
+        name="knowledge_search",
+        description="统一检索知识库:一次查询 FAQ 与市场情报两库,返回与问题相关的条目",
+        parameters=_object(query={"type": "string", "description": "检索关键词(买家问题相关内容)"}),
     ),
     ToolDefinition(
         name="order_lookup",

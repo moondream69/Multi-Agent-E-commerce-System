@@ -84,7 +84,7 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 订单  build_order_agent: 只读与 draft 编辑免审;上架/下架/改价/删除/订单流转/取消进审批(效果后置)
       定位 product_lookup(SKU/标题/类目→列表,免审直行,#35/#42;多候选须列候选澄清)——切片 Send 不传依赖产出,
       解析与操作须在同一 ReAct 循环内串联
-客服  build_customer_agent: verify(faq_search / order_lookup / product_lookup)→ draft 两节点,未查证不可达草稿(B12;商品查证 #38)
+客服  build_customer_agent: verify(faq_search / knowledge_search / order_lookup / product_lookup)→ draft 两节点,未查证不可达草稿(B12;商品查证 #38;统一检索 #50)
 ```
 
 ### 如何新增 Agent

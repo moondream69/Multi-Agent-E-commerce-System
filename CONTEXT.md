@@ -83,7 +83,7 @@ Manager 规划时声明子任务依赖关系:独立子任务并行扇出、依�
 _Avoid_: 流程编排
 
 **查证优先**:
-客服 Agent 的图级硬约束:出草稿前必调 faq_search/order_lookup/product_lookup,禁止凭空作答。
+客服 Agent 的图级硬约束:出草稿前必调 faq_search/knowledge_search/order_lookup/product_lookup,禁止凭空作答。
 _Avoid_: 两阶段工作流(ADR-0002 旧机制,已被取代)
 
 ## 风险控制
