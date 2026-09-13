@@ -27,11 +27,13 @@ function response(payload: Partial<DraftingEvidence> = {}): DraftingResponse {
 }
 
 function generate() {
-  const { getByPlaceholderText, getByRole } = render(<DraftingWorkbench />);
+  const result = render(<DraftingWorkbench />);
+  const { getByPlaceholderText, getByRole } = result;
   fireEvent.change(getByPlaceholderText('粘贴买家消息原文(任意语言)…'), {
     target: { value: '这个商品还有货吗' },
   });
   fireEvent.click(getByRole('button', { name: '生成草稿' }));
+  return result;
 }
 
 describe('DraftingWorkbench(issue #39 起草台商品查证)', () => {
@@ -89,5 +91,52 @@ describe('DraftingWorkbench(issue #39 起草台商品查证)', () => {
     );
     generate();
     expect(await screen.findByText(/仅列前 5 条/)).toBeTruthy();
+  });
+});
+
+const MARKDOWN_DRAFT =
+  '## 回复要点\n\n亲,**现货充足**:\n\n- 已锁定库存\n- 48 小时内发出';
+
+describe('DraftingWorkbench(A16:草稿 Markdown 渲染)', () => {
+  beforeEach(() => {
+    draftReplyMock.mockReset();
+  });
+
+  it('生成后默认预览:草稿按 Markdown 渲染成元素', async () => {
+    draftReplyMock.mockResolvedValue({
+      draft: MARKDOWN_DRAFT,
+      evidence: evidence(),
+    });
+
+    generate();
+
+    const heading = await screen.findByText('回复要点');
+    expect(heading.tagName).toBe('H2');
+    expect(screen.getByText('现货充足').tagName).toBe('STRONG');
+    expect(
+      screen.getAllByRole('listitem').map((node) => node.textContent),
+    ).toEqual(['已锁定库存', '48 小时内发出']);
+  });
+
+  it('切「编辑」回到原文:textarea 内是 Markdown 原文,可继续编辑', async () => {
+    draftReplyMock.mockResolvedValue({
+      draft: MARKDOWN_DRAFT,
+      evidence: evidence(),
+    });
+    generate();
+    await screen.findByText('回复要点');
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+
+    const box = screen.getByPlaceholderText<HTMLTextAreaElement>(
+      '草稿将显示在这里,可直接编辑后复制发出',
+    );
+    expect(box.value).toBe(MARKDOWN_DRAFT);
+    expect(screen.queryByText('回复要点')).toBeNull(); // 渲染面已让位给编辑面
+
+    fireEvent.change(box, { target: { value: '改过的草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '预览' }));
+
+    expect(screen.getByText('改过的草稿')).toBeTruthy();
   });
 });

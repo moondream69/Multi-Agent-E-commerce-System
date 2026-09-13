@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { TicketList } from './TicketList';
+import { AgentMarkdown } from './AgentMarkdown';
 import { draftReply } from '../services/drafting';
 import { DraftingEvidence } from '../types/events';
 
@@ -15,6 +16,8 @@ const LOCALES: Array<{ code: string; label: string }> = [
 
 const inputClass =
   'rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[13px] outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25';
+
+const DRAFT_EMPTY_HINT = '草稿将显示在这里,可直接编辑后复制发出';
 
 function display(value: unknown): string {
   return typeof value === 'string' || typeof value === 'number'
@@ -100,6 +103,8 @@ export function DraftingWorkbench() {
   const [orderId, setOrderId] = useState('');
   const [evidence, setEvidence] = useState<DraftingEvidence | null>(null);
   const [draft, setDraft] = useState('');
+  // A16:草稿默认以 Markdown 预览呈现(生成后即回预览),需要改字再切「编辑」落到 textarea
+  const [mode, setMode] = useState<'preview' | 'edit'>('preview');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -117,6 +122,7 @@ export function DraftingWorkbench() {
       const response = await draftReply(message.trim(), locale, parsedOrderId);
       setDraft(response.draft);
       setEvidence(response.evidence);
+      setMode('preview');
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -181,10 +187,26 @@ export function DraftingWorkbench() {
         </div>
       </div>
 
-      {/* 右栏:可编辑草稿 + 一键复制 */}
+      {/* 右栏:草稿预览(默认)/ 编辑 + 一键复制 */}
       <div className="flex min-w-0 flex-1 flex-col bg-bg">
         <div className="flex items-center gap-2 px-4 py-3">
-          <div className="text-[13px] font-semibold">回复草稿(可编辑)</div>
+          <div className="text-[13px] font-semibold">回复草稿</div>
+          <div className="flex rounded-lg border border-line p-0.5 text-xs">
+            {(['preview', 'edit'] as const).map((item) => (
+              <button
+                key={item}
+                onClick={() => setMode(item)}
+                aria-pressed={mode === item}
+                className={`cursor-pointer rounded-md px-2.5 py-1 transition-colors ${
+                  mode === item
+                    ? 'bg-brand-soft font-medium text-brand'
+                    : 'text-ink-3 hover:text-ink-2'
+                }`}
+              >
+                {item === 'preview' ? '预览' : '编辑'}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => void copy()}
             disabled={!draft}
@@ -195,12 +217,22 @@ export function DraftingWorkbench() {
             {copied ? '已复制' : '一键复制'}
           </button>
         </div>
-        <textarea
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="草稿将显示在这里,可直接编辑后复制发出"
-          className="mx-4 mb-4 min-h-0 flex-1 resize-none rounded-card border border-line bg-surface px-3.5 py-3 text-sm leading-[1.7] outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25"
-        />
+        {mode === 'edit' ? (
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={DRAFT_EMPTY_HINT}
+            className="mx-4 mb-4 min-h-0 flex-1 resize-none rounded-card border border-line bg-surface px-3.5 py-3 text-sm leading-[1.7] outline-none placeholder:text-ink-3 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/25"
+          />
+        ) : (
+          <div className="mx-4 mb-4 min-h-0 flex-1 overflow-y-auto rounded-card border border-line bg-surface px-3.5 py-3 text-sm leading-[1.7] text-ink">
+            {draft ? (
+              <AgentMarkdown>{draft}</AgentMarkdown>
+            ) : (
+              <span className="text-ink-3">{DRAFT_EMPTY_HINT}</span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

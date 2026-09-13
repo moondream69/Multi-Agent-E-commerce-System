@@ -128,3 +128,57 @@ describe('ApprovalCenter(ADR-0005 任务上下文 + 后续计划预览;spec #34)
     expect(screen.queryByText('切片计划')).toBeNull();
   });
 });
+
+describe('ApprovalCenter(A16:执行报告 Markdown 渲染)', () => {
+  beforeEach(() => {
+    fetchOpenApprovalsMock.mockReset();
+  });
+
+  it('执行报告按 Markdown 渲染:标题/粗体/列表各成元素', async () => {
+    fetchOpenApprovalsMock.mockResolvedValue({
+      ...ENVELOPE,
+      approvals: [
+        {
+          ...ENVELOPE.approvals[0],
+          runOutput: {
+            answer: '## 选品结论\n\n**主推款**:便携咖啡机\n\n- 库存 12 件',
+          },
+        },
+      ],
+    });
+
+    render(<ApprovalCenter />);
+
+    const heading = await screen.findByText('选品结论');
+    expect(heading.tagName).toBe('H2');
+    expect(screen.getByText('主推款').tagName).toBe('STRONG');
+    expect(
+      screen.getAllByRole('listitem').map((node) => node.textContent),
+    ).toEqual(['库存 12 件']);
+  });
+
+  it('GFM 表格(/空行分隔)渲染成表格元素,而非字面竖线文本', async () => {
+    fetchOpenApprovalsMock.mockResolvedValue({
+      ...ENVELOPE,
+      approvals: [
+        {
+          ...ENVELOPE.approvals[0],
+          runOutput: {
+            answer:
+              '候选对比:\n\n| 款 | 库存 |\n|---|---|\n| 甲款 | 12 |\n| 乙款 | 3 |',
+          },
+        },
+      ],
+    });
+
+    const { container } = render(<ApprovalCenter />);
+
+    await screen.findByText('候选对比:');
+    expect(
+      [...container.querySelectorAll('th')].map((node) => node.textContent),
+    ).toEqual(['款', '库存']);
+    expect(
+      [...container.querySelectorAll('td')].map((node) => node.textContent),
+    ).toEqual(['甲款', '12', '乙款', '3']);
+  });
+});

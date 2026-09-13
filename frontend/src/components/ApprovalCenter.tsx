@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AgentMarkdown } from './AgentMarkdown';
 import {
   decideBatches,
   executeShadowBatch,
@@ -450,8 +451,8 @@ export function ApprovalCenter() {
               {plan && <PlanPreview plan={plan} currentSlice={first.sliceNo} />}
               {typeof first.runOutput?.answer === 'string' &&
                 first.runOutput.answer.trim() !== '' && (
-                  <div className="mb-2.5 rounded-lg border border-line bg-bg px-2.5 py-2 text-xs whitespace-pre-wrap text-ink-2">
-                    {first.runOutput.answer}
+                  <div className="mb-2.5 rounded-lg border border-line bg-bg px-2.5 py-2 text-xs text-ink-2">
+                    <AgentMarkdown>{first.runOutput.answer}</AgentMarkdown>
                   </div>
                 )}
               <div className="flex flex-col gap-2.5">

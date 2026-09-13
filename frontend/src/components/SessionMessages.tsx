@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { AgentMarkdown } from './AgentMarkdown';
 import { useTaskTerminalEvents } from '../hooks/useTaskTerminalEvents';
 import { fetchConversationMessages } from '../services/conversations';
 import { ConversationMessage, ConversationMessages } from '../types/events';
@@ -42,9 +43,16 @@ function MessageRow({ message }: { message: ConversationMessage }) {
       <span className={`text-[11px] font-semibold ${role.text}`}>
         {role.label}
       </span>
-      <span className="text-[13px] break-words whitespace-pre-wrap">
-        {message.content}
-      </span>
+      {/* A16:Agent 回复按 Markdown 渲染;用户消息刻意保持纯文本(旧系统基线取舍) */}
+      {message.role === 'assistant' ? (
+        <div className="text-[13px] break-words">
+          <AgentMarkdown>{message.content}</AgentMarkdown>
+        </div>
+      ) : (
+        <div className="text-[13px] break-words whitespace-pre-wrap">
+          {message.content}
+        </div>
+      )}
       {(message.taskId || at) && (
         <span className="font-mono text-[10px] text-ink-3">
           {message.taskId && `任务 ${shortId(message.taskId)} · `}

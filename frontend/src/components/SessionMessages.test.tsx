@@ -2,7 +2,11 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionMessages } from './SessionMessages';
 import { fetchConversationMessages } from '../services/conversations';
-import { ConversationMessages, EventType } from '../types/events';
+import {
+  ConversationMessage,
+  ConversationMessages,
+  EventType,
+} from '../types/events';
 
 // WS 事件回调捕获:mock useSocket 记录订阅事件与 onEvent,测试内直接触发
 const socket = vi.hoisted(() => ({
@@ -147,5 +151,63 @@ describe('SessionMessages(spec #20 会话消息流)', () => {
       EventType.TASK_COMPLETED,
       EventType.TASK_FAILED,
     ]);
+  });
+});
+
+function oneMessage(
+  role: ConversationMessage['role'],
+  content: string,
+): ConversationMessages {
+  return stream('s-1', [
+    { role, content, timestamp: '2026-09-14T09:00:00+00:00', taskId: null },
+  ]);
+}
+
+describe('SessionMessages(A16:Agent 消息 Markdown 渲染)', () => {
+  beforeEach(() => {
+    socket.events = [];
+    socket.handler = null;
+    fetchMock.mockReset();
+  });
+
+  it('Agent 消息按 Markdown 渲染:标题/粗体/列表各成元素', async () => {
+    fetchMock.mockResolvedValue(
+      oneMessage(
+        'assistant',
+        '## 选品结论\n\n**主推款**如下:\n\n- 便携咖啡机\n- 蓝牙音箱',
+      ),
+    );
+
+    render(<SessionMessages sessionId="s-1" />);
+
+    const heading = await screen.findByText('选品结论');
+    expect(heading.tagName).toBe('H2');
+    expect(screen.getByText('主推款').tagName).toBe('STRONG');
+    expect(
+      screen.getAllByRole('listitem').map((node) => node.textContent),
+    ).toEqual(['便携咖啡机', '蓝牙音箱']);
+  });
+
+  it('用户消息保持纯文本:同样的 Markdown 记号是字面文本,不成元素', async () => {
+    fetchMock.mockResolvedValue(oneMessage('user', '**不要加粗**'));
+
+    const { container } = render(<SessionMessages sessionId="s-1" />);
+
+    expect(await screen.findByText('**不要加粗**')).toBeTruthy();
+    expect(container.querySelector('strong')).toBeNull();
+    expect(container.querySelector('h2')).toBeNull();
+  });
+
+  it('原始 HTML 不透传:以文本出现,DOM 里不存在 img 元素', async () => {
+    fetchMock.mockResolvedValue(
+      oneMessage('assistant', '请查收:<img src=x onerror=alert(1)>'),
+    );
+
+    const { container } = render(<SessionMessages sessionId="s-1" />);
+
+    await waitFor(() =>
+      expect(container.textContent).toContain('<img src=x onerror=alert(1)>'),
+    );
+    expect(container.querySelector('img')).toBeNull();
   });
 });
