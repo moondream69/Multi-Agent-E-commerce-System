@@ -152,6 +152,28 @@ async def test_execute_trend_query_empty_collection_returns_empty() -> None:
     assert result["hits"] == []
 
 
+async def test_execute_competitor_analysis_returns_market_intel_hits() -> None:
+    """A3 第二步功能用例(issue #44):竞品分析走 market_intel 检索,情报条目入 hits。
+
+    此前 competitor_analysis 仅出现在分类覆盖清单,无功能用例;与 trend_query 同集合、同形状。
+    """
+    vector = InMemoryVectorRepository()
+    await vector.upsert(
+        "market_intel",
+        [
+            VectorRecord(
+                id="m1",
+                vector=[1.0] * 8,
+                payload={"title": "宠物饮水机竞品价格带", "summary": "主流 15-30 美元"},
+            )
+        ],
+    )
+    executor = ToolExecutor(vector=vector, embedding=FakeEmbedding())
+    result = await executor.execute("competitor_analysis", {"query": "宠物饮水机 竞品"})
+    assert [hit["id"] for hit in result["hits"]] == ["m1"]
+    assert "竞品价格带" in result["hits"][0]["payload"]["title"]
+
+
 # —— 单元:product_lookup(issue #35;注入替身直查 executor.execute 真工具链)——
 
 
@@ -228,18 +250,45 @@ async def test_execute_product_lookup_no_match_returns_empty() -> None:
     assert (await executor.execute("product_lookup", {"title": "饮水机"}))["matches"] == []
 
 
-async def test_execute_product_lookup_requires_sku_or_title() -> None:
-    """两个入参至少给一:均缺显式报错,不猜。"""
+async def test_execute_product_lookup_requires_a_param() -> None:
+    """三个入参至少给一:均缺显式报错,不猜(issue #42 起含 category)。"""
     executor = _lookup_executor(_lookup_fixture(count=0))
     with pytest.raises(ValueError, match="至少其一"):
         await executor.execute("product_lookup", {})
 
 
-async def test_execute_product_lookup_sku_takes_precedence_over_title() -> None:
-    """二者同给以 sku 为准(精确优先于模糊):标题指向别处也不影响 SKU 定位。"""
-    executor = _lookup_executor(_lookup_fixture(count=0))
-    result = await executor.execute("product_lookup", {"sku": "DEMO-OD-002", "title": "饮水机"})
+async def test_execute_product_lookup_by_category() -> None:
+    """issue #42(A5「按类目查询」):类目精确匹配(大小写不敏感),支撑「按类目盘货」问法。"""
+    executor = _lookup_executor(_lookup_fixture(count=2))
+    result = await executor.execute("product_lookup", {"category": "宠物"})
+    assert [match["id"] for match in result["matches"]] == [100, 101]
+    assert result["truncated"] is False
+
+    latin = [
+        Product(
+            id=7,
+            sku="X-1",
+            title="Warranty Card",
+            price=Decimal("1.00"),
+            currency="USD",
+            category="Accessories",
+            status=ProductStatus.ACTIVE,
+            stock=1,
+        )
+    ]
+    matched = await _lookup_executor(latin).execute("product_lookup", {"category": "accessories"})
+    assert [match["id"] for match in matched["matches"]] == [7], "大小写不敏感"
+    no_fuzzy = await executor.execute("product_lookup", {"category": "宠物类目"})
+    assert no_fuzzy["matches"] == [], "类目为精确匹配,不做模糊"
+
+
+async def test_execute_product_lookup_sku_takes_precedence_over_title_and_category() -> None:
+    """同给多参以 sku 为准(精确 > 模糊 > 枚举):标题/类目指向别处也不影响 SKU 定位。"""
+    executor = _lookup_executor(_lookup_fixture(count=1))
+    result = await executor.execute("product_lookup", {"sku": "DEMO-OD-002", "title": "饮水机", "category": "宠物"})
     assert [match["id"] for match in result["matches"]] == [1]
+    by_title = await executor.execute("product_lookup", {"title": "饮水机", "category": "配件"})
+    assert [match["id"] for match in by_title["matches"]] == [100], "标题优先于类目"
 
 
 # —— integration:DB 工具(capture/apply 见下)——
@@ -474,6 +523,20 @@ async def test_postgres_product_lookup_title_fuzzy(product: Product) -> None:
         await session.commit()
     result = await make_executor().execute("product_lookup", {"title": f"限定探针商品 {token}"})
     assert [match["id"] for match in result["matches"]] == [product.id]
+
+
+async def test_postgres_product_lookup_by_category(product: Product) -> None:
+    """issue #42:类目大小写不敏感精确直查 PG;探针类目为唯一值(库内同类目多商品会按上限截断)。"""
+    require_postgres()
+    token = uuid.uuid4().hex[:8]
+    async with SessionFactory() as session:
+        row = await session.get(Product, product.id)
+        assert row is not None
+        row.category = f"Probe-{token}"
+        await session.commit()
+    result = await make_executor().execute("product_lookup", {"category": f"probe-{token}"})
+    assert [match["id"] for match in result["matches"]] == [product.id]
+    assert (await make_executor().execute("product_lookup", {"category": f"Probe-{token}-x"}))["matches"] == []
 
 
 # —— integration:capture 现状快照 ——

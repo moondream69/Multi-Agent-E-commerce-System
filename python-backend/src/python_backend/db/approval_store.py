@@ -30,6 +30,7 @@ def _to_record(row: ApprovalBatch) -> ApprovalBatchRecord:
         status=row.status,
         mode=row.mode,
         comment=row.comment,
+        decided_by=row.decided_by,
         result=row.result,
         run_output=row.run_output,
     )
@@ -71,13 +72,15 @@ class PostgresApprovalBatchStore(ApprovalBatchStore):
             row = (await session.execute(select(ApprovalBatch).where(ApprovalBatch.batch_id == batch_id))).scalar_one()
             return _to_record(row)
 
-    async def decide_batch(self, *, batch_id: str, decision: str, comment: str | None = None) -> None:
+    async def decide_batch(
+        self, *, batch_id: str, decision: str, comment: str | None = None, decided_by: str | None = None
+    ) -> None:
         new_status = decided_status(decision)
         async with SessionFactory() as session:
             result = await session.execute(
                 update(ApprovalBatch)
                 .where(ApprovalBatch.batch_id == batch_id, ApprovalBatch.status == "pending")
-                .values(status=new_status, comment=comment, decided_at=func.now())
+                .values(status=new_status, comment=comment, decided_by=decided_by, decided_at=func.now())
             )
             await session.commit()
             if result.rowcount == 0:  # ty: ignore[unresolved-attribute]
@@ -85,7 +88,7 @@ class PostgresApprovalBatchStore(ApprovalBatchStore):
                     await session.execute(select(ApprovalBatch.status).where(ApprovalBatch.batch_id == batch_id))
                 ).scalar_one_or_none()
                 if row == new_status:
-                    return  # 同决定幂等返回:durable 重放可能重复调用,已成功决定不得演变为失败
+                    return  # 同决定幂等返回:durable 重放可能重复调用,已成功决定不得演变为失败(亦不覆盖决定人)
                 current = row if row is not None else "不存在"
                 raise BatchAlreadyDecidedError(f"批次 {batch_id} 已决定({current})")
 

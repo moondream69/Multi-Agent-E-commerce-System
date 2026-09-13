@@ -364,6 +364,8 @@ async def _execute_slice(
                 "batches": approval_batches,
             }
         )
+        # issue #41:决定人随 resume 载荷透传(端点解 JWT 用户名),落 decided_by 审计列
+        decided_by = decision.get("decided_by")
         if decision.get("terminate"):
             comments = [d.get("comment") for d in (decision.get("decisions") or {}).values() if d.get("comment")]
             comment = "; ".join(comments) if comments else "用户终止"
@@ -372,6 +374,7 @@ async def _execute_slice(
                     batch_id=batch["batch_id"],
                     decision="reject",
                     comment=comment,
+                    decided_by=decided_by,
                 )
             merged.update({"rejected": True, "terminated": True, "comment": comment})
             await _emit_completed()
@@ -385,7 +388,9 @@ async def _execute_slice(
             decided: dict[str, str | None] = decisions.get(batch_id) or {"decision": "reject", "comment": None}
             decision_value = decided["decision"] or "reject"
             comment_value = decided.get("comment")
-            await batch_store.decide_batch(batch_id=batch_id, decision=decision_value, comment=comment_value)
+            await batch_store.decide_batch(
+                batch_id=batch_id, decision=decision_value, comment=comment_value, decided_by=decided_by
+            )
             tracer.record_event(
                 "approval.decided",
                 {"threadId": thread_id, "batchId": batch_id, "decision": decision_value, "comment": comment_value},

@@ -332,14 +332,15 @@ def test_three_tier_risk_classification() -> None:
 
 
 async def test_decide_batch_same_decision_is_idempotent_conflict_raises() -> None:
-    """批次幂等(spec #6 D5):同决定幂等返回(durable 重放),冲突决定明确拒绝。"""
+    """批次幂等(spec #6 D5):同决定幂等返回(durable 重放),冲突决定明确拒绝;决定人快照不被覆盖(#41)。"""
     store = InMemoryApprovalBatchStore()
     await store.create_batch(
         batch_id="b1", thread_id="t", slice_no=1, action_type="product.publish", actions=[], mode="approval"
     )
-    await store.decide_batch(batch_id="b1", decision="approve")
-    await store.decide_batch(batch_id="b1", decision="approve")  # 同决定重放:幂等返回,不抛
+    await store.decide_batch(batch_id="b1", decision="approve", decided_by="alice")
+    await store.decide_batch(batch_id="b1", decision="approve", decided_by="bob")  # 同决定重放:幂等返回,不抛
 
     with pytest.raises(BatchAlreadyDecidedError):
         await store.decide_batch(batch_id="b1", decision="reject")
     assert store._by_id["b1"].status == "approved", "冲突决定不得覆盖首次决定"
+    assert store._by_id["b1"].decided_by == "alice", "幂等重放/冲突路径均不得覆盖首次决定人(issue #41)"

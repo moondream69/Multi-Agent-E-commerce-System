@@ -231,7 +231,8 @@ docker compose exec postgres psql -U postgres mae
 -- 任务失败率与分布
 SELECT type, status, count(*) FROM tasks GROUP BY type, status ORDER BY type;
 
--- 审批批次(采纳率/决策人分布)
+-- 审批批次(采纳率/决定人分布;decided_by = 登录用户名——resume 按钮与自然消息两条决定入口均落库,
+-- 未带 token 的决定路径留空;幂等重放不覆盖首次决定人)
 SELECT mode, status, count(*) FROM approval_batches GROUP BY mode, status;
 SELECT decided_by, count(*) FROM approval_batches WHERE decided_by IS NOT NULL GROUP BY decided_by;
 

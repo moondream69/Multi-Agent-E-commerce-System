@@ -41,7 +41,7 @@ from python_backend.db.models import (
     ReplyTemplate,
     Ticket,
 )
-from python_backend.db.product_lookup import TITLE_MATCH_LIMIT, PostgresProductLookup, ProductLookupStore
+from python_backend.db.product_lookup import LOOKUP_MATCH_LIMIT, PostgresProductLookup, ProductLookupStore
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.embedding import EmbeddingClient, EmbeddingService
 from python_backend.infrastructure.fx import CNY, FxService, FxUnavailableError
@@ -754,12 +754,16 @@ async def _execute_check_inventory(executor: ToolExecutor, params: dict) -> dict
 
 
 async def _execute_product_lookup(executor: ToolExecutor, params: dict) -> dict:
-    """issue #35:按 SKU/标题定位商品(只读),把口语指代解析成 ID 供后续动作。
+    """issue #35:按 SKU/标题/类目定位商品(只读),把口语指代解析成 ID 供后续动作。
 
-    入参校验(至少给一、sku 优先)与截断语义在存储层 lookup 内统一(生产/替身同口径)。
+    入参校验(至少给一、sku 优先)与截断语义在存储层 lookup 内统一(生产/替身同口径);
+    issue #42:category 分支支撑「按类目盘货」问法(如「宠物用品类目有哪些商品」)。
     """
     hits, truncated = await executor._products.lookup(
-        sku=params.get("sku"), title=params.get("title"), limit=TITLE_MATCH_LIMIT
+        sku=params.get("sku"),
+        title=params.get("title"),
+        category=params.get("category"),
+        limit=LOOKUP_MATCH_LIMIT,
     )
     return {"matches": hits, "truncated": truncated}
 

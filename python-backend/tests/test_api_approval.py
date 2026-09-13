@@ -226,6 +226,47 @@ async def test_resume_approve_completes_and_applies() -> None:
     assert await store.list_pending(thread_id) == []
 
 
+async def test_resume_records_decided_by() -> None:
+    """issue #41(验收 A12):按钮入口决定人落 decided_by——取当前登录用户名(JWT sub)。"""
+    client, store, _apply = make_client()
+    client.headers.update({"Authorization": f"Bearer {create_token('alice', 7)}"})
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+    batch_id = (await store.list_pending(thread_id))[0].batch_id
+
+    response = client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve"}})
+
+    assert response.status_code == 200
+    batch = await store.get_batch(batch_id=batch_id)
+    assert batch is not None and batch.status == "approved"
+    assert batch.decided_by == "alice", "审计列须记决定人,不得恒空"
+
+
+async def test_natural_message_records_decided_by() -> None:
+    """issue #41:自然消息入口同样落决定人(两条决定入口一视同仁)。"""
+    client, store, _apply = make_client()
+    client.headers.update({"Authorization": f"Bearer {create_token('bob', 8)}"})
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+
+    response = client.post(f"/api/threads/{thread_id}/message", json={"text": "同意"})
+
+    assert response.status_code == 200
+    batch = store.batches[0]
+    assert batch.status == "approved"
+    assert batch.decided_by == "bob"
+
+
+async def test_decided_by_blank_without_token() -> None:
+    """无认证上下文(未带 token)如实留空——不伪造决定人(与「未开认证」的既有语义一致)。"""
+    client, store, _apply = make_client()
+    thread_id = client.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+    batch_id = (await store.list_pending(thread_id))[0].batch_id
+
+    client.post(f"/api/threads/{thread_id}/resume", json={batch_id: {"decision": "approve"}})
+
+    batch = await store.get_batch(batch_id=batch_id)
+    assert batch is not None and batch.decided_by is None
+
+
 async def test_resume_completes_when_notification_store_fails() -> None:
     """增量 8-T1:apply 后通知落库失败按辅助簿记分类——任务照常 completed(任务行不被翻)、响应 200、广播照常。"""
     store = InMemoryApprovalBatchStore()

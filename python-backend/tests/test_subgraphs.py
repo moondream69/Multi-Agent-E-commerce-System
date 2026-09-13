@@ -7,13 +7,14 @@ import json
 
 from python_backend.agents.base import AgentState, build_react_agent
 from python_backend.agents.customer_service.agent import build_customer_agent
-from python_backend.agents.executor import action_of
+from python_backend.agents.executor import ToolExecutor, action_of
 from python_backend.agents.order_management.agent import build_order_agent
 from python_backend.agents.product_research.agent import build_product_agent
 from python_backend.core.approvals import classify_action
 from python_backend.domain.tools import ToolDefinition, ToolRegistry
 from python_backend.infrastructure.llm import ToolCallResult
-from tests.conftest import FakeExecutor, FakeLlm
+from python_backend.vector_repo.base import VectorRecord
+from tests.conftest import FakeEmbedding, FakeExecutor, FakeLlm, InMemoryVectorRepository
 
 
 def tool(name: str, description: str = "") -> ToolDefinition:
@@ -328,3 +329,69 @@ async def test_action_of_mapping_is_deterministic() -> None:
     assert action_of("product_publish") == "product.publish"
     assert action_of("draft_create") == "draft.create"
     assert action_of("order_cancel") == "order.cancel"
+
+
+# —— A3 选品四步串联(issue #44) ——
+
+
+class _SelectionLlm(FakeLlm):
+    """选品链专用假 LLM:按 json_mode 路由 complete 响应。
+
+    scoring(json_mode=True)→ 评分 JSON;generate_report → 报告正文。
+    (FakeLlm.complete 按全局调用序取响应,而本链中工具轮也计入调用序——
+    按语义路由比按序号索引可读且不随轮数漂移;工具轮仍走 FakeLlm 脚本。)
+    """
+
+    async def complete(
+        self,
+        messages: list[dict],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        json_mode: bool = False,
+    ) -> str:
+        self.calls.append(
+            {"method": "complete", "messages": messages, "json_mode": json_mode, "max_tokens": max_tokens}
+        )
+        if json_mode:
+            return json.dumps({"score": 88, "grade": "A", "rationale": "需求旺盛"})
+        return "# 选品报告\n\n评分等级 A,建议上架。"
+
+
+async def test_product_agent_runs_four_step_selection_pipeline() -> None:
+    """A3 串联证据:脚本化 ReAct 轮驱动**真实 ToolExecutor**——trend_query → competitor_analysis
+    → scoring → generate_report 四步依序走通,评分等级先于报告步进入对话。
+
+    「报告正文含评分等级」的 LLM 行为面属在线走查(演示)职责,离线不伪证;
+    此处证的是工具链形状与顺序(四步观察按序回喂、等级入上下文)。
+    """
+    vector = InMemoryVectorRepository()
+    await vector.upsert(
+        "market_intel",
+        [
+            VectorRecord(id="trend-1", vector=[1.0] * 8, payload={"title": "宠物饮水机需求上行"}),
+            VectorRecord(id="comp-1", vector=[1.0] * 8, payload={"title": "竞品价格带 15-30 美元"}),
+        ],
+    )
+    llm = _SelectionLlm(
+        tool_rounds=[
+            round_tools(call("trend_query", {"query": "宠物饮水机 趋势"}, "c1")),
+            round_tools(call("competitor_analysis", {"query": "宠物饮水机 竞品"}, "c2")),
+            round_tools(call("scoring", {"product_title": "宠物饮水机"}, "c3")),
+            round_tools(call("generate_report", {"context": "趋势 + 竞品 + 评分(A)汇总"}, "c4")),
+            round_text("四步走完,报告已生成。"),
+        ],
+    )
+    executor = ToolExecutor(llm=llm, vector=vector, embedding=FakeEmbedding())
+    graph, _registry = build_product_agent(executor=executor, llm=llm)
+
+    final = await run(graph, "分析宠物饮水机是否值得做")
+
+    observations = [m["content"] for m in final["messages"] if m["role"] == "tool"]
+    assert len(observations) == 4, "四步各产生一条工具观察(依序回喂)"
+    assert "需求上行" in observations[0], "第一步:趋势情报"
+    assert "竞品价格带" in observations[1], "第二步:竞品情报"
+    assert '"grade": "A"' in observations[2], "第三步:评分等级先于报告步进入对话"
+    assert "选品报告" in observations[3], "第四步:报告产出"
+    assert final["answer"] == "四步走完,报告已生成。"
+    assert final.get("incomplete") is None

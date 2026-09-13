@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { DataConsole } from './DataConsole';
 import { fetchOrders, fetchProducts } from '../services/console';
@@ -108,12 +109,43 @@ describe('DataConsole(ADR-0006 / spec #34 数据台)', () => {
     fireEvent.change(screen.getByPlaceholderText('搜索 SKU / 标题'), {
       target: { value: '' },
     });
-    fireEvent.change(screen.getAllByRole('combobox')[1], {
+    fireEvent.change(screen.getAllByRole('combobox')[2], {
       target: { value: 'stock' },
     });
     const rows = screen.getAllByRole('row').slice(1); // 去表头
     expect(rows[0].textContent).toContain('便携咖啡机'); // 库存 4 < 24
     expect(fetchProductsMock).toHaveBeenCalledTimes(1); // 筛选不触发重拉
+  });
+
+  it('类目筛选(issue #42):下拉选项取自数据去重,选中后按类目过滤', async () => {
+    fetchProductsMock.mockResolvedValue([
+      ...PRODUCTS,
+      {
+        id: 3,
+        sku: 'DEMO-PT-001',
+        title: '宠物饮水机',
+        price: '19.90',
+        currency: 'USD',
+        category: '宠物',
+        status: 'active',
+        stock: 8,
+        alertThreshold: 5,
+      },
+    ]);
+    render(<DataConsole onAskAgent={() => {}} />);
+    await screen.findByText('便携咖啡机');
+
+    const categorySelect = screen.getAllByRole('combobox')[1]; // [状态, 类目, 排序]
+    expect(
+      within(categorySelect).getByRole('option', { name: '宠物' }),
+    ).toBeTruthy();
+
+    fireEvent.change(categorySelect, { target: { value: '宠物' } });
+
+    const rows = screen.getAllByRole('row').slice(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('宠物饮水机');
+    expect(fetchProductsMock).toHaveBeenCalledTimes(1); // 类目筛选同样在前端
   });
 
   it('问 Agent:商品行预填话术并交给外层跳转(不代发)', async () => {

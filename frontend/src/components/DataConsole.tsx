@@ -91,7 +91,17 @@ function ProductTable({
 }) {
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState('all');
+  const [category, setCategory] = useState('all');
   const [sort, setSort] = useState<ProductSort>('latest');
+
+  // issue #42(A5「按类目查询」):类目下拉选项取自当前数据(去重 + 中文排序)
+  const categories = useMemo(
+    () =>
+      [...new Set(products.map((product) => product.category))].sort((a, b) =>
+        a.localeCompare(b, 'zh'),
+      ),
+    [products],
+  );
 
   const rows = useMemo(() => {
     const needle = keyword.trim().toLowerCase();
@@ -100,12 +110,16 @@ function ProductTable({
         needle === '' ||
         product.sku.toLowerCase().includes(needle) ||
         product.title.toLowerCase().includes(needle);
-      return hit && (status === 'all' || product.status === status);
+      return (
+        hit &&
+        (status === 'all' || product.status === status) &&
+        (category === 'all' || product.category === category)
+      );
     });
     return sort === 'stock'
       ? [...filtered].sort((a, b) => a.stock - b.stock)
       : filtered;
-  }, [products, keyword, status, sort]);
+  }, [products, keyword, status, category, sort]);
 
   return (
     <>
@@ -125,6 +139,18 @@ function ProductTable({
           {Object.entries(PRODUCT_STATUS_LABELS).map(([value, label]) => (
             <option key={value} value={value}>
               {label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={category}
+          onChange={(event) => setCategory(event.target.value)}
+          className={inputClass}
+        >
+          <option value="all">全部类目</option>
+          {categories.map((item) => (
+            <option key={item} value={item}>
+              {item}
             </option>
           ))}
         </select>

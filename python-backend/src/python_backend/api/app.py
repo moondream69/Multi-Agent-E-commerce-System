@@ -140,14 +140,25 @@ async def _authenticate(body: LoginRequest) -> dict:
     return {"token": create_token(user.username, user.id), "username": user.username}
 
 
-def _current_user_id(request: Request) -> int | None:
-    """从 Authorization 头解出用户 id;无 token/未开认证时 None(记忆不落库)。"""
+def _token_payload(request: Request) -> dict | None:
+    """从 Authorization 头解出 JWT 载荷;无 token/非法/过期 → None。"""
     header = request.headers.get("authorization", "")
     token = header.removeprefix("Bearer ").strip()
     if not token:
         return None
-    payload = decode_token(token)
+    return decode_token(token)
+
+
+def _current_user_id(request: Request) -> int | None:
+    """从 Authorization 头解出用户 id;无 token/未开认证时 None(记忆不落库)。"""
+    payload = _token_payload(request)
     return payload["uid"] if payload else None
+
+
+def _current_username(request: Request) -> str | None:
+    """从 Authorization 头解出用户名(issue #41:审批决定人审计);无 token 时 None(留空不伪造)。"""
+    payload = _token_payload(request)
+    return payload.get("sub") if payload else None
 
 
 def _config(thread_id: str) -> RunnableConfig:
@@ -803,8 +814,11 @@ def create_app(
         return {"approvals": batches, "plans": plans}
 
     @app.post("/api/threads/{thread_id}/resume")
-    async def resume_thread(thread_id: str, body: dict[str, ResumeDecision]) -> dict:
-        """按钮入口:body = {batch_id: {decision, comment}},多批一次提交(逐批决定)。"""
+    async def resume_thread(thread_id: str, body: dict[str, ResumeDecision], request: Request) -> dict:
+        """按钮入口:body = {batch_id: {decision, comment}},多批一次提交(逐批决定)。
+
+        issue #41:决定人取当前登录用户名,随 resume 载荷入图落 decided_by。
+        """
         pending = await _pending_interrupts(app.state.graph, thread_id)
         if not pending:
             raise HTTPException(status_code=409, detail="当前无挂起审批")
@@ -828,7 +842,10 @@ def create_app(
                     }
                     break
 
-        resume_map = {iid: {"terminate": False, "decisions": decisions} for iid, decisions in by_interrupt.items()}
+        resume_map = {
+            iid: {"terminate": False, "decisions": decisions, "decided_by": _current_username(request)}
+            for iid, decisions in by_interrupt.items()
+        }
         for decisions in by_interrupt.values():
             for batch_id, decided in decisions.items():
                 await app.state.emitter.emit(
@@ -862,7 +879,8 @@ def create_app(
         )
 
     @app.post("/api/threads/{thread_id}/message")
-    async def post_message(thread_id: str, body: MessageRequest) -> dict:
+    async def post_message(thread_id: str, body: MessageRequest, request: Request) -> dict:
+        """自然消息入口(issue #41:决定人同 resume——取当前登录用户名)。"""
         intent = parse_decision_intent(body.text)
         if intent is None:
             raise HTTPException(status_code=422, detail="无法识别决定意图(支持:同意/批准/通过、拒绝/驳回、终止/取消)")
@@ -874,12 +892,14 @@ def create_app(
         # terminate:全部挂起批次落 rejected + 终止标记(图不回流重规划,直接「用户终止」结束)
         terminate = intent == "terminate"
         decision = "reject" if terminate else intent
+        decided_by = _current_username(request)
         resume_map = {
             interrupt_id: {
                 "terminate": terminate,
                 "decisions": {
                     batch_id: {"decision": decision, "comment": body.text} for batch_id in _interrupt_batch_ids(value)
                 },
+                "decided_by": decided_by,
             }
             for interrupt_id, value in pending
         }

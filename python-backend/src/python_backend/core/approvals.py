@@ -24,6 +24,7 @@ class ApprovalBatchRecord:
     status: str
     mode: str
     comment: str | None = None
+    decided_by: str | None = None
     result: dict | None = None
     run_output: dict | None = None
 
@@ -58,6 +59,8 @@ class ApprovalBatchStore(Protocol):
 
     create_batch 须幂等:durable 恢复时 Pregel 重放节点,同 batch_id 重复创建应返回既有记录。
     decide_batch 同决定幂等返回(重放安全),已决定且决定冲突抛 BatchAlreadyDecidedError。
+    decided_by(issue #41)= 决定人用户名(JWT sub;与 requested_by="manager" 同为可读名);
+    幂等重放、无认证上下文时可为 None——不覆盖既有决定,不伪造决定人。
     """
 
     async def create_batch(
@@ -72,7 +75,9 @@ class ApprovalBatchStore(Protocol):
         run_output: dict | None = None,
     ) -> ApprovalBatchRecord: ...
 
-    async def decide_batch(self, *, batch_id: str, decision: str, comment: str | None = None) -> None: ...
+    async def decide_batch(
+        self, *, batch_id: str, decision: str, comment: str | None = None, decided_by: str | None = None
+    ) -> None: ...
 
     async def list_pending(self, thread_id: str) -> list[ApprovalBatchRecord]: ...
 

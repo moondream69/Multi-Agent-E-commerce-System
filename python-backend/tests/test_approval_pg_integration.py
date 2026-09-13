@@ -18,6 +18,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import select
 
 from python_backend.api.app import create_app
+from python_backend.core.auth import create_token
 from python_backend.core.graph import build_supervisor, supervisor_serde
 from python_backend.db.approval_store import PostgresApprovalBatchStore
 from python_backend.db.models import ApprovalBatch, Product
@@ -71,7 +72,11 @@ async def _pg_batches(thread_id: str) -> list[ApprovalBatch]:
 
 
 async def test_b4_batch_persisted_decided_and_applied_in_postgres() -> None:
-    """B4:真实参数批次落库 → approve → apply 效果落库(商品上架)+ 批次 executed。"""
+    """B4:真实参数批次落库 → approve → apply 效果落库(商品上架)+ 批次 executed;决定人落 decided_by(#41)。
+
+    决定人只从 resume 请求的 token 读(建任务不带 token:其记忆落库路径要求 users 行存在,
+    与断言无关且会让用例依赖种子用户)。
+    """
     product = await _make_product()
     client, _store = await make_assemblage(product.id)
     created = (await client.post("/api/tasks", json={"request": "上架商品"})).json()
@@ -86,13 +91,16 @@ async def test_b4_batch_persisted_decided_and_applied_in_postgres() -> None:
     assert batches[0].mode == "approval"
 
     response = await client.post(
-        f"/api/threads/{thread_id}/resume", json={batches[0].batch_id: {"decision": "approve"}}
+        f"/api/threads/{thread_id}/resume",
+        json={batches[0].batch_id: {"decision": "approve"}},
+        headers={"Authorization": f"Bearer {create_token('tester', 42)}"},
     )
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
     batches = await _pg_batches(thread_id)
     assert batches[0].status == "executed"
+    assert batches[0].decided_by == "tester", "issue #41:审计列真实落库(此列自 0001 起无写入路径)"
     assert batches[0].result == {"applied": True}
     async with SessionFactory() as session:
         row = await session.get(Product, product.id)
