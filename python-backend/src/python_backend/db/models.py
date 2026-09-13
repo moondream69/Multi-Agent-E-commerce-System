@@ -7,11 +7,12 @@ LangGraph checkpoint 表由 PostgresSaver.setup() 自行创建,不在 Alembic �
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -269,7 +270,11 @@ class ReplyTemplate(Base):
 
 
 class Faq(Base):
-    """FAQ 知识库:embedding 存 Milvus(faq 集合)。"""
+    """FAQ 知识库:embedding 存 Milvus(faq 集合)。
+
+    溯源六项(spec #46 A,切块级):标题 = question;来源渠道 = source;章节或页码 = section(FAQ = 主题)。
+    chunk_id 为自然键(``<doc_id>#<序号>``,确定性派生)——重灌同 id 覆盖,不产生重复行。
+    """
 
     __tablename__ = "faq"
 
@@ -279,18 +284,51 @@ class Faq(Base):
     locale: Mapped[str] = mapped_column(String(10), default="zh-CN")
     tags: Mapped[list] = mapped_column(ARRAY(String(40)), default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    chunk_id: Mapped[str] = mapped_column(String(80), unique=True)
+    doc_id: Mapped[str] = mapped_column(String(48))
+    source: Mapped[str] = mapped_column(String(200))
+    published_at: Mapped[date] = mapped_column(Date)
+    section: Mapped[str] = mapped_column(String(120))
+    chunk_index: Mapped[int] = mapped_column(Integer)
 
 
 class MarketIntel(Base):
-    """市场情报:embedding 存 Milvus(market_intel 集合)。"""
+    """市场情报:embedding 存 Milvus(market_intel 集合)。
+
+    溯源六项(spec #46 A,切块级):标题 = title;来源渠道 = source(迁移 0006 由 String(40) 放宽);
+    章节或页码 = section(报告 = 页码范围)。chunk_id 为自然键,语义同 Faq。
+    """
 
     __tablename__ = "market_intel"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    source: Mapped[str] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text)
     category: Mapped[str] = mapped_column(String(40))
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    title: Mapped[str] = mapped_column(String(300))
+    chunk_id: Mapped[str] = mapped_column(String(80), unique=True)
+    doc_id: Mapped[str] = mapped_column(String(48))
+    published_at: Mapped[date] = mapped_column(Date)
+    section: Mapped[str] = mapped_column(String(120))
+    chunk_index: Mapped[int] = mapped_column(Integer)
+
+
+class CorpusBatch(Base):
+    """语料批次台账(spec #46 A):每次摄入留痕一份(评测据此绑定语料版本)。
+
+    批次 id / 文档标识 / 内容哈希(sha256)/ 摄入时间 / 切块数;同批次同文档唯一。
+    """
+
+    __tablename__ = "corpus_batches"
+    __table_args__ = (UniqueConstraint("batch_id", "doc_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(36))
+    doc_id: Mapped[str] = mapped_column(String(48))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    chunk_count: Mapped[int] = mapped_column(Integer)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AgentTask(Base):

@@ -6,7 +6,7 @@ import math
 import re
 import socket
 from collections.abc import Awaitable, Callable, Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import urlparse
 
@@ -21,6 +21,7 @@ from python_backend.core.approvals import (
     initial_status,
 )
 from python_backend.core.planning import Slice, SlicePlan
+from python_backend.corpus.schema import CorpusChunk, CorpusDocument, FaqEntry, Page
 from python_backend.db.base import Base
 from python_backend.db.customer_store import DEMO_BUYERS
 from python_backend.db.models import (
@@ -901,6 +902,60 @@ def _cosine(a: list[float], b: list[float]) -> float:
 def _matches(record: VectorRecord, filter: str) -> bool:
     field, value = filter.split(" == ")
     return record.payload.get(field) == value.strip('"')
+
+
+class InMemoryCorpusStore:
+    """语料投影与批次台账的内存替身(票 #48 缝 2):记录对外调用,供离线断言。"""
+
+    def __init__(self) -> None:
+        self.chunks: dict[str, CorpusChunk] = {}  # chunk_id → 切块(同 id 覆盖 = 幂等语义)
+        self.batches: list[dict] = []
+
+    async def upsert_chunks(self, kind: str, chunks: list[CorpusChunk]) -> None:
+        for chunk in chunks:
+            assert chunk.kind == kind
+            self.chunks[chunk.chunk_id] = chunk
+
+    async def record_batch(self, *, batch_id: str, doc_id: str, content_hash: str, chunk_count: int) -> None:
+        self.batches.append(
+            {"batch_id": batch_id, "doc_id": doc_id, "content_hash": content_hash, "chunk_count": chunk_count}
+        )
+
+
+# 语料用例共用的文档构造(缝 1 / 缝 2 两侧同形):正文复现「整页无空行、逐行折行」的 pypdf 形态
+CORPUS_PAGE_TEXT = "\n".join(
+    f"This is sentence number {i} of the frozen report body, written long enough to wrap across lines."
+    for i in range(1, 41)
+)
+
+
+def corpus_intel_doc(doc_id: str = "demo-report", pages: int = 3) -> CorpusDocument:
+    """intel 侧语料文档(逐页同一段长正文)。"""
+    return CorpusDocument(
+        doc_id=doc_id,
+        kind="intel",
+        title="Demo Report",
+        source="Example Publisher (CC BY)",
+        published_at=date(2020, 1, 1),
+        category="行业洞察",
+        pages=tuple(Page(number=n, text=CORPUS_PAGE_TEXT) for n in range(1, pages + 1)),
+    )
+
+
+def corpus_faq_doc() -> CorpusDocument:
+    """faq 侧语料文档(两条问答,各成一块)。"""
+    return CorpusDocument(
+        doc_id="faq-logistics",
+        kind="faq",
+        title="物流配送 FAQ",
+        source="自造 FAQ 语料库",
+        published_at=date(2026, 9, 14),
+        category="物流配送",
+        entries=(
+            FaqEntry(question="包裹多久能到?", answer="东南亚一般 5-10 个工作日。", tags=["时效"]),
+            FaqEntry(question="如何查询物流?", answer="在订单详情页点击「查看物流」。", tags=["追踪"]),
+        ),
+    )
 
 
 class FakeExecutor:
