@@ -1,4 +1,8 @@
-"""选品分析 Agent(spec #7):ReAct 子图,情报 → 评分 → 报告 → 自动建草稿。"""
+"""选品分析 Agent(spec #7):ReAct 子图,情报 → 评分 → 报告 → 自动建草稿。
+
+issue #52:据 trend_query / competitor_analysis 的命中作答时标出切块标识,由共享 ReAct
+构建器归一化为引用条目随答案下发(与客服线同口径;工具返回结构不动)。
+"""
 
 from __future__ import annotations
 
@@ -15,6 +19,8 @@ SYSTEM_PROMPT = """你是选品分析 Agent,服务于跨境电商卖家。工作
 3. 用 generate_report 生成结构化分析报告(含评分等级)
 4. 报告完成后,用 draft_create 把结论落为商品草稿(免审直行),并告知用户草稿已建
 
+依据情报命中作答时,在该句末尾用方括号标出所依据的切块标识(如 [usitc-global-digital-trade-1#583]),
+标识取自检索结果里的 id;未依据命中的句子不标,不要凭记忆编标识。
 只输出事实性结论,情报不足时如实说明。"""
 
 

@@ -288,7 +288,16 @@ async def test_customer_unified_search_hits_both_collections_as_evidence() -> No
 # —— B28:引用小点(issue #51) ——
 
 
-def _retrieval_hit(chunk_id: str, *, title: str, section: str, chunk_index: int, content: str) -> VectorRecord:
+def _retrieval_hit(
+    chunk_id: str,
+    *,
+    title: str,
+    section: str,
+    chunk_index: int,
+    content: str,
+    source: str = "自造 FAQ 语料库",
+    published_at: str = "2026-09-14",
+) -> VectorRecord:
     """检索命中记录(形状 = 语料切块投影,带完整溯源;向量同向以便 FakeEmbedding 命中)。"""
     return VectorRecord(
         id=chunk_id,
@@ -296,8 +305,8 @@ def _retrieval_hit(chunk_id: str, *, title: str, section: str, chunk_index: int,
         payload={
             "doc_id": chunk_id.split("#", 1)[0],
             "title": title,
-            "source": "自造 FAQ 语料库",
-            "published_at": "2026-09-14",
+            "source": source,
+            "published_at": published_at,
             "section": section,
             "chunk_index": chunk_index,
             "content": content,
@@ -360,6 +369,83 @@ async def test_customer_answer_without_retrieval_has_no_citations() -> None:
 
     assert result["answer"] == "亲,该商品售价 129.00 元,现货充足。"
     assert result["citations"] == []
+
+
+# —— B28 横切:选品域引用(issue #52) ——
+
+
+async def test_product_answer_carries_citations_from_intel_hits() -> None:
+    """#52:选品线答案据情报命中标注 → 归一化为上标编号;同文档合并编号,引用条目随答案出图。
+
+    与客服线同一形状(切块标识标记 + 文档级合并),只是命中来自 trend_query / competitor_analysis。
+    """
+    vector = InMemoryVectorRepository()
+    await vector.upsert(
+        "market_intel",
+        [
+            _retrieval_hit(
+                "usitc-global-digital-trade-1#583",
+                title="Global Digital Trade 1",
+                source="U.S. International Trade Commission",
+                published_at="2017-08-01",
+                section="pp.150-151",
+                chunk_index=583,
+                content="Digital trade barriers vary by market.",
+            ),
+            _retrieval_hit(
+                "usitc-global-digital-trade-1#590",
+                title="Global Digital Trade 1",
+                source="U.S. International Trade Commission",
+                published_at="2017-08-01",
+                section="pp.152-153",
+                chunk_index=590,
+                content="Cross-border data flows remain restricted.",
+            ),
+        ],
+    )
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("trend_query", {"query": "跨境数字贸易 趋势"})),
+            round_tools(call("competitor_analysis", {"query": "跨境数字贸易 竞品"}, "call_2")),
+            round_text(
+                "跨境数据流动仍受限[usitc-global-digital-trade-1#590];"
+                "壁垒因市场而异[usitc-global-digital-trade-1#583]。"
+            ),
+        ]
+    )
+    executor = ToolExecutor(vector=vector, embedding=FakeEmbedding())
+    graph, _registry = build_product_agent(executor=executor, llm=llm)
+
+    final = await run(graph, "分析跨境数字贸易市场并生成选品报告")
+
+    assert final["answer"] == "跨境数据流动仍受限[1];壁垒因市场而异[1]。"
+    assert len(final["citations"]) == 1, "同一文档合并为一条引用"
+    citation = final["citations"][0]
+    assert citation["number"] == 1 and citation["doc_id"] == "usitc-global-digital-trade-1"
+    assert citation["title"] == "Global Digital Trade 1"
+    assert citation["source"] == "U.S. International Trade Commission"
+    assert [chunk["id"] for chunk in citation["chunks"]] == [
+        "usitc-global-digital-trade-1#590",  # 顺序 = 文本内被引出现的顺序
+        "usitc-global-digital-trade-1#583",
+    ]
+    assert citation["chunks"][0]["score"] == 1.0 and citation["chunks"][0]["section"] == "pp.152-153"
+
+
+async def test_product_answer_without_retrieval_has_no_citations() -> None:
+    """#52:无情报命中的选品答案(如仅评分)文本原样、引用为空;序号标记不被静默锚定(#51 同口径)。"""
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("scoring", {"product_title": "蓝牙音箱"})),
+            round_text("评分 88 分(A 级),列第 1 候选[1]。"),
+        ]
+    )
+    executor = FakeExecutor(results={"scoring": {"score": 88, "grade": "A"}})
+    graph, _ = build_product_agent(executor=executor, llm=llm)
+
+    final = await run(graph, "给蓝牙音箱打分")
+
+    assert final["answer"] == "评分 88 分(A 级),列第 1 候选[1]。"
+    assert final["citations"] == []
 
 
 async def test_customer_replayed_assistant_messages_keep_reasoning_content() -> None:

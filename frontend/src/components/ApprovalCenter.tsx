@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AgentMarkdown } from './AgentMarkdown';
+import { AgentMarkdown, answerOf, citationsOf } from './AgentMarkdown';
 import {
   decideBatches,
   executeShadowBatch,
@@ -11,7 +11,6 @@ import {
   ApprovalActionSnapshot,
   ApprovalBatch,
   ApprovalBatchStatus,
-  Citation,
   SlicePlanSlice,
   ThreadPlan,
 } from '../types/events';
@@ -23,14 +22,6 @@ import {
 
 // —— 参数/状态的台账标签(系统术语 → 中文台账口径)——
 // 动作标签由 GET /api/actions 提供(spec #8 注册表单一化,不再硬编码)。
-
-/** runOutput 是自由 JSONB(批次行原样存子图产出):引用条目按契约形状取用,缺省即无引用(#51)。 */
-function citationsOf(
-  runOutput: Record<string, unknown> | null | undefined,
-): Citation[] {
-  const value = runOutput?.citations;
-  return Array.isArray(value) ? (value as Citation[]) : [];
-}
 
 const PARAM_LABELS: Record<string, string> = {
   product_id: '商品',
@@ -436,6 +427,7 @@ export function ApprovalCenter() {
         {[...byThread.entries()].map(([threadId, threadBatches]) => {
           const first = threadBatches[0];
           const plan = plans[threadId];
+          const answer = answerOf(first.runOutput);
           const approvalBatches = threadBatches.filter(
             (b) => b.mode === 'approval' && b.status === 'pending',
           );
@@ -458,14 +450,13 @@ export function ApprovalCenter() {
               </div>
               {/* 任务上下文 + 后续计划预览(ADR-0005):无任务行/无计划时不渲染该区 */}
               {plan && <PlanPreview plan={plan} currentSlice={first.sliceNo} />}
-              {typeof first.runOutput?.answer === 'string' &&
-                first.runOutput.answer.trim() !== '' && (
-                  <div className="mb-2.5 rounded-lg border border-line bg-bg px-2.5 py-2 text-xs text-ink-2">
-                    <AgentMarkdown citations={citationsOf(first.runOutput)}>
-                      {first.runOutput.answer}
-                    </AgentMarkdown>
-                  </div>
-                )}
+              {answer && (
+                <div className="mb-2.5 rounded-lg border border-line bg-bg px-2.5 py-2 text-xs text-ink-2">
+                  <AgentMarkdown citations={citationsOf(first.runOutput)}>
+                    {answer}
+                  </AgentMarkdown>
+                </div>
+              )}
               <div className="flex flex-col gap-2.5">
                 {threadBatches.map((batch) => (
                   <BatchCard

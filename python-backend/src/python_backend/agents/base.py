@@ -3,6 +3,9 @@
 工具按节点授权暴露(B6):agent 节点只看见本节点授权清单(LLM 看不到未授权工具);
 tool 节点按「可见性 → 三层分类」裁决:不可见拒绝(边约束的兜底)/ approval 收集不执行
 (诚实观察)/ auto 直行。resolve_tool_calls 为客服结构化图共用。
+
+issue #52:引用增强是横切能力(ADR-0007 C 段)——检索类工具的命中累积进状态,作答轮经
+build_citations 归一化(与客服线同一形状/同一解析点);无命中即文本原样、引用为空。
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from python_backend.agents.executor import Executor, action_of
 from python_backend.core.approvals import classify_action
+from python_backend.core.citations import build_citations, retrieval_hits
 from python_backend.core.planning import Slice
 from python_backend.domain.tools import ToolRegistry
 from python_backend.infrastructure.llm import LlmClient, LlmFailure, ToolCallResult
@@ -64,9 +68,10 @@ class AgentState(TypedDict, total=False):
     step_count: int
     tool_calls: list[dict]
     collected: Annotated[list[dict], merge_lists]  # 审批动作参数快照(效果后置,切片边界打包)
+    retrieval: Annotated[list[dict], merge_lists]  # 检索命中切块(#52:引用只建在命中的 id 上)
     answer: str | None
     incomplete: str | None
-    citations: list[dict]  # issue #51:检索类答案的引用条目(客服线产出;其余线留空)
+    citations: list[dict]  # issue #51:检索类答案的引用条目(无检索依据即空)
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,14 @@ class ExecutedCall:
     action: str
     params: dict
     result: object
+
+
+def retrieval_hits_from(executed: list[ExecutedCall]) -> list[dict]:
+    """已执行调用里的检索命中汇总(按调用序拼接,不去重)——引用只建在命中的 id 上。
+
+    两个子图共用(issue #51 客服线 / #52 ReAct 线):非检索工具的结果没有 hits 形状,自然落空。
+    """
+    return [hit for call in executed for hit in retrieval_hits(call.result)]
 
 
 async def resolve_tool_calls(
@@ -177,19 +190,25 @@ def build_react_agent(
         step = {"step_count": state.get("step_count", 0) + 1}
         if result.tool_calls:
             return {**step, "messages": [assistant_message(result)], "tool_calls": result.tool_calls}
+        # issue #52:作答轮把命中标识归一化为上标编号(与客服线同一解析点);
+        # 无检索命中则文本原样、引用为空(不硬标)
+        answer, citations = build_citations(result.content or "", state.get("retrieval", []))
         # 作答轮须清空 tool_calls:该键无 reducer,上一轮的陈旧值会误导条件边
         return {
             **step,
             "messages": [assistant_message(result)],
             "tool_calls": [],
-            "answer": result.content or "",
+            "answer": answer,
+            "citations": citations,
         }
 
     async def tool_node(state: AgentState) -> dict:
-        observations, collected, _executed = await resolve_tool_calls(
+        observations, collected, executed = await resolve_tool_calls(
             state.get("tool_calls", []), visible=visible_names, executor=executor
         )
-        return {"messages": observations, "collected": collected}
+        # 检索类工具的命中累积进状态(非检索工具没有 hits 形状,天然落空)
+        retrieval = retrieval_hits_from(executed)
+        return {"messages": observations, "collected": collected, "retrieval": retrieval}
 
     def after_agent(state: AgentState) -> str:
         if state.get("incomplete") is not None or state.get("answer") is not None:

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { AgentMarkdown, answerOf, citationsOf } from './AgentMarkdown';
 import { BusinessSnapshot } from './BusinessSnapshot';
 import { CollabPipeline } from './CollabPipeline';
 import { EventWall } from './EventWall';
@@ -23,6 +24,14 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
+/** 切片结果行(自由 JSONB;键为切片号的字符串形式,与后端序列化口径一致)。 */
+function sliceResult(
+  detail: TaskDetail | null,
+  slice: SlicePlanSlice,
+): unknown {
+  return detail?.results?.[String(slice.no)];
+}
+
 type SliceState =
   | { kind: 'done' }
   | { kind: 'rejected' }
@@ -33,7 +42,7 @@ function sliceState(
   slice: SlicePlanSlice,
   detail: TaskDetail | null,
 ): SliceState {
-  const result = detail?.results?.[String(slice.no)];
+  const result = sliceResult(detail, slice);
   if (result && typeof result === 'object') {
     const value = result as Record<string, unknown>;
     if (value.rejected) return { kind: 'rejected' };
@@ -136,32 +145,45 @@ export function SliceTimeline({
         {slices.map((slice) => {
           const state = sliceState(slice, detail);
           const label = sliceStateLabel(state);
+          const result = sliceResult(detail, slice);
+          const answer = answerOf(result);
           return (
             <div
               key={slice.no}
-              className="flex items-center gap-2.5 rounded-xl border border-line bg-surface px-3.5 py-2.5 shadow-card"
+              className="rounded-xl border border-line bg-surface shadow-card"
             >
-              <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-line bg-surface-2 text-[11px] font-semibold">
-                {slice.no}
-              </span>
-              <span className="shrink-0 text-xs text-ink-2">
-                {AGENT_LABELS[slice.agent] ?? slice.agent}
-                {slice.depends_on.length > 0 &&
-                  ` · 依赖段 ${slice.depends_on.join(', ')}`}
-              </span>
-              <span className="truncate text-[13px]">{slice.description}</span>
-              <span
-                className={`ml-auto shrink-0 text-xs font-medium ${label.color}`}
-              >
-                {label.text}
-              </span>
-              {state.kind === 'waiting_approval' && (
-                <button
-                  onClick={onOpenApprovals}
-                  className="shrink-0 cursor-pointer rounded-lg border border-st-approval/50 bg-st-approval-bg px-2.5 py-1 text-xs text-st-approval transition-colors hover:bg-st-approval/15"
+              <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+                <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-line bg-surface-2 text-[11px] font-semibold">
+                  {slice.no}
+                </span>
+                <span className="shrink-0 text-xs text-ink-2">
+                  {AGENT_LABELS[slice.agent] ?? slice.agent}
+                  {slice.depends_on.length > 0 &&
+                    ` · 依赖段 ${slice.depends_on.join(', ')}`}
+                </span>
+                <span className="truncate text-[13px]">
+                  {slice.description}
+                </span>
+                <span
+                  className={`ml-auto shrink-0 text-xs font-medium ${label.color}`}
                 >
-                  去审批
-                </button>
+                  {label.text}
+                </span>
+                {state.kind === 'waiting_approval' && (
+                  <button
+                    onClick={onOpenApprovals}
+                    className="shrink-0 cursor-pointer rounded-lg border border-st-approval/50 bg-st-approval-bg px-2.5 py-1 text-xs text-st-approval transition-colors hover:bg-st-approval/15"
+                  >
+                    去审批
+                  </button>
+                )}
+              </div>
+              {answer && (
+                <div className="border-t border-line px-3.5 py-2.5 text-[13px] text-ink-2">
+                  <AgentMarkdown citations={citationsOf(result)}>
+                    {answer}
+                  </AgentMarkdown>
+                </div>
               )}
             </div>
           );

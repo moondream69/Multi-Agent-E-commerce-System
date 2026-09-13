@@ -19,6 +19,22 @@ import type { Citation } from '../types/events';
 const NO_CITATIONS: Citation[] = [];
 const CITATION_MARKER = /\[(\d+)\]/g;
 
+/** 自由 JSONB(批次 run_output / 切片结果)里的引用条目:按契约形状取用,缺省即无引用。
+
+    #52:答案载荷的调用面不止一处(执行报告 / 切片时间线),读法收在这里,不各写一份。
+*/
+export function citationsOf(value: unknown): Citation[] {
+  const citations = (value as { citations?: unknown } | null | undefined)
+    ?.citations;
+  return Array.isArray(citations) ? (citations as Citation[]) : [];
+}
+
+/** 同上,取答案文本:空串/null 视为无答案(与 citationsOf 同一读法,同一组调用面)。 */
+export function answerOf(value: unknown): string | null {
+  const answer = (value as { answer?: unknown } | null | undefined)?.answer;
+  return typeof answer === 'string' && answer.trim() !== '' ? answer : null;
+}
+
 /** 引用小点:上标编号;点开显示被引切块原文与完整溯源(文档标识/标题/来源/日期/章节/切块序号)。 */
 function CitationMark({ citation }: { citation: Citation }) {
   const [open, setOpen] = useState(false);
@@ -36,7 +52,7 @@ function CitationMark({ citation }: { citation: Citation }) {
       {open && (
         <span
           role="note"
-          className="absolute top-full left-0 z-10 mt-1 block w-72 rounded-card border border-line bg-surface p-2.5 text-left text-[12px] leading-[1.6] whitespace-normal text-ink shadow-lg"
+          className="absolute top-full left-0 z-10 mt-1 block max-h-[70vh] w-72 overflow-y-auto rounded-card border border-line bg-surface p-2.5 text-left text-[12px] leading-[1.6] whitespace-normal text-ink shadow-lg"
         >
           <span className="mb-0.5 block font-medium">{citation.title}</span>
           <span className="mb-1 block text-ink-3">

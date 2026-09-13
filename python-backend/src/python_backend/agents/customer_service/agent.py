@@ -18,10 +18,11 @@ from python_backend.agents.base import (
     assistant_message,
     merge_lists,
     resolve_tool_calls,
+    retrieval_hits_from,
 )
 from python_backend.agents.customer_service.tools import DRAFT_TOOLS, VERIFY_TOOLS
 from python_backend.agents.executor import Executor
-from python_backend.core.citations import build_citations, retrieval_hits
+from python_backend.core.citations import build_citations
 from python_backend.domain.tools import ToolRegistry
 
 VERIFY_SYSTEM = """你是跨境电商客服的查证助手。买家消息需要先查证再作答:
@@ -99,7 +100,7 @@ def build_customer_agent(
             state.get("tool_calls", []), visible=verify_visible, executor=executor
         )
         evidence = [{"tool": call.action, "params": call.params} for call in executed]
-        retrieval = [hit for call in executed for hit in retrieval_hits(call.result)]
+        retrieval = retrieval_hits_from(executed)
         return {
             "messages": observations,
             "collected": collected,

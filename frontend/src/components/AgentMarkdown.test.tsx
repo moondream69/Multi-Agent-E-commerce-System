@@ -105,4 +105,27 @@ describe('AgentMarkdown 引用小点', () => {
 
     expect(screen.getByRole('button', { name: '引用 1' })).toBeTruthy();
   });
+
+  it('多切块引用(选品报告实拍:同文档 20 个切块)面板限高可滚,不溢出视口', () => {
+    const many = citation({
+      doc_id: 'usitc-global-digital-trade-1',
+      chunks: Array.from({ length: 20 }, (_, index) => ({
+        id: `usitc-global-digital-trade-1#${index}`,
+        score: 0.5,
+        section: 'pp.1-2',
+        chunk_index: index,
+        content: `被引片段 ${index}`,
+      })),
+    });
+    render(
+      <AgentMarkdown citations={[many]}>跨境数据流动受限[1]。</AgentMarkdown>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '引用 1' }));
+
+    const panel = screen.getByRole('note');
+    expect(panel.className).toContain('max-h-');
+    expect(panel.className).toContain('overflow-y-auto');
+    expect(within(panel).getAllByText(/被引片段 \d+/)).toHaveLength(20);
+  });
 });
