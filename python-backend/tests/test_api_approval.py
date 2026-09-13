@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -87,6 +89,46 @@ def make_profile_client(*, shadow_mode: bool) -> tuple[TestClient, InMemoryAppro
         )
     )
     return client, store, apply_fn
+
+
+def make_cross_profile_harness() -> tuple[
+    Callable[..., TestClient], InMemoryApprovalBatchStore, FakeApply, InMemoryTaskStore
+]:
+    """跨剖面用例接缝(issue #40):同一批次库/任务行存储/checkpointer 上按需构建不同剖面的客户端。
+
+    全部件跨两次构建共享,等价于「同库先后以 dev / prod 两态运行」(重启只换剖面);
+    通知存储同时注入图与 create_app——决定路径 apply 的效果经图侧 emit_notifications 落库。
+    """
+    store = InMemoryApprovalBatchStore()
+    task_store = InMemoryTaskStore()
+    notification_store = InMemoryNotificationStore()
+    apply_fn = FakeApply()
+    checkpointer = InMemorySaver()
+
+    def build(*, shadow_mode: bool) -> TestClient:
+        graph = build_supervisor(
+            StubPlanner(),
+            agents={"order_management": slice_agent(actions=[PUBLISH], answer="上架动作已登记")},
+            checkpointer=checkpointer,
+            batch_store=store,
+            shadow_mode=shadow_mode,
+            apply_fn=apply_fn,
+            notification_store=notification_store,
+        )
+        return TestClient(
+            create_app(
+                graph=graph,
+                batch_store=store,
+                apply_fn=apply_fn,
+                memory=InMemorySessionMemory(),
+                task_store=task_store,
+                notification_store=notification_store,
+                auth_required=False,
+                shadow_mode=shadow_mode,
+            )
+        )
+
+    return build, store, apply_fn, task_store
 
 
 async def test_create_task_interrupts_with_batches() -> None:
@@ -483,3 +525,83 @@ def test_parse_decision_intent_priority() -> None:
     assert parse_decision_intent("不通过") == "reject"
     assert parse_decision_intent("取消任务") == "terminate"
     assert parse_decision_intent("今天天气不错") is None
+
+
+async def test_cross_profile_resume_still_decides_approval_batch() -> None:
+    """issue #40:恢复分派按批次持久化 mode,与当前剖面解耦。
+
+    生产剖面挂起的 approval 批次,切到演练剖面(同库同 checkpoint,新图实例)后 resume:
+    仍须 decide + apply——不得被当前剖面的影子分支先于 interrupt 命中而静默吞掉
+    (旧行为:200 + 任务 completed,但批次停 pending、图内挂起被消费,再次 resume 409)。
+    """
+    build, store, apply_fn, task_store = make_cross_profile_harness()
+
+    # 1) 生产剖面发起:挂起 + approval 批次(带认证上下文——任务行落库须 user_id,与 spec #34 用例同款)
+    client_prod = build(shadow_mode=False)
+    client_prod.headers.update({"Authorization": f"Bearer {create_token('tester', 42)}"})
+    thread_id = client_prod.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+    batch = (await store.list_open())[0]
+    assert batch.mode == "approval"
+
+    # 2) 切演练剖面(同 store / 同 checkpointer)后提交批准
+    client_dev = build(shadow_mode=True)
+    response = client_dev.post(f"/api/threads/{thread_id}/resume", json={batch.batch_id: {"decision": "approve"}})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert [bid for bid, _actions in apply_fn.calls] == [batch.batch_id], "approval 批次跨剖面照样 apply"
+    assert await store.list_pending(thread_id) == [], "批次已落决定,不得僵持 pending"
+    assert batch.status == "approved"
+    row = await task_store.get_task(thread_id)
+    assert row is not None and row.status is TaskStatus.COMPLETED, "任务行如实收敛 completed"
+
+    # 3) 决定已生效:图内挂起被消费,再次 resume 如实 409(不再有「200 + 静默跳过」组合)
+    again = client_dev.post(f"/api/threads/{thread_id}/resume", json={batch.batch_id: {"decision": "approve"}})
+    assert again.status_code == 409
+
+
+async def test_cross_profile_resume_reject_still_records() -> None:
+    """同场景 resume reject:跨剖面同样落 rejected 与意见、不 apply——与剖面一致时同语义。"""
+    build, store, apply_fn, _task_store = make_cross_profile_harness()
+
+    client_prod = build(shadow_mode=False)
+    thread_id = client_prod.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+    batch = (await store.list_open())[0]
+
+    client_dev = build(shadow_mode=True)
+    response = client_dev.post(
+        f"/api/threads/{thread_id}/resume", json={batch.batch_id: {"decision": "reject", "comment": "价格太低"}}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed", "冲突终止与剖面一致时同语义(StubPlanner 静态计划)"
+    assert batch.status == "rejected"
+    assert batch.comment == "价格太低"
+    assert apply_fn.calls == []
+
+
+async def test_mixed_mode_batches_dispatch_per_batch() -> None:
+    """混合 mode(防御性,issue #40):逐批次按自身 mode 分派——approval 照常决定/执行,
+    同切片的 shadow 批次不被触碰(正常登记不产生混合;此处人工构造以钉住分派契约)。"""
+    build, store, apply_fn, _task_store = make_cross_profile_harness()
+
+    client_prod = build(shadow_mode=False)
+    thread_id = client_prod.post("/api/tasks", json={"request": "上架商品"}).json()["threadId"]
+    batch = (await store.list_open())[0]
+
+    shadow_batch = await store.create_batch(
+        batch_id="shadow-mixed-1",
+        thread_id=thread_id,
+        slice_no=batch.slice_no,
+        action_type="product.publish",
+        actions=[PUBLISH],
+        mode="shadow",
+    )
+
+    client_dev = build(shadow_mode=True)
+    response = client_dev.post(f"/api/threads/{thread_id}/resume", json={batch.batch_id: {"decision": "approve"}})
+
+    assert response.status_code == 200
+    assert [bid for bid, _actions in apply_fn.calls] == [batch.batch_id], "只决定 approval 批次"
+    assert batch.status == "approved"
+    assert shadow_batch.status == "shadow", "shadow 批次不被决定、不被触碰"

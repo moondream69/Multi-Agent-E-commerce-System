@@ -27,7 +27,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send, interrupt
 
 from python_backend.agents.executor import ApplyFunction, apply_batch_actions
-from python_backend.core.approvals import ApprovalBatchStore
+from python_backend.core.approvals import ApprovalBatchRecord, ApprovalBatchStore
 from python_backend.core.events import EventEmitter, NullEmitter
 from python_backend.core.notifications import emit_notifications
 from python_backend.core.planning import ManagerPlanner, PlanFailed, Planner, Slice, SlicePlan
@@ -58,11 +58,25 @@ def merge_dicts(current: dict, update: dict) -> dict:
 
 
 class BatchPayload(TypedDict):
-    """interrupt 载荷中的单个批次(spec #7:一次 interrupt 携带切片全部批次)。"""
+    """interrupt 载荷中的单个批次(spec #7:一次 interrupt 携带切片全部批次)。
+
+    mode 为登记时持久化的事实(issue #40):恢复分派依据它,而非恢复时的当前剖面。
+    """
 
     batch_id: str
     action_type: str
     actions: list[dict]
+    mode: str
+
+
+def _batch_payload(record: ApprovalBatchRecord) -> BatchPayload:
+    """批次行的恢复载荷:mode 随行(恢复分派的事实来源,issue #40)。"""
+    return {
+        "batch_id": record.batch_id,
+        "action_type": record.action_type,
+        "actions": record.actions,
+        "mode": record.mode,
+    }
 
 
 class SupervisorState(TypedDict, total=False):
@@ -236,7 +250,7 @@ async def _execute_slice(
     if existing:
         # durable 重放:子图不重跑(LLM 轮次与 auto 工具副作用不重复),输出从批次行恢复
         run = existing[0].run_output or {}
-        batches = [{"batch_id": r.batch_id, "action_type": r.action_type, "actions": r.actions} for r in existing]
+        batches = [_batch_payload(r) for r in existing]
     else:
         # 协作面板数据源:分派信号(durable 重放不重发,避免 resume 时闪现「执行中」)
         await emitter.emit("slice.started", {"threadId": thread_id, "sliceNo": slice_.no, "agent": slice_.agent})
@@ -276,7 +290,7 @@ async def _execute_slice(
                 groups.setdefault(item["action"], []).append(item)
             for action_type in sorted(groups):  # 排序:重放时批次序确定
                 batch_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{thread_id}:{slice_.no}:{action_type}"))
-                await batch_store.create_batch(
+                record = await batch_store.create_batch(
                     batch_id=batch_id,
                     thread_id=thread_id,
                     slice_no=slice_.no,
@@ -285,7 +299,10 @@ async def _execute_slice(
                     mode="shadow" if shadow_mode else "approval",
                     run_output=run_output,
                 )
-                batches.append({"batch_id": batch_id, "action_type": action_type, "actions": groups[action_type]})
+                batches.append(
+                    # mode 取持久化记录(create 幂等:已存在行时返回库中值,重放不覆盖)
+                    _batch_payload(record)
+                )
             if batches:
                 # WS 载荷按契约 camelCase(与 REST 序列化一致);interrupt 载荷保持 snake(内部)
                 await emitter.emit(
@@ -329,8 +346,13 @@ async def _execute_slice(
 
     if batches:
         assert batch_store is not None  # 有批次必有存储(创建/重放路径都经 store)
-        if shadow_mode:
-            merged["shadow_batches"] = len(batches)
+        # 分派依据 = 批次持久化 mode(登记时事实),而非当前剖面(issue #40):跨剖面恢复
+        # (如生产挂起后切演练 resume)时,当前 shadow_mode 不得先于 interrupt 吞掉人工决定
+        approval_batches = [batch for batch in batches if batch["mode"] == "approval"]
+        shadow_count = len(batches) - len(approval_batches)
+        if shadow_count:
+            merged["shadow_batches"] = shadow_count
+        if not approval_batches:
             await _emit_completed()
             return {"results": {slice_.no: merged}}
 
@@ -339,13 +361,13 @@ async def _execute_slice(
                 "slice_no": slice_.no,
                 "agent": slice_.agent,
                 "description": slice_.description,
-                "batches": batches,
+                "batches": approval_batches,
             }
         )
         if decision.get("terminate"):
             comments = [d.get("comment") for d in (decision.get("decisions") or {}).values() if d.get("comment")]
             comment = "; ".join(comments) if comments else "用户终止"
-            for batch in batches:
+            for batch in approval_batches:
                 await batch_store.decide_batch(
                     batch_id=batch["batch_id"],
                     decision="reject",
@@ -358,7 +380,7 @@ async def _execute_slice(
         decisions: dict = decision.get("decisions") or {}
         rejected_comments: list[str] = []
         conflicts: list[str] = []
-        for batch in batches:
+        for batch in approval_batches:
             batch_id = batch["batch_id"]
             decided: dict[str, str | None] = decisions.get(batch_id) or {"decision": "reject", "comment": None}
             decision_value = decided["decision"] or "reject"
