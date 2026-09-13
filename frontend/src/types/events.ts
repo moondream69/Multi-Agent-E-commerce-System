@@ -233,6 +233,27 @@ export interface DraftingEvidence {
 export interface DraftingResponse {
   draft: string;
   evidence: DraftingEvidence;
+  citations: Citation[];
+}
+
+// —— 引用小点(issue #51 / ADR-0007 C 段:答案带切块级引用,数据随回答一起下发)——
+// 编号即答案文本里的上标编号(同一文档合并为一号);点开显示各被引切块的原文与完整溯源。
+
+export interface CitationChunk {
+  id: string; // 切块标识(如 faq-returns#6)
+  score: number; // 本次检索得分
+  section: string; // 章节或页码
+  chunk_index: number | null; // 切块序号
+  content: string; // 被引切块原文
+}
+
+export interface Citation {
+  number: number; // 上标编号(1 起,按文本内首次出现排)
+  doc_id: string; // 文档标识(切块标识的「#」前缀)
+  title: string;
+  source: string; // 来源渠道
+  published_at: string | null; // 发布日期
+  chunks: CitationChunk[];
 }
 
 // —— CSV 导入(spec #8 B8:POST /api/import/products|orders)——

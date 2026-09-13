@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { DraftingWorkbench } from './DraftingWorkbench';
 import { draftReply } from '../services/drafting';
 import { DraftingEvidence, DraftingResponse } from '../types/events';
@@ -23,7 +23,11 @@ function evidence(overrides: Partial<DraftingEvidence> = {}): DraftingEvidence {
 }
 
 function response(payload: Partial<DraftingEvidence> = {}): DraftingResponse {
-  return { draft: '亲,这款还有货哦。', evidence: evidence(payload) };
+  return {
+    draft: '亲,这款还有货哦。',
+    evidence: evidence(payload),
+    citations: [],
+  };
 }
 
 function generate() {
@@ -106,6 +110,7 @@ describe('DraftingWorkbench(A16:草稿 Markdown 渲染)', () => {
     draftReplyMock.mockResolvedValue({
       draft: MARKDOWN_DRAFT,
       evidence: evidence(),
+      citations: [],
     });
 
     generate();
@@ -122,6 +127,7 @@ describe('DraftingWorkbench(A16:草稿 Markdown 渲染)', () => {
     draftReplyMock.mockResolvedValue({
       draft: MARKDOWN_DRAFT,
       evidence: evidence(),
+      citations: [],
     });
     generate();
     await screen.findByText('回复要点');
@@ -138,5 +144,46 @@ describe('DraftingWorkbench(A16:草稿 Markdown 渲染)', () => {
     fireEvent.click(screen.getByRole('button', { name: '预览' }));
 
     expect(screen.getByText('改过的草稿')).toBeTruthy();
+  });
+});
+
+describe('DraftingWorkbench(issue #51:引用小点)', () => {
+  beforeEach(() => {
+    draftReplyMock.mockReset();
+  });
+
+  it('草稿里的 [1] 渲染为可点上标,点开显示被引切块原文与溯源(引用随回答一起下发)', async () => {
+    draftReplyMock.mockResolvedValue({
+      draft: '仓库验收后 1-3 个工作日发起退款[1]。',
+      evidence: evidence(),
+      citations: [
+        {
+          number: 1,
+          doc_id: 'faq-returns',
+          title: '退款多久到账?退到哪里?',
+          source: '自造 FAQ 语料库',
+          published_at: '2026-09-14',
+          chunks: [
+            {
+              id: 'faq-returns#6',
+              score: 0.83,
+              section: '退货退款',
+              chunk_index: 6,
+              content: 'Q: 退款多久到账?\nA: 仓库验收后 1-3 个工作日发起退款。',
+            },
+          ],
+        },
+      ],
+    });
+
+    generate();
+
+    const mark = await screen.findByRole('button', { name: '引用 1' });
+    fireEvent.click(mark);
+    const panel = within(screen.getByRole('note'));
+    expect(panel.getByText('退款多久到账?退到哪里?')).toBeTruthy();
+    expect(panel.getByText(/自造 FAQ 语料库 · 2026-09-14/)).toBeTruthy();
+    expect(panel.getByText('faq-returns#6')).toBeTruthy();
+    expect(panel.getByText(/A: 仓库验收后 1-3 个工作日发起退款/)).toBeTruthy();
   });
 });

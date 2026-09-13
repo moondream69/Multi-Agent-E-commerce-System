@@ -89,3 +89,67 @@ async def test_unsupported_locale_rejected_with_legal_list() -> None:
 
     for locale in SUPPORTED_LOCALES:
         assert locale in str(excinfo.value), "拒绝信息须列出合法语种,不静默"
+
+
+def _corpus_hit(chunk_id: str, *, title: str, section: str, chunk_index: int, content: str, score: float) -> dict:
+    """检索命中(形状 = 语料切块投影:`{id, score, payload}` 带完整溯源)。"""
+    return {
+        "id": chunk_id,
+        "score": score,
+        "payload": {
+            "doc_id": chunk_id.split("#", 1)[0],
+            "title": title,
+            "source": "自造 FAQ 语料库",
+            "published_at": "2026-09-14",
+            "section": section,
+            "chunk_index": chunk_index,
+            "content": content,
+        },
+    }
+
+
+async def test_draft_carries_citations_normalized_to_superscript_numbers() -> None:
+    """issue #51:证据在提示词里带 ref 编号,草稿按编号标注 → 引用条目随回答一起下发。"""
+    hits = [
+        _corpus_hit(
+            "faq-returns#6",
+            title="退款多久到账?退到哪里?",
+            section="退货退款",
+            chunk_index=6,
+            content="Q: 退款多久到账?\nA: 仓库验收后 1-3 个工作日发起退款。",
+            score=0.83,
+        ),
+        _corpus_hit(
+            "faq-logistics#2",
+            title="旺季发货会延迟吗?",
+            section="物流配送",
+            chunk_index=2,
+            content="Q: 旺季发货会延迟吗?\nA: 大促期间可能顺延 2-3 个工作日。",
+            score=0.67,
+        ),
+    ]
+    llm = FakeLlm(responses=["仓库验收后 1-3 个工作日发起退款[1];旺季可能顺延[2]。"])
+    service = _service(llm, hits=hits)
+
+    result = await service.draft(message="退款多久到账?", locale="zh")
+
+    assert result["draft"] == "仓库验收后 1-3 个工作日发起退款[1];旺季可能顺延[2]。"
+    assert [entry["doc_id"] for entry in result["citations"]] == ["faq-returns", "faq-logistics"]
+    assert result["citations"][0]["chunks"][0]["id"] == "faq-returns#6"
+    assert result["citations"][0]["chunks"][0]["content"].startswith("Q: 退款多久到账?")
+    assert result["citations"][1]["chunks"][0]["chunk_index"] == 2  # 切块级溯源
+    system = llm.calls[0]["messages"][0]["content"]
+    user = llm.calls[0]["messages"][1]["content"]
+    assert "方括号" in system and "ref" in system, "标记要求进系统提示词"
+    assert '"ref": 1' in user and '"ref": 2' in user, "提示词证据带编号(草稿据此标注)"
+
+
+async def test_draft_without_hits_has_no_citations() -> None:
+    """无检索命中:引用为空(不硬标)——证据块如实为空,草稿照常返回。"""
+    service = _service(FakeLlm(responses=["查证未命中,请您提供更多信息。[1]"]))
+
+    result = await service.draft(message="Where is my parcel?", locale="zh")
+
+    assert result["evidence"]["faq_hits"] == []
+    assert result["citations"] == []
+    assert result["draft"] == "查证未命中,请您提供更多信息。[1]"  # 无命中可解析:标记原样保留

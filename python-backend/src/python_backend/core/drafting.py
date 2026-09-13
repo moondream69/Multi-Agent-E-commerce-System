@@ -4,6 +4,8 @@
   商品指代按消息文本查库(issue #39),代码顺序保证查证先于草稿;证据块随草稿返回,
   查证无命中如实呈现「未查到」
 - 多语(B19):zh/en/ja/de/fr;草稿由 LLM 按目标语言生成,提示词携带证据、禁编造
+- 引用小点(issue #51):提示词给证据编 ref,草稿按 ref 标注;返回前归一化为上标编号
+  (同一文档合并),citations 随回答一起下发
 - 不落库(起草助手定位:人工编辑后复制即走,无发件箱语义)
 """
 
@@ -12,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
+from python_backend.core.citations import build_citations
 from python_backend.db.models import Order, Product
 from python_backend.db.product_lookup import (
     MENTION_MATCH_LIMIT,
@@ -89,7 +92,11 @@ class DraftingService:
         self._product_mentions = product_mentions or PostgresProductMentionSearcher()
 
     async def draft(self, *, message: str, locale: str, order_id: int | None = None) -> dict:
-        """查证 → 草稿:返回 {draft, evidence}。查证先行,草稿提示词携带证据。"""
+        """查证 → 草稿:返回 {draft, evidence, citations}。查证先行,草稿提示词携带证据。
+
+        issue #51:证据条目在提示词里带 ref 编号,草稿据其标注;返回前归一化为上标编号
+        (同文档合并),citations 随回答一起下发(前端自足,无二次请求)。
+        """
         if not message.strip():
             raise DraftingError("买家消息为空")
         if locale not in SUPPORTED_LOCALES:
@@ -108,6 +115,11 @@ class DraftingService:
             "products": products,
             "products_truncated": products_truncated,
         }
+        # 提示词视图:FAQ 命中带 ref 编号(草稿据此标注;返回给前端的证据块不带该字段)
+        prompt_evidence = {
+            **evidence,
+            "faq_hits": [{"ref": index, **hit} for index, hit in enumerate(faq_hits, start=1)],
+        }
 
         # 3) LLM 草稿(目标语言;证据不足须如实说明)
         locale_name = _LOCALE_NAMES[locale]
@@ -118,16 +130,20 @@ class DraftingService:
                     "content": (
                         f"你是跨境电商客服起草助手。请用{locale_name}(locale 代码 {locale})起草一条回复买家消息的话术:"
                         "先引用查证证据再作答;证据不足或未查到相关信息时,必须如实说明,不得编造事实。"
-                        "语气专业友善,只输出回复正文。"
+                        "依据查证证据作答时,在该句末尾用方括号标出所依据的证据编号(如 [1]),编号取自查证证据的 ref;"
+                        "未依据证据的句子不标。语气专业友善,只输出回复正文。"
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"买家消息:{message}\n\n查证证据:{json.dumps(evidence, ensure_ascii=False, default=str)}"
+                        f"买家消息:{message}\n\n查证证据:{json.dumps(prompt_evidence, ensure_ascii=False, default=str)}"
                     ),
                 },
             ],
             max_tokens=2000,  # 思考模式推理与正文共享预算:低预算(原 800)有饿空正文风险,对齐默认档
         )
-        return {"draft": draft, "evidence": evidence}
+        # 4) 引用小点(#51):标记归一化为上标编号(同文档合并);无命中即无引用。
+        # 起草线在提示词里给证据编了 ref,故放开序号式(客服线只认切块标识,见 citations 模块说明)
+        draft, citations = build_citations(draft, faq_hits, allow_ordinals=True)
+        return {"draft": draft, "evidence": evidence, "citations": citations}

@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { ApprovalCenter } from './ApprovalCenter';
 import { fetchOpenApprovals } from '../services/approvals';
 import { ApprovalListResponse } from '../types/events';
@@ -180,5 +186,52 @@ describe('ApprovalCenter(A16:执行报告 Markdown 渲染)', () => {
     expect(
       [...container.querySelectorAll('td')].map((node) => node.textContent),
     ).toEqual(['甲款', '12', '乙款', '3']);
+  });
+});
+
+describe('ApprovalCenter(issue #51:执行报告的引用小点)', () => {
+  beforeEach(() => {
+    fetchOpenApprovalsMock.mockReset();
+  });
+
+  it('runOutput 带 citations 时,报告里的 [1] 渲染成可点上标(随批次载荷一同下发)', async () => {
+    fetchOpenApprovalsMock.mockResolvedValue({
+      ...ENVELOPE,
+      approvals: [
+        {
+          ...ENVELOPE.approvals[0],
+          runOutput: {
+            answer: '仓库验收后 1-3 个工作日发起退款[1]。',
+            citations: [
+              {
+                number: 1,
+                doc_id: 'faq-returns',
+                title: '退款多久到账?退到哪里?',
+                source: '自造 FAQ 语料库',
+                published_at: '2026-09-14',
+                chunks: [
+                  {
+                    id: 'faq-returns#6',
+                    score: 0.83,
+                    section: '退货退款',
+                    chunk_index: 6,
+                    content: 'A: 仓库验收通过后 1-3 个工作日发起退款。',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    render(<ApprovalCenter />);
+
+    const mark = await screen.findByRole('button', { name: '引用 1' });
+    fireEvent.click(mark);
+    const panel = within(screen.getByRole('note'));
+    expect(panel.getByText('退款多久到账?退到哪里?')).toBeTruthy();
+    expect(panel.getByText('faq-returns#6')).toBeTruthy();
+    expect(panel.getByText(/退货退款 · 切块 6/)).toBeTruthy();
   });
 });

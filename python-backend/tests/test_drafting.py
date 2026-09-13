@@ -99,7 +99,7 @@ async def test_drafting_endpoint_shape_and_errors() -> None:
     async with client:
         ok = await client.post("/api/drafting", json={"message": "你好", "locale": "zh"})
         assert ok.status_code == 200
-        assert set(ok.json()) == {"draft", "evidence"}
+        assert set(ok.json()) == {"draft", "evidence", "citations"}  # #51:引用随回答下发
 
         bad = await client.post("/api/drafting", json={"message": "你好", "locale": "xx"})
         assert bad.status_code == 422

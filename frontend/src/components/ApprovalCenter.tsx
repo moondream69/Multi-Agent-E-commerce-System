@@ -11,6 +11,7 @@ import {
   ApprovalActionSnapshot,
   ApprovalBatch,
   ApprovalBatchStatus,
+  Citation,
   SlicePlanSlice,
   ThreadPlan,
 } from '../types/events';
@@ -22,6 +23,14 @@ import {
 
 // —— 参数/状态的台账标签(系统术语 → 中文台账口径)——
 // 动作标签由 GET /api/actions 提供(spec #8 注册表单一化,不再硬编码)。
+
+/** runOutput 是自由 JSONB(批次行原样存子图产出):引用条目按契约形状取用,缺省即无引用(#51)。 */
+function citationsOf(
+  runOutput: Record<string, unknown> | null | undefined,
+): Citation[] {
+  const value = runOutput?.citations;
+  return Array.isArray(value) ? (value as Citation[]) : [];
+}
 
 const PARAM_LABELS: Record<string, string> = {
   product_id: '商品',
@@ -452,7 +461,9 @@ export function ApprovalCenter() {
               {typeof first.runOutput?.answer === 'string' &&
                 first.runOutput.answer.trim() !== '' && (
                   <div className="mb-2.5 rounded-lg border border-line bg-bg px-2.5 py-2 text-xs text-ink-2">
-                    <AgentMarkdown>{first.runOutput.answer}</AgentMarkdown>
+                    <AgentMarkdown citations={citationsOf(first.runOutput)}>
+                      {first.runOutput.answer}
+                    </AgentMarkdown>
                   </div>
                 )}
               <div className="flex flex-col gap-2.5">

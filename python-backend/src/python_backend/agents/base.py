@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Annotated, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -65,18 +66,28 @@ class AgentState(TypedDict, total=False):
     collected: Annotated[list[dict], merge_lists]  # 审批动作参数快照(效果后置,切片边界打包)
     answer: str | None
     incomplete: str | None
+    citations: list[dict]  # issue #51:检索类答案的引用条目(客服线产出;其余线留空)
+
+
+@dataclass(frozen=True)
+class ExecutedCall:
+    """一次已执行的免审工具调用:结果供证据记录与引用解析(issue #51)。"""
+
+    action: str
+    params: dict
+    result: object
 
 
 async def resolve_tool_calls(
     tool_calls: list[dict], *, visible: set[str], executor: Executor
-) -> tuple[list[dict], list[dict], list[tuple[str, dict]]]:
+) -> tuple[list[dict], list[dict], list[ExecutedCall]]:
     """执行/收集一轮工具调用 → (观察消息, 收集的审批动作, 已执行的 auto 动作)。
 
     裁决顺序(B6/B7):可见性 → 三层分类;一切失败转诚实观察,永不静默吞错。
     """
     observations: list[dict] = []
     collected: list[dict] = []
-    executed: list[tuple[str, dict]] = []
+    executed: list[ExecutedCall] = []
     for tool_call in tool_calls:
         function = tool_call["function"]
         name = function["name"]
@@ -124,7 +135,7 @@ async def resolve_tool_calls(
                         "content": json.dumps(result, ensure_ascii=False, default=str),
                     }
                 )
-                executed.append((action, args))
+                executed.append(ExecutedCall(action=action, params=args, result=result))
             except Exception as error:
                 observations.append(
                     {
@@ -200,7 +211,8 @@ AgentRunner = Callable[[Slice], Awaitable[dict]]
 def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
     """把编译好的业务子图包装为监督图的 AgentRunner(spec #7 挂接点)。
 
-    返回 {"actions": 收集的审批动作参数快照, "answer": 最终答复, "incomplete": 未完成原因|None}。
+    返回 {"actions": 收集的审批动作参数快照, "answer": 最终答复, "incomplete": 未完成原因|None,
+    "citations": 引用条目(#51,随答案一起下发;无检索依据即空)}。
 
     子图内 LLM 失败(issue #10)在此单点收敛(三个业务 Agent 一次覆盖):与工具失败同策略,
     切片如实产出「未完成+原因」,不穿透为 REST 500、不触发重规划(重规划仅由人工拒绝触发);
@@ -211,11 +223,12 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
         try:
             final = await graph.ainvoke(AgentState(slice_description=slice_.description))
         except LlmFailure as error:
-            return {"actions": [], "answer": None, "incomplete": str(error)}
+            return {"actions": [], "answer": None, "incomplete": str(error), "citations": []}
         return {
             "actions": final.get("collected", []),
             "answer": final.get("answer"),
             "incomplete": final.get("incomplete"),
+            "citations": final.get("citations") or [],
         }
 
     return run

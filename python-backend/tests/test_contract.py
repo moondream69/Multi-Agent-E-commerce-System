@@ -320,6 +320,31 @@ async def test_drafting_response_matches_contract() -> None:
     assert set(body["evidence"]) == _ts_interface_fields("DraftingEvidence")
 
 
+def test_citation_shape_matches_contract() -> None:
+    """引用条目键 == ts Citation / CitationChunk 字段(issue #51:两条答案线共用同一形状)。"""
+    from python_backend.core.citations import build_citations
+
+    hits = [
+        {
+            "id": "faq-returns#6",
+            "score": 0.83,
+            "payload": {
+                "doc_id": "faq-returns",
+                "title": "退款多久到账?",
+                "source": "自造 FAQ 语料库",
+                "published_at": "2026-09-14",
+                "section": "退货退款",
+                "chunk_index": 6,
+                "content": "Q: 退款多久到账?\nA: 1-3 个工作日。",
+            },
+        }
+    ]
+    _text, citations = build_citations("仓库验收后发起退款[faq-returns#6]。", hits)
+
+    assert set(citations[0]) == _ts_interface_fields("Citation")
+    assert set(citations[0]["chunks"][0]) == _ts_interface_fields("CitationChunk")
+
+
 async def test_login_response_matches_contract() -> None:
     """登录响应键 == ts LoginResponse 接口字段(spec #8 A1)。"""
     expected = _ts_interface_fields("LoginResponse")

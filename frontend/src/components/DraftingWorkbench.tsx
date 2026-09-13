@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { TicketList } from './TicketList';
 import { AgentMarkdown } from './AgentMarkdown';
 import { draftReply } from '../services/drafting';
-import { DraftingEvidence } from '../types/events';
+import { Citation, DraftingEvidence } from '../types/events';
 
 // —— 起草工作台(B11/B19 + A11):双栏——左买家消息+查证证据+升级工单、右可编辑多语草稿+一键复制 ——
 
@@ -103,6 +103,7 @@ export function DraftingWorkbench() {
   const [orderId, setOrderId] = useState('');
   const [evidence, setEvidence] = useState<DraftingEvidence | null>(null);
   const [draft, setDraft] = useState('');
+  const [citations, setCitations] = useState<Citation[]>([]);
   // A16:草稿默认以 Markdown 预览呈现(生成后即回预览),需要改字再切「编辑」落到 textarea
   const [mode, setMode] = useState<'preview' | 'edit'>('preview');
   const [busy, setBusy] = useState(false);
@@ -122,6 +123,7 @@ export function DraftingWorkbench() {
       const response = await draftReply(message.trim(), locale, parsedOrderId);
       setDraft(response.draft);
       setEvidence(response.evidence);
+      setCitations(response.citations); // #51:引用随回答一起下发(前端自足,无二次请求)
       setMode('preview');
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -227,7 +229,7 @@ export function DraftingWorkbench() {
         ) : (
           <div className="mx-4 mb-4 min-h-0 flex-1 overflow-y-auto rounded-card border border-line bg-surface px-3.5 py-3 text-sm leading-[1.7] text-ink">
             {draft ? (
-              <AgentMarkdown>{draft}</AgentMarkdown>
+              <AgentMarkdown citations={citations}>{draft}</AgentMarkdown>
             ) : (
               <span className="text-ink-3">{DRAFT_EMPTY_HINT}</span>
             )}

@@ -3,6 +3,7 @@
 verify 节点只暴露 faq_search/knowledge_search/order_lookup/product_lookup;未产生查证证据时 draft 节点不可达
 (图级边约束,非提示词):无证据 → nudge 节点明确提示后拉回 verify。
 draft 节点暴露翻译/草稿/模板/情感/工单工具,产出最终草稿。
+issue #51:终稿据查证命中的切块标识标注引用,归一化为上标编号随答案下发(无命中即无引用)。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from python_backend.agents.base import (
 )
 from python_backend.agents.customer_service.tools import DRAFT_TOOLS, VERIFY_TOOLS
 from python_backend.agents.executor import Executor
+from python_backend.core.citations import build_citations, retrieval_hits
 from python_backend.domain.tools import ToolRegistry
 
 VERIFY_SYSTEM = """你是跨境电商客服的查证助手。买家消息需要先查证再作答:
@@ -32,6 +34,8 @@ VERIFY_SYSTEM = """你是跨境电商客服的查证助手。买家消息需要�
 DRAFT_SYSTEM = """你是跨境电商客服的多语言起草助手。基于买家消息与查证证据起草回复:
 - 语言与买家消息一致(中/英/日/德/法)
 - 先引用查证证据再作答;证据不足时如实说明,不编造
+- 依据知识库命中作答时,在该句末尾用方括号标出所依据的切块标识(如 [faq-returns#6]),
+  标识取自查证结果里的 id;未依据命中的句子不标,不要凭记忆编标识
 - 需要翻译时用 translate,需要标准话术时用 manage_template 查询
 - 无法处理时用 escalate_ticket 升级,并如实告知用户
 直接输出最终草稿文本。"""
@@ -44,9 +48,11 @@ class CustomerState(TypedDict, total=False):
     tool_calls: list[dict]
     collected: Annotated[list[dict], merge_lists]
     evidence: Annotated[list[dict], merge_lists]  # 已执行的查证调用 {tool, params}
+    retrieval: Annotated[list[dict], merge_lists]  # 查证命中的切块(#51:引用只建在命中的 id 上)
     evidence_count: int
     answer: str | None
     incomplete: str | None
+    citations: list[dict]
 
 
 def build_customer_agent(
@@ -92,11 +98,13 @@ def build_customer_agent(
         observations, collected, executed = await resolve_tool_calls(
             state.get("tool_calls", []), visible=verify_visible, executor=executor
         )
-        evidence = [{"tool": action, "params": params} for action, params in executed]
+        evidence = [{"tool": call.action, "params": call.params} for call in executed]
+        retrieval = [hit for call in executed for hit in retrieval_hits(call.result)]
         return {
             "messages": observations,
             "collected": collected,
             "evidence": evidence,
+            "retrieval": retrieval,
             "evidence_count": state.get("evidence_count", 0) + len(evidence),
         }
 
@@ -126,11 +134,14 @@ def build_customer_agent(
                 "messages": [assistant_message(result)],
                 "tool_calls": result.tool_calls,
             }
+        # issue #51:终稿把命中标识归一化为上标编号;无检索命中则引用为空(不硬标)
+        answer, citations = build_citations(result.content or "", state.get("retrieval", []))
         return {
             **step,
             "messages": [assistant_message(result)],
             "tool_calls": [],
-            "answer": result.content or "",
+            "answer": answer,
+            "citations": citations,
         }
 
     async def draft_tools(state: CustomerState) -> dict:

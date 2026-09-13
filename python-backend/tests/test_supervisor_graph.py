@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 
 from python_backend.core.graph import SupervisorState, build_supervisor
 from python_backend.core.planning import PlanFailed, Slice, SlicePlan
+from tests.conftest import RecordingAudit
 
 
 class StubPlanner:
@@ -50,6 +51,35 @@ async def test_supervisor_compiles_and_runs_single_slice() -> None:
     assert result["results"][1]["executed"] is True
     assert executed == [1]
     assert result["summary"] == "完成 1/1 个切片"  # 汇总环节:人类可读摘要(issue #25 字符串口径)
+
+
+async def test_citations_ride_along_with_answer_into_results_and_audit() -> None:
+    """issue #51:子图产出的引用条目随答案同份下发(切片结果与审计 run_output 同源)。"""
+    citation = {
+        "number": 1,
+        "doc_id": "faq-returns",
+        "title": "退款多久到账?退到哪里?",
+        "source": "自造 FAQ 语料库",
+        "published_at": "2026-09-14",
+        "chunks": [
+            {"id": "faq-returns#6", "score": 0.83, "section": "退货退款", "chunk_index": 6, "content": "1-3 天"}
+        ],
+    }
+
+    async def run(slice_: Slice) -> dict:
+        return {"actions": [], "answer": "1-3 个工作日到账[1]。", "incomplete": None, "citations": [citation]}
+
+    audit = RecordingAudit()
+    graph = build_supervisor(
+        StubPlanner(plan((1, "customer_service", []))), agents={"customer_service": run}, audit=audit
+    )
+
+    result = await invoke(graph, "退款多久到账?")
+
+    assert result["results"][1]["answer"] == "1-3 个工作日到账[1]。"
+    assert result["results"][1]["citations"] == [citation]
+    slice_record = next(record for record in audit.captured if record["type"] == "slice")
+    assert slice_record["output"]["citations"] == [citation]  # 批次 run_output 与审计同一份
 
 
 async def test_dependencies_run_in_topological_order() -> None:

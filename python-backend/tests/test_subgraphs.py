@@ -285,6 +285,83 @@ async def test_customer_unified_search_hits_both_collections_as_evidence() -> No
     assert {hit["id"] for hit in observation["hits"]} == {"faq-payment#14", "adb-carec#46"}
 
 
+# —— B28:引用小点(issue #51) ——
+
+
+def _retrieval_hit(chunk_id: str, *, title: str, section: str, chunk_index: int, content: str) -> VectorRecord:
+    """检索命中记录(形状 = 语料切块投影,带完整溯源;向量同向以便 FakeEmbedding 命中)。"""
+    return VectorRecord(
+        id=chunk_id,
+        vector=[1.0] * 8,
+        payload={
+            "doc_id": chunk_id.split("#", 1)[0],
+            "title": title,
+            "source": "自造 FAQ 语料库",
+            "published_at": "2026-09-14",
+            "section": section,
+            "chunk_index": chunk_index,
+            "content": content,
+        },
+    )
+
+
+async def test_customer_answer_carries_citations_from_retrieval_hits() -> None:
+    """#51:终稿据命中切块标识标注 → 归一化为上标编号;同文档合并编号,引用条目随答案出图。"""
+    vector = InMemoryVectorRepository()
+    await vector.upsert(
+        "faq",
+        [
+            _retrieval_hit(
+                "faq-returns#6",
+                title="退款多久到账?退到哪里?",
+                section="退货退款",
+                chunk_index=6,
+                content="Q: 退款多久到账?\nA: 仓库验收后 1-3 个工作日发起退款。",
+            ),
+            _retrieval_hit(
+                "faq-returns#9",
+                title="退款多久到账?退到哪里?",
+                section="退货退款",
+                chunk_index=9,
+                content="Q: 旺季退款会变慢吗?\nA: 大促期间可能顺延 2-3 个工作日。",
+            ),
+        ],
+    )
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("knowledge_search", {"query": "退款多久到账"})),
+            round_text(""),
+            round_text("仓库验收后 1-3 个工作日发起退款[faq-returns#6];旺季可能顺延[faq-returns#9]。"),
+        ]
+    )
+    graph, _ = build_customer_agent(executor=ToolExecutor(vector=vector, embedding=FakeEmbedding()), llm=llm)
+    result = await run(graph)
+
+    assert result["answer"] == "仓库验收后 1-3 个工作日发起退款[1];旺季可能顺延[1]。"
+    assert len(result["citations"]) == 1, "同一文档合并为一条引用"
+    citation = result["citations"][0]
+    assert citation["number"] == 1 and citation["doc_id"] == "faq-returns"
+    assert [chunk["id"] for chunk in citation["chunks"]] == ["faq-returns#6", "faq-returns#9"]
+    assert citation["chunks"][0]["section"] == "退货退款" and citation["source"] == "自造 FAQ 语料库"
+
+
+async def test_customer_answer_without_retrieval_has_no_citations() -> None:
+    """#51:无检索依据的产出不标引用(商品查证结果里没有 hits),文本原样出图。"""
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("product_lookup", {"title": "咖啡"})),
+            round_text(""),
+            round_text("亲,该商品售价 129.00 元,现货充足。"),
+        ]
+    )
+    executor = FakeExecutor(results={"product_lookup": {"matches": [{"id": 7, "title": "挂耳咖啡"}]}})
+    graph, _ = build_customer_agent(executor=executor, llm=llm)
+    result = await run(graph)
+
+    assert result["answer"] == "亲,该商品售价 129.00 元,现货充足。"
+    assert result["citations"] == []
+
+
 async def test_customer_replayed_assistant_messages_keep_reasoning_content() -> None:
     """issue #27:回灌的助手消息须原样带 reasoning_content(思考模式下缺它 → provider 400)。
 
