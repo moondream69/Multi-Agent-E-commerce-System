@@ -29,7 +29,7 @@ cp .env.example .env        # 填入 LLM key 等;Embedding 默认指向本机 Ol
 docker compose up -d        # 起 Postgres/Redis/Milvus/app/Langfuse 等(首次先 docker compose build)
 
 cd python-backend
-uv run alembic upgrade head             # 数据库迁移(12 业务表;checkpoint 表由 PostgresSaver 自建)
+uv run alembic upgrade head             # 数据库迁移(13 业务表;checkpoint 表由 PostgresSaver 自建)
 uv run python -m python_backend.run     # 本机起后端 :3000(Windows 必走 run.py;容器方案由 compose 托管)
 
 cd frontend && npm install && npm run dev   # 前端 :5173
@@ -58,7 +58,7 @@ CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑上述检查。
 | 路径 | 内容 |
 |------|------|
 | `python-backend/` | FastAPI + LangGraph 后端(唯一后端;结构见其 README) |
-| `frontend/` | React + Vite 前端(驾驶舱 / 客服工作台 / 审批中心 / 工单) |
+| `frontend/` | React + Vite 前端(驾驶舱 / 数据台 / 客服起草工作台 / 审批中心) |
 | `docs/adr/` | 架构决策记录;现行约束 = **ADR-0005** |
 | `docs/acceptance-scenarios.md` | 验收基线(A/B 场景清单) |
 | `docs/OPERATIONS.md` | 运维手册:启动、备份/恢复、审计 SQL |

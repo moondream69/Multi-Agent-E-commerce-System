@@ -10,13 +10,13 @@ cp .env.example .env
 #   - LLM_API_KEY:DeepSeek API Key
 #   - AUTH_JWT_SECRET:openssl rand -hex 32 生成(生产必改)
 #   - AUTH_ADMIN_PASSWORD:初始管理员密码(启动时懒 seed;改密码需删 users 行后重启)
-#   - EMBEDDING_API_URL:宿主机 Ollama 默认 http://localhost:11434;容器内 Ollama 改为 http://ollama:11434
+#   - EMBEDDING_API_URL:仅本机 uv 开发读取(默认 http://localhost:11434);app 容器内由 compose 固定为 http://ollama:11434
 #   - LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY:留空即禁用观测(no-op);自托管实例默认 http://localhost:3001
 
 # 2. 启动基础设施 + 后端(首次自动迁移;管理员与演练买家幂等 seed)
 docker compose up -d
 
-# 3. 可选:容器内跑 Ollama(默认用宿主机)
+# 3. 容器内 Ollama(app 容器 embedding 固定指向它,容器化运行须起;本机 uv 开发走宿主机 Ollama)
 docker compose --profile embed up -d ollama
 docker compose exec ollama ollama pull bge-m3
 
@@ -121,7 +121,7 @@ docker compose restart app
 启动 lifespan 幂等重 seed:
 
 - **管理员**:`ensure_admin_user`(core/auth.py)——按 `AUTH_ADMIN_USERNAME` 建行,密码取 `AUTH_ADMIN_PASSWORD`(留空则跳过,登录不可用)
-- **演示买家**:张伟 / zhangwei@example.com(`ensure_demo_buyers`,core/customer_store.py;仅 `ENVIRONMENT=dev`)
+- **演示买家**:张伟 / zhangwei@example.com(`ensure_demo_buyers`,db/customer_store.py;仅 `ENVIRONMENT=dev`)
 
 验收(期望 `users ≥ 1` 含 admin、customers 含张伟):
 
@@ -208,7 +208,9 @@ origin 在 socket.io 握手被拒 400,而页面照常打开,症状是「登录�
 
 **5. 关模拟流量**:别在 prod 下启 `--profile sim`(`ensure_demo_buyers` 亦仅 dev 生效)。
 
-**6. 验证点**(对照实测):
+**6. 启用观测(Langfuse)**:`.env` 填 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`(登录 3001 建项目后生成);`LANGFUSE_HOST` 容器内已由 compose 固定为 `http://langfuse-server:3000`(本机 uv 开发才在 `.env` 指 `http://localhost:3001`);密钥留空即 no-op(当前 dev 部署即如此)。验证:登录 3001 可见任务 trace。
+
+**7. 验证点**(对照实测):
 
 | 项 | 命令 | 期望 |
 |---|---|---|

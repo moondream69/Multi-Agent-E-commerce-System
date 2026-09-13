@@ -5,7 +5,7 @@ FastAPI + LangGraph 后端(唯一后端,端口 3000)。架构约束见仓库根 
 ## 启动与检查
 
 ```bash
-uv run alembic upgrade head             # 迁移(12 业务表;checkpoint 表由 PostgresSaver 自建)
+uv run alembic upgrade head             # 迁移(13 业务表;checkpoint 表由 PostgresSaver 自建)
 uv run python -m python_backend.run     # 启动:Windows 下经 run.py 建 SelectorEventLoop
                                         # (uvicorn 直启 main 会因 psycopg 不支持 Proactor 而失败)
 uv run pytest                           # 全部测试(集成/e2e 需真实服务在线,离线秒 skip)
