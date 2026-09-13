@@ -98,14 +98,17 @@ async def test_order_payload_shape_carries_snapshot_and_null_rate() -> None:
 
 async def test_daily_fx_snapshots_takes_last_of_day_and_skips_gaps() -> None:
     """日快照:按日取当日最后一笔、缺汇率行跳过、无单日不产出、窗外不产出、日期升序。"""
+    # 固定正午锚点:同日两笔须始终落在同一 UTC 日——直接用 NOW 减小时数会在 UTC 钟点 < 06:00
+    # 时跨 UTC 零点分成两天,断言随运行时刻漂移(daily_fx_snapshots 按 UTC 日聚合)
+    day3 = NOW.replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=3)
     store = InMemoryOrderStore()
     store.orders.extend(
         [
-            _order(id=1, fx_rate=Decimal("7.1000"), created_at=NOW - timedelta(days=3, hours=6)),
-            _order(id=2, fx_rate=Decimal("7.2000"), created_at=NOW - timedelta(days=3)),  # 同日更晚:胜出
-            _order(id=3, fx_rate=None, created_at=NOW - timedelta(days=2)),  # 缺汇率:跳过
-            _order(id=4, fx_rate=Decimal("7.3000"), created_at=NOW - timedelta(days=1)),
-            _order(id=5, fx_rate=Decimal("6.9000"), created_at=NOW - timedelta(days=30)),  # 窗外:不计
+            _order(id=1, fx_rate=Decimal("7.1000"), created_at=day3 - timedelta(hours=6)),  # 同日更早
+            _order(id=2, fx_rate=Decimal("7.2000"), created_at=day3),  # 同日更晚:胜出
+            _order(id=3, fx_rate=None, created_at=day3 + timedelta(days=1)),  # 缺汇率:跳过
+            _order(id=4, fx_rate=Decimal("7.3000"), created_at=day3 + timedelta(days=2)),
+            _order(id=5, fx_rate=Decimal("6.9000"), created_at=day3 - timedelta(days=27)),  # 窗外:不计
         ]
     )
 
