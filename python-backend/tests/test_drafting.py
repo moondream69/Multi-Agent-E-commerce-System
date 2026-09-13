@@ -131,3 +131,47 @@ async def test_order_evidence_included_and_missing_order_not_fabricated() -> Non
 
     missing = await service.draft(message="我的订单到哪了?", locale="zh", order_id=99999999)
     assert missing["evidence"]["order"] is None  # 不编造
+
+
+async def test_product_evidence_matches_mention_and_missing_not_fabricated() -> None:
+    """商品指代查证(issue #39):消息含商品标题核心名 → 命中入证据并进提示词;无匹配 → 空列表,不编造。"""
+    marker = uuid.uuid4().hex[:6]
+    async with SessionFactory() as session, session.begin():
+        session.add(
+            Product(
+                sku=f"SYN-DR-{marker}",
+                title=f"起草台饮水机{marker} 雾灰款",
+                price=Decimal("9.90"),
+                category="测试",
+            )
+        )
+
+    llm = FakeLlm(responses=["查到商品了。", "没查到商品。"])
+    service = _drafting(llm)
+    found = await service.draft(message=f"这个起草台饮水机{marker}还有货吗?", locale="zh")
+    assert [item["sku"] for item in found["evidence"]["products"]] == [f"SYN-DR-{marker}"]
+    assert found["evidence"]["products_truncated"] is False
+    assert marker in json.dumps(llm.calls[0]["messages"][1]["content"], ensure_ascii=False)  # 证据进提示词
+
+    missing = await service.draft(message=f"完全不相关的消息{marker}", locale="zh")
+    assert missing["evidence"]["products"] == []  # 不编造
+
+
+async def test_product_evidence_truncates_honestly() -> None:
+    """命中超上限:返回前 5 条并置 truncated(沿用 #35 如实口径,不静默截断)。"""
+    marker = uuid.uuid4().hex[:6]
+    async with SessionFactory() as session, session.begin():
+        for index in range(6):
+            session.add(
+                Product(
+                    sku=f"SYN-TR-{marker}-{index}",
+                    title=f"截断测试品{marker} 款{index}",
+                    price=Decimal("1.00"),
+                    category="测试",
+                )
+            )
+
+    service = _drafting(FakeLlm(responses=["x"]))
+    result = await service.draft(message=f"截断测试品{marker}有货吗", locale="zh")
+    assert len(result["evidence"]["products"]) == 5
+    assert result["evidence"]["products_truncated"] is True

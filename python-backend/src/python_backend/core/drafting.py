@@ -1,7 +1,8 @@
 """起草服务(spec #8 B11/B19):查证优先 + 多语草稿,专用端点不沾任务流。
 
-- 查证先行硬约束(B12 端点级延续):faq_search 必跑、提供订单号则 order_lookup 同跑,
-  代码顺序保证查证先于草稿;证据块随草稿返回,查证无命中如实呈现「未查到」
+- 查证先行硬约束(B12 端点级延续):faq_search 必跑、提供订单号则 order_lookup 同跑、
+  商品指代按消息文本查库(issue #39),代码顺序保证查证先于草稿;证据块随草稿返回,
+  查证无命中如实呈现「未查到」
 - 多语(B19):zh/en/ja/de/fr;草稿由 LLM 按目标语言生成,提示词携带证据、禁编造
 - 不落库(起草助手定位:人工编辑后复制即走,无发件箱语义)
 """
@@ -12,6 +13,11 @@ import json
 from typing import Protocol
 
 from python_backend.db.models import Order, Product
+from python_backend.db.product_lookup import (
+    MENTION_MATCH_LIMIT,
+    PostgresProductMentionSearcher,
+    ProductMentionSearcher,
+)
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.embedding import EmbeddingClient, EmbeddingService
 from python_backend.infrastructure.llm import LlmClient, LlmService
@@ -67,7 +73,7 @@ async def _order_evidence(order_id: int) -> dict | None:
 
 
 class DraftingService:
-    """起草服务:依赖注入与 ToolExecutor 同风格(llm/vector/embedding,测试假实现)。"""
+    """起草服务:依赖注入与 ToolExecutor 同风格(llm/vector/embedding/product_mentions,测试假实现)。"""
 
     def __init__(
         self,
@@ -75,10 +81,12 @@ class DraftingService:
         llm: LlmClient | None = None,
         vector: FaqSearcher | None = None,
         embedding: EmbeddingClient | None = None,
+        product_mentions: ProductMentionSearcher | None = None,
     ) -> None:
         self._llm = llm or LlmService()
         self._vector = vector
         self._embedding = embedding or EmbeddingService()
+        self._product_mentions = product_mentions or PostgresProductMentionSearcher()
 
     async def draft(self, *, message: str, locale: str, order_id: int | None = None) -> dict:
         """查证 → 草稿:返回 {draft, evidence}。查证先行,草稿提示词携带证据。"""
@@ -87,12 +95,19 @@ class DraftingService:
         if locale not in SUPPORTED_LOCALES:
             raise DraftingError(f"不支持的语言:{locale!r}(合法:{'/'.join(SUPPORTED_LOCALES)})")
 
-        # 1) 查证先行(硬约束):FAQ 必查,提供订单号则订单同查
+        # 1) 查证先行(硬约束):FAQ 必查,提供订单号则订单同查,商品指代按消息文本查库
         faq_hits = await _faq_evidence(self._vector, self._embedding, message)
         order = await _order_evidence(order_id) if order_id is not None else None
+        products, products_truncated = await self._product_mentions.find_mentions(message, limit=MENTION_MATCH_LIMIT)
 
         # 2) 证据块(如实呈现:无命中即空,不编造)
-        evidence = {"faq_hits": faq_hits, "order": order, "order_id": order_id}
+        evidence = {
+            "faq_hits": faq_hits,
+            "order": order,
+            "order_id": order_id,
+            "products": products,
+            "products_truncated": products_truncated,
+        }
 
         # 3) LLM 草稿(目标语言;证据不足须如实说明)
         locale_name = _LOCALE_NAMES[locale]

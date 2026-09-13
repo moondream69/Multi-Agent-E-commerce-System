@@ -32,6 +32,7 @@ function EvidenceBlock({ evidence }: { evidence: DraftingEvidence | null }) {
   }
   const faq = evidence.faq_hits ?? [];
   const order = evidence.order;
+  const products = evidence.products ?? [];
   const product = order?.product as Record<string, unknown> | undefined;
   return (
     <div className="flex flex-col gap-2.5">
@@ -48,6 +49,28 @@ function EvidenceBlock({ evidence }: { evidence: DraftingEvidence | null }) {
             订单 #{display(evidence.order_id)} 未查到(未编造)
           </div>
         )
+      )}
+      {products.length === 0 ? (
+        <div className="rounded-lg border border-st-approval/40 bg-st-approval-bg px-2.5 py-2 text-xs text-st-approval">
+          商品未匹配(未编造)
+        </div>
+      ) : (
+        <>
+          {products.map((item) => (
+            <div
+              key={item.id}
+              className="rounded-lg border border-line bg-surface-2 px-2.5 py-2 text-xs text-ink-2"
+            >
+              商品 #{item.id} · {item.title} · {item.sku} · {item.price}{' '}
+              {item.currency} · 库存 {item.stock} · {item.status}
+            </div>
+          ))}
+          {evidence.products_truncated && (
+            <div className="px-1 text-xs text-ink-3">
+              命中过多,仅列前 5 条——可让买家提供 SKU 或更具体的名称。
+            </div>
+          )}
+        </>
       )}
       {faq.length === 0 ? (
         <div className="rounded-lg border border-st-approval/40 bg-st-approval-bg px-2.5 py-2 text-xs text-st-approval">

@@ -217,6 +217,17 @@ export interface DraftingEvidence {
   }>;
   order: Record<string, unknown> | null;
   order_id: number | null;
+  products: Array<{
+    id: number;
+    sku: string;
+    title: string;
+    price: string;
+    currency: string;
+    category: string;
+    status: string;
+    stock: number;
+  }>;
+  products_truncated: boolean;
 }
 
 export interface DraftingResponse {

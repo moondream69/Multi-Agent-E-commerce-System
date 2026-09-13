@@ -302,7 +302,18 @@ async def test_drafting_response_matches_contract() -> None:
     from python_backend.core.drafting import DraftingService
     from tests.conftest import FakeLlm
 
-    client = TestClient(create_app(auth_required=False, drafting=DraftingService(llm=FakeLlm(responses=["草稿"]))))
+    class StubMentions:
+        """商品指代查证替身(issue #39):契约用例离线可跑,不触 PG。"""
+
+        async def find_mentions(self, message: str, *, limit: int) -> tuple[list[dict], bool]:
+            return [], False
+
+    client = TestClient(
+        create_app(
+            auth_required=False,
+            drafting=DraftingService(llm=FakeLlm(responses=["草稿"]), product_mentions=StubMentions()),
+        )
+    )
     body = client.post("/api/drafting", json={"message": "你好", "locale": "zh"}).json()
     expected = _ts_interface_fields("DraftingResponse")
     assert set(body) == expected, f"响应键 {set(body)} 应等于契约字段 {expected}"
