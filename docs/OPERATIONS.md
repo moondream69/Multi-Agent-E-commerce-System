@@ -206,8 +206,10 @@ cd python-backend && uv run python scripts/ingest_corpus.py ingest [--corpus doc
   中文侧只收平台官方主动发放的白皮书。来源与许可逐份记进语料文件(`license-note` / `attribution`)。
 - **现状(2026-09-14)**:情报 5 份四类齐(World Bank / ADB CAREC / USITC Global Digital Trade / Census 季度 + 月度,
   共 2288 块)+ FAQ 七主题 100 条(自造高保真:LLM 生成候选 → 人工筛选修订 → 冻结入仓)。
-- **已知边界(issue #48 记录)**:覆盖按「同 id」生效——文档**变短**(重冻结后切块数变少)时旧的后段块不清尾,
-  PG / Milvus 两侧会留孤儿行;清尾需 `VectorRepository` 先补按 payload 查询接口(见 `corpus/pipeline.py` docstring)。
+- **覆盖含清尾(issue #54)**:重灌时该文档「不在本次切块集」的旧后段块从 **PG 与 Milvus 两侧删除**——
+  文档变短(重冻结后切块数变少)不留孤儿行;清尾严格限本文档 `doc_id`,不误伤同集合其他文档。
+  ⚠️ **整份文档从语料文件移除**后的孤儿行**不自动清**(按 `--corpus <单份>` 部分摄入时,全局 prune 会误删
+  未参与本次摄入的文档);要删整份文档得手工删两侧行(或等「全量摄入 + 显式 prune 开关」另开票)。
 - **与「试运行数据 provisioning」的关系**:语料侧已是**真实公开数据**(非合成);商品/买家/订单侧仍是合成数据
   代跑——ADR-0005「真实数据 CSV 导入」一环仍欠,真实数据到手后走同一导入路径(与本节的语料 CLI 无关)。
 
@@ -302,5 +304,5 @@ docker compose exec postgres psql -U postgres mae -c \
 | 跨 origin 访问须手工维护 `CORS_ORIGINS`(局域网 IP/域名一变就要同步,否则实时通道静默失效) | 本手册「快速启动」第 5 步下第二条警告;`.env.example` 同注 |
 | 下单入口 REST `/api/orders` 保留且需认证,供模拟流量使用 | ADR-0005「业务强化」节:数据入口 |
 | 买家前台维持移除(旧「演示买家前台直购」叙述已过时) | ADR-0005「被修订/取代的既有决策」节:ADR-0003 条 |
-| 语料覆盖按「同 id」生效,文档变短时旧后段块不清尾(PG/Milvus 留孤儿行) | `python_backend/corpus/pipeline.py` docstring(#48 记录;清尾需 `VectorRepository` 先补按 payload 查询接口) |
+| 整份文档从语料文件移除后的孤儿行不自动清(部分摄入时全局 prune 会误删他人) | `python_backend/corpus/pipeline.py` docstring;「语料供给」节;要清需「全量摄入 + 显式 prune 开关」(未开票) |
 | 语料摄入走**离线 CLI**,无上传界面(大文件解析/超时/重试不进运行时产品面) | ADR-0007「摄入管线」;本手册「语料供给」节 |

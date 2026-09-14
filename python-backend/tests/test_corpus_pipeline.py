@@ -105,3 +105,68 @@ async def test_embedding_failure_aborts_without_writes() -> None:
 
     assert await _collection_ids(vector, "market_intel", CORPUS_PAGE_TEXT) == set()
     assert store.batches == []
+
+
+async def test_zero_chunk_document_is_rejected_without_touching_projections() -> None:
+    """#54:零切块文档(坏语料)直接拒绝 —— 不静默清空该文档的投影(keep 为空的清尾路径不可达)。"""
+    vector, store = InMemoryVectorRepository(), InMemoryCorpusStore()
+    embedding = FakeEmbedding()
+    await ingest_documents(
+        [corpus_intel_doc(pages=1)], embedding=embedding, vector=vector, store=store, batch_id="batch-1"
+    )
+    before = set(store.chunks)
+
+    with pytest.raises(ValueError, match="切不出任何块"):
+        await ingest_documents(
+            [corpus_intel_doc(pages=0)], embedding=embedding, vector=vector, store=store, batch_id="batch-2"
+        )
+
+    assert set(store.chunks) == before  # 投影未动
+    assert await _collection_ids(vector, "market_intel", CORPUS_PAGE_TEXT) == before
+
+
+async def test_shorter_document_drops_stale_tail_chunks() -> None:
+    """#54:同一文档「先长后短」重灌 —— 旧的后段块两侧清掉,不留孤儿行。"""
+    vector, store = InMemoryVectorRepository(), InMemoryCorpusStore()
+    embedding = FakeEmbedding()
+
+    await ingest_documents(
+        [corpus_intel_doc(pages=3)], embedding=embedding, vector=vector, store=store, batch_id="batch-long"
+    )
+    long_ids = await _collection_ids(vector, "market_intel", CORPUS_PAGE_TEXT)
+    assert long_ids == set(store.chunks)  # 前置:长版本两侧一致
+
+    await ingest_documents(
+        [corpus_intel_doc(pages=1)], embedding=embedding, vector=vector, store=store, batch_id="batch-short"
+    )
+
+    short_ids = await _collection_ids(vector, "market_intel", CORPUS_PAGE_TEXT)
+    assert short_ids < long_ids  # 确实变短(否则本用例恒真)
+    assert short_ids == set(store.chunks)  # 两侧同集合:Milvus / PG 都无孤儿行
+    assert len(store.batches) == 2  # 台账逐批次留痕
+
+
+async def test_stale_cleanup_leaves_other_documents_untouched() -> None:
+    """#54:清尾严格限定本文档 —— 同集合里的其他文档一块不少。"""
+    vector, store = InMemoryVectorRepository(), InMemoryCorpusStore()
+    embedding = FakeEmbedding()
+
+    await ingest_documents(
+        [corpus_intel_doc("doc-a", pages=2), corpus_intel_doc("doc-b", pages=2)],
+        embedding=embedding,
+        vector=vector,
+        store=store,
+        batch_id="batch-1",
+    )
+    other_ids = {chunk_id for chunk_id in store.chunks if chunk_id.startswith("doc-b#")}
+    assert len(other_ids) > 1  # 前置:doc-b 确实多块(否则「未误伤」恒真)
+
+    await ingest_documents(
+        [corpus_intel_doc("doc-a", pages=1)], embedding=embedding, vector=vector, store=store, batch_id="batch-2"
+    )
+
+    ids = await _collection_ids(vector, "market_intel", CORPUS_PAGE_TEXT)
+    stored = set(store.chunks)
+    assert {id_ for id_ in ids if id_.startswith("doc-b#")} == other_ids
+    assert {id_ for id_ in stored if id_.startswith("doc-b#")} == other_ids
+    assert {id_ for id_ in ids if id_.startswith("doc-a#")} == {id_ for id_ in stored if id_.startswith("doc-a#")}

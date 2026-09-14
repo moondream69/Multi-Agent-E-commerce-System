@@ -916,6 +916,21 @@ class InMemoryCorpusStore:
             assert chunk.kind == kind
             self.chunks[chunk.chunk_id] = chunk
 
+    async def stale_chunk_ids(self, kind: str, doc_id: str, keep_ids: list[str]) -> list[str]:
+        keep_set = set(keep_ids)
+        return [
+            chunk_id
+            for chunk_id, chunk in self.chunks.items()
+            if chunk.kind == kind and chunk.doc_id == doc_id and chunk_id not in keep_set
+        ]
+
+    async def delete_chunks(self, kind: str, ids: list[str]) -> None:
+        for chunk_id in ids:  # 同 PG 实现:不存在的 id 静默跳过
+            chunk = self.chunks.get(chunk_id)
+            if chunk is not None:
+                assert chunk.kind == kind
+                del self.chunks[chunk_id]
+
     async def record_batch(self, *, batch_id: str, doc_id: str, content_hash: str, chunk_count: int) -> None:
         self.batches.append(
             {"batch_id": batch_id, "doc_id": doc_id, "content_hash": content_hash, "chunk_count": chunk_count}

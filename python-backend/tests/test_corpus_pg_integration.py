@@ -134,6 +134,22 @@ async def test_pg_projection_is_idempotent() -> None:
     assert [row[0] for row in batches] == ["pgtest-1", "pgtest-2"]  # 台账逐批次留痕
 
 
+async def test_stale_tail_cleanup_deletes_only_missing_ids() -> None:
+    """#54 清尾:只认出「不在本次切块集」的旧块;keep 齐全(重灌同长文档)即无陈旧可删。"""
+    store = PostgresCorpusStore()
+    await store.upsert_chunks("intel", _chunks())  # #0 / #1
+    keep_all = [f"{DOC_ID}#0", f"{DOC_ID}#1"]
+
+    assert await store.stale_chunk_ids("intel", DOC_ID, keep_all) == []  # 同长重灌:无删除
+    assert await store.stale_chunk_ids("intel", DOC_ID, [f"{DOC_ID}#0"]) == [f"{DOC_ID}#1"]
+
+    await store.delete_chunks("intel", [f"{DOC_ID}#1"])
+    rows = await _rows("select chunk_id from market_intel where doc_id = :doc", doc=DOC_ID)
+    assert [row[0] for row in rows] == [f"{DOC_ID}#0"]  # 只删尾块,前块保留
+
+    assert await store.stale_chunk_ids("intel", DOC_ID, keep_all) == []  # 删后重算:仍无陈旧
+
+
 async def test_batch_ledger_rejects_same_batch_twice() -> None:
     """同 (批次 id, 文档标识) 重记即报错——批次 id 一次摄入一个。"""
     store = PostgresCorpusStore()
