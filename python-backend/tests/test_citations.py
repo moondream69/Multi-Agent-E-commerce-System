@@ -1,8 +1,13 @@
-"""引用解析用例(issue #51):两种标记式、同文档合并、解析不到原样保留、无命中无引用。"""
+"""引用解析用例(issue #51):两种标记式、同文档合并、解析不到原样保留、无命中无引用。
+
+机械防伪引用例(issue #57)并列于此:校验是引用解析的下游消费,接缝同款(给文本与载荷 → 断言违规清单)。
+"""
 
 from __future__ import annotations
 
-from python_backend.core.citations import build_citations, document_id
+import pytest
+
+from python_backend.core.citations import build_citations, check_citations, document_id
 
 
 def hit(
@@ -137,3 +142,114 @@ def test_document_id_splits_on_first_hash() -> None:
     """文档标识 = 首个「#」前缀;无「#」时即自身。"""
     assert document_id("faq-returns#6") == "faq-returns"
     assert document_id("plain-id") == "plain-id"
+
+
+# --- 机械防伪引(issue #57):零 LLM 的引用合规校验 -----------------------------------
+
+
+def test_check_passes_a_normal_answer() -> None:
+    """正常答案零违规:解析到并锚定的标记不算违规(不误伤)。"""
+    hits = [hit("faq-returns#6")]
+    text, citations = build_citations("仓库验收后 1-3 个工作日发起退款[faq-returns#6]。", hits)
+
+    report = check_citations(text, citations, hits=hits)
+
+    assert report.applicable
+    assert report.violations == ()
+
+
+def test_check_passes_drafting_ordinals_after_normalization() -> None:
+    """起草线产出(提示词给了证据 ref,序号式放开)归一化后同判——校验只看归一化文本。"""
+    hits = [hit("faq-returns#0", title="能退货吗?"), hit("faq-payment#3", title="退款退到哪里?")]
+    text, citations = build_citations("退款 1-3 个工作日到账[2]。能否退货见另一条[1]。", hits, allow_ordinals=True)
+
+    report = check_citations(text, citations, hits=hits)
+
+    assert report.applicable
+    assert report.violations == ()
+
+
+def test_check_lists_residual_markers_with_positions() -> None:
+    """伪造答案被逐条列出:残留标记(越界序号 / 不存在的切块标识)带**位置**。"""
+    hits = [hit("faq-returns#6")]
+    text, citations = build_citations("据称如此[9],另有说法[faq-nowhere#1],再有一条[faq-returns#6]。", hits)
+
+    report = check_citations(text, citations, hits=hits)
+
+    assert report.applicable
+    assert [violation.kind for violation in report.violations] == ["残留标记", "残留标记"]
+    assert [violation.position for violation in report.violations] == [
+        text.index("[9]"),
+        text.index("[faq-nowhere#1]"),
+    ]
+    assert "[9]" in report.violations[0].detail
+    assert "[faq-nowhere#1]" in report.violations[1].detail
+
+
+def test_check_flags_payload_entries_disjoint_from_hits() -> None:
+    """载荷条目与命中集不相交:引用条目的切块全不在本轮检索命中内(载荷与检索事实不符)。"""
+    text, citations = build_citations("退款到账[faq-returns#6]。", [hit("faq-returns#6")])
+
+    report = check_citations(text, citations, hits=[hit("faq-logistics#2")])
+
+    assert report.applicable
+    assert [violation.kind for violation in report.violations] == ["载荷条目与命中集不相交"]
+    assert report.violations[0].position is None  # 载荷类违规没有文本位置
+    assert "faq-returns" in report.violations[0].detail
+
+
+def test_check_reports_both_kinds_on_mixed_forgery() -> None:
+    """混合伪造:残留标记与不相交载荷同现时两类都报,不互相遮蔽。"""
+    text, citations = build_citations("退款到账[faq-returns#6],另有说法[faq-nowhere#1]。", [hit("faq-returns#6")])
+
+    report = check_citations(text, citations, hits=[hit("faq-logistics#2")])
+
+    assert report.applicable
+    assert [violation.kind for violation in report.violations] == ["残留标记", "载荷条目与命中集不相交"]
+
+
+def test_check_known_gap_in_range_ordinals_are_indistinguishable() -> None:
+    """**已知边界(不可判,非期望行为)**:非序号线上,编号集内的裸数字残留与本函数产物**同形**。
+
+    末条 `[2]` 是模型在客服线上编的裸序号(build 原样保留、未锚定),却恰与合法编号 2 撞形——
+    归一化产物也是 `[n]`,逐 token 无从区分,本函数如实漏报(详见 `check_citations` docstring)。
+    补上信息流(产出随带原始文本或残留清单,#55 T2/T3 消费面决定)后此例应转红并改写。
+    """
+    hits = [hit("faq-payment#3", section="支付方式", chunk_index=3), hit("faq-returns#0", title="能退货吗?")]
+    text, citations = build_citations("退款到账[faq-payment#3];退货见[faq-returns#0];另据称[2]。", hits)
+
+    assert text.endswith("另据称[2]。")  # 残留原样保留在产出里(#51 语义),信号在,但同形不可判
+    report = check_citations(text, citations, hits=hits)
+
+    assert report.applicable
+    assert report.violations == ()  # ← 已知漏报:三类残留里唯独这类同形不可判
+
+
+def test_check_flags_markers_when_nothing_was_retrieved() -> None:
+    """无命中却标了引用:载荷为空 → 每个标记都是残留(标了引用却没有引用条目可对)。"""
+    text, citations = build_citations("退款 1-3 个工作日到账[1]。", [])
+
+    report = check_citations(text, citations, hits=[])
+
+    assert report.applicable  # 有标记即适用(「无标记且无载荷」才是不适用)
+    assert [violation.kind for violation in report.violations] == ["残留标记"]
+    assert report.violations[0].position == text.index("[1]")
+
+
+def test_check_skips_payload_check_without_hits() -> None:
+    """命中集可省:本轮命中集拿不到时只判标记(载荷无从对照,不凭空判违规)。"""
+    text, citations = build_citations("退款到账[faq-returns#6]。", [hit("faq-returns#6")])
+
+    report = check_citations(text, citations)
+
+    assert report.applicable
+    assert report.violations == ()
+
+
+@pytest.mark.parametrize("citations", [[], None])
+def test_check_is_not_applicable_without_any_citation_signal(citations: list[dict] | None) -> None:
+    """无检索产出的答案(无标记、无载荷)判**不适用**,不判通过——零对象的通过分会稀释指标。"""
+    report = check_citations("评分 88 分(A 级)。", citations)
+
+    assert not report.applicable
+    assert report.violations == ()
