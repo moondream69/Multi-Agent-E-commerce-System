@@ -17,7 +17,7 @@ cd python-backend
 uv run python -m python_backend.run                # 启动(端口 3000;Windows 下经 run.py 切 SelectorEventLoop——uvicorn 直接跑 main 会因 psycopg 不支持 Proactor 而启动失败)
 uv run pytest                                      # 全部测试(e2e/integration 需真实服务在线,离线秒 skip)
 uv run pytest -m "not e2e and not integration"     # CI 同款快速套件
-uv run alembic upgrade head                        # 数据库迁移(13 业务表;checkpoint 表由 PostgresSaver 自建,不在 Alembic 内)
+uv run alembic upgrade head                        # 数据库迁移(14 张表:11 业务 + 3 语料;checkpoint 表由 PostgresSaver 自建,不在 Alembic 内)
 uv run ruff check .                                # Lint (无 --fix,自动修复用 `ruff check . --fix`)
 uv run ruff format .                               # 格式化
 uv run ty check .                                  # 类型检查 (Alembic 迁移已排除)
@@ -35,6 +35,10 @@ cd python-backend && uv run python -m python_backend.simulator --loop 300       
 
 # 试运行合成数据(确定性 seed=20260913,500/200/2000;导入顺序·批量激活·回填 SQL 见 docs/OPERATIONS.md)
 cd python-backend && uv run python scripts/gen_synth_data.py
+
+# 语料摄入 CLI(离线;真源 = docs/corpus/*.yaml,Milvus 两集合 + PG 两表只是它的投影——ADR-0007)
+cd python-backend && uv run python scripts/ingest_corpus.py freeze --pdf <url|本地路径> --doc-id <标识> --title "…" --source "…" --published-at YYYY-MM-DD --category <情报四类之一>
+cd python-backend && uv run python scripts/ingest_corpus.py ingest      # 幂等(同 id 覆盖);全量重灌 ≈20 分钟(本机 Ollama ≈0.5 秒/块)
 ```
 
 > ⚠️ `npm run lint` 只检查、不自动改写——需要自动修复时用 `npm run lint:fix`。
@@ -45,7 +49,7 @@ cd python-backend && uv run python scripts/gen_synth_data.py
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
 > ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
 > CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
-> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫(⚠️ 该守卫按「连得上即跑」:`DATABASE_URL` 不带 `:5433` 死端口覆盖直接 `uv run pytest` 会**直写 .env 指向的真库**——2026-09-13 两度残留清理,样板见 evidence/cleanup*.sql,引用 users 的表须先删);离线自检命令与背景见 issue #13。当前基线(死端口仿真)**286 passed / 67 skipped / 49 deselected**(在线同口径 353 passed,净库实测 0 skip;含 #39 起草台商品查证 2 例 PG 门控,故 64→66;#42 类目直查再 1 例门控,故 66→67)(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂、#35 product_lookup(注入替身 5 例;另有 2 例 PG 实查离线时计 skip,故 62→64)、#36 前端静态托管(create_app 的 static_dir 注入位 + dist 解析 10 例)、#37 影子段剖面过滤 + 补执行端点闸(create_app 的 shadow_mode 注入位 4 例)、#38 客服 product_lookup 查证(1 例)、#40 跨剖面恢复按批次持久化 mode 分派(3 例:approve/reject/混合防御)、#41 决定人 decided_by(端点 3 例 + PG B4 加断言;写法 = 登录用户名)、#42 类目查询(product_lookup category 离线 1 例 + PG 门控 1 例;数据台类目筛选 1 例计前端套件)、#43 五语离线证据(7 例:五语参数化 + 矩阵守卫 + 非法语种拒绝)、#44 选品串联(2 例:competitor_analysis 功能 + 四步走通);`/api/products` 契约用例原离线 skip,现经替身常跑——故 skip 63→62;**64 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**);端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
+> ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫(⚠️ 该守卫按「连得上即跑」:`DATABASE_URL` 不带 `:5433` 死端口覆盖直接 `uv run pytest` 会**直写 .env 指向的真库**——2026-09-13 两度残留清理,样板见 evidence/cleanup*.sql,引用 users 的表须先删);离线自检命令与背景见 issue #13(⚠️ **派发可能跑测试的 sub-agent 时,提示词里必须写死这条覆盖命令**——评审/探索 agent 不会自己带,2026-09-14 #52 轮两度直写 dev 库,处置样板见 `docs/handoffs/evidence-2026-09-14-issue52/`)。当前基线(死端口仿真)**325 passed / 67 skipped / 53 deselected**(净额 392;在线全量(净库)445 passed / 0 skipped;前端 vitest 73 passed;含 #39 起草台商品查证 2 例 PG 门控、#42 类目直查再 1 例门控,故 skip 计 67)(增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、#34 商品/订单只读缝 + 订单列表端点 + 汇率卡片数据面 + 审批 plans 旁挂、#35 product_lookup(注入替身 5 例;另有 2 例 PG 实查离线时计 skip,故 62→64)、#36 前端静态托管(create_app 的 static_dir 注入位 + dist 解析 10 例)、#37 影子段剖面过滤 + 补执行端点闸(create_app 的 shadow_mode 注入位 4 例)、#38 客服 product_lookup 查证(1 例)、#40 跨剖面恢复按批次持久化 mode 分派(3 例:approve/reject/混合防御)、#41 决定人 decided_by(端点 3 例 + PG B4 加断言;写法 = 登录用户名)、#42 类目查询(product_lookup category 离线 1 例 + PG 门控 1 例;数据台类目筛选 1 例计前端套件)、#43 五语离线证据(7 例:五语参数化 + 矩阵守卫 + 非法语种拒绝)、#44 选品串联(2 例:competitor_analysis 功能 + 四步走通)、#47 前端渲染缝(vitest 6 例)、#48/#49 语料摄入与铺开(`test_corpus_{chunking,pipeline,files}.py` 19 例 + PG 门控)、#50 统一检索与工具暴露面、#51 引用解析(`test_citations.py` 8 例 + 契约守卫)、#52 引用横切(`test_subgraphs.py` 2 例);`/api/products` 契约用例原离线 skip,现经替身常跑;**67 个运行时 skip 是既有 out-of-scope 面,勿顺手去动**)——摄入脚本是**离线 CLI**(需 Ollama/Milvus),不进快速套件,语料用例一律替身或门控;端点族触库操作一律经 `create_app` 注入位(`app.state.*_store`),新增替身沿用 `tests/conftest.py` 的 `InMemory*` 形状。
 
 ## 技术栈
 
@@ -59,7 +63,7 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
                              → 切片边界 interrupt → 批准后事务内 apply(批内同进同退) → 汇总
 ```
 
-### 关键模块与职责 (python-backend/src/python_backend/)
+### 关键模块与职责 (python-backend/src/python_backend/;前端项与 scripts/ 另注路径)
 
 | 模块 | 文件 | 职责 |
 |-----|------|------|
@@ -74,6 +78,9 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 | 端点族存储缝 | `db/{task,conversation,customer,ticket,report,product,order}_store.py` | 端点触库一律经 `create_app` 注入(`app.state.*_store`,默认 PG 实现,测试注入 `InMemory*` 替身——离线快速套件不触库,#13/#21/#34);`PostgresConversationStore` 挂起审批判定读注入的批次存储、`PostgresTicketStore` 买家名经注入的 `CustomerStore`(join 降级为读端点拼装);会话消息流读端点(`GET /api/conversations/{session_id}/messages`,#20)同经此注入位,替身 = `InMemorySessionMemory`;新增此类端点照此缝注入,勿在端点内直调模块函数 |
 | 只读数据面 | `api/app.py` + `db/{product,order}_store.py` / `infrastructure/fx.py` | 数据台(`GET /api/products` 全量、`GET /api/orders?status=&limit=&offset=` 服务端筛选分页,**纯只读**——ADR-0006 边界,编辑诉求须另立 ADR;商品表前端筛选 = 关键词/状态/类目,#42)+ 汇率卡片(`GET /api/fx` = 当期汇率 + 缓存时刻 `fx:at:<币>` 伴生键 + 近 7 日订单快照走势按日取末笔);审批两端点信封带线程级 `plans` 旁挂(`task_store.get_task().slice_plan`,ADR-0005 任务上下文 + 后续计划预览);挂起路径(create_task / resume 的 interrupt 分支)即落 `slice_plan`,勿只写终态;影子段按剖面过滤——prod 隐藏且补执行 403(`create_app` 的 `shadow_mode` 注入位,默认关,#37/验收 B15) |
 | `LlmService` | `infrastructure/llm.py` | `complete()` + `complete_with_tools()`(function calling);失败统一包装 `LlmFailure`(fallback 只承接它) |
+| 语料摄入 | `corpus/` + `scripts/ingest_corpus.py`(python-backend/ 下) | `freeze`(PDF → 语料文件;真源可 diff)/ `ingest`(切块 → 嵌入 → Milvus upsert + PG 投影 + 批次台账 `corpus_batches`);切块标识 `<文档标识>#<序号>` 确定性派生 ⇒ 同 id 覆盖(幂等);**真源 = `docs/corpus/*.yaml`,库内两表两集合只是投影**——改语料改文件重灌,勿手改库;用法/取材口径/已知边界见 docs/OPERATIONS.md「语料供给」 |
+| 引用解析 | `core/citations.py` | 引用小点唯一解析点:`build_citations(text, hits, *, allow_ordinals=False)` 归一化 + `retrieval_hits(tool_result)`(只认 `hits` 形状);同文档合并编号、解析不到的标记原样保留(机械防伪引);`allow_ordinals=True` **只给起草线**(`core/drafting.py`,序号式须显式放开,否则句中的 `[2]` 会被静默锚定、幻觉洗白);消费面 = 起草服务 / 客服 `draft_node` / ReAct 作答轮(选品线横切) |
+| 前端渲染缝 | `frontend/src/components/AgentMarkdown.tsx` | 全仓唯一 react-markdown 配置点(+ `remark-gfm`;原始 HTML 不透传,无 XSS 面);渲染面 = 会话消息流 / 起草台草稿 / 审批中心执行报告 / **驾驶舱切片答案**;**带 citations 载荷的三面**(起草台 / 执行报告 / 切片答案)`[n]` → 可点上标(点开六项溯源),会话消息流面不带引用载荷、`[n]` 保持字面文本;导出 `citationsOf` / `answerOf` 两个载荷读取器(调用面不止一处,读法收在这里);用户消息刻意保持纯文本 |
 
 ### Agent 模式
 
@@ -85,6 +92,9 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
       定位 product_lookup(SKU/标题/类目→列表,免审直行,#35/#42;多候选须列候选澄清)——切片 Send 不传依赖产出,
       解析与操作须在同一 ReAct 循环内串联
 客服  build_customer_agent: verify(faq_search / knowledge_search / order_lookup / product_lookup)→ draft 两节点,未查证不可达草稿(B12;商品查证 #38;统一检索 #50)
+引用  横切能力(不属任何单域):ReAct 构建器(agents/base.py)的 tool_node 收集检索命中(retrieval_hits_from,客服 verify 线同用)
+      → 作答轮 build_citations 归一化;有检索命中的答案随 results[切片号] 带 citations(#51 客服线 / #52 横切选品线);
+      提示词各域自述引用要求(标切块标识、不凭记忆编标识);无命中的产出(评分/查单)不标
 ```
 
 ### 如何新增 Agent
@@ -120,6 +130,7 @@ FastAPI + LangGraph · PostgreSQL 16(向量在 Milvus,不入 PG;访问经 Vector
 ## 数据库约定
 
 - 枚举 status 列一律经 `db/models.py` 的 `_status_column_type()` 声明(`native_enum=False` + `values_callable`,落库 = 小写 value,与迁移/server_default/JSON 契约一致);**新增枚举列照抄,勿靠 `Mapped[X]` 推断**(推断出原生枚举 → 批插渲染 `::<名>status` 报错,issue #12);改口径 = 数据迁移;声明面由离线用例 `tests/test_enum_declarations.py` 遍历 `Base.metadata` 自动守卫(无需登记清单)
+- 语料两表(`faq` / `market_intel`)与 Milvus 两集合是 `docs/corpus/*.yaml` 的投影:覆盖式更新走摄入 CLI(同 id 覆盖 + `corpus_batches` 批次台账,ADR-0007),**勿手改库内行**
 - dev 库 = `mae`(测试直写,带 tag 行会累积);`multi_agent_ecommerce` 是旧系统冻结库,**勿动**
 
 ## Agent skills

@@ -86,11 +86,11 @@ docker compose up -d --build app
 
 ### 清理范围
 
-13 张业务表 + 3 张 checkpoint 数据表:
+11 张业务表 + 3 张 checkpoint 数据表:
 
 ```
 users, products, customers, orders, conversations, tasks, approval_batches,
-tickets, reply_templates, faq, market_intel, agent_tasks, notifications,
+tickets, reply_templates, agent_tasks, notifications,
 checkpoints, checkpoint_blobs, checkpoint_writes
 ```
 
@@ -100,13 +100,14 @@ checkpoints, checkpoint_blobs, checkpoint_writes
 |---|---|
 | `checkpoint_migrations` | LangGraph checkpoint 的 DDL 版本台账;清掉会让 `saver.setup()` 在下次启动时重放建表 DDL |
 | `alembic_version` | Alembic 迁移台账;表结构归 Alembic 管——清库只 `TRUNCATE`,不做任何 DDL |
+| `faq` / `market_intel` / `corpus_batches` | **语料是供给数据,不是业务数据**:前两表是 `docs/corpus/*.yaml` 的投影、`corpus_batches` 是其批次台账(ADR-0007),清掉会让检索工具恒返空命中(A3/A10 退化),恢复要重灌 ≈20 分钟。要重灌走本手册「语料供给」节的 ingest |
 
 ### 执行
 
 ```bash
 docker compose exec postgres psql -U postgres mae -c "TRUNCATE TABLE \
   users, products, customers, orders, conversations, tasks, approval_batches, \
-  tickets, reply_templates, faq, market_intel, agent_tasks, notifications, \
+  tickets, reply_templates, agent_tasks, notifications, \
   checkpoints, checkpoint_blobs, checkpoint_writes RESTART IDENTITY CASCADE;"
 ```
 
@@ -176,6 +177,39 @@ UPDATE orders SET fx_base_currency='CNY', fx_rate = CASE currency
 ```
 
 > ⚠️ 回填 SQL 的汇率常量按回填当日实际值替换(取 `/api/fx` 或 `default_fx()`);上面是 2026-09-13 快照。
+
+## 语料供给(知识库,ADR-0007)
+
+检索语料(客服知识 `faq` + 市场情报 `market_intel`)的**真源是仓库内的语料文件**
+`docs/corpus/{market-intel,faq}.yaml`(可 diff、可版本化);PG 两表与 Milvus 两集合都是它的**投影**——
+改语料 = 改文件后重灌,勿手改库内行(手改会在下次重灌时被覆盖)。
+
+```bash
+# 冻结:真实公开报告(PDF 直链或本地文件)→ pypdf 逐页抽取 → 写入语料文件(真源)
+#   海外直链须走代理:HTTPS_PROXY=http://127.0.0.1:7897
+cd python-backend && uv run python scripts/ingest_corpus.py freeze --pdf <url|本地路径> \
+    --doc-id <稳定标识> --title "报告标题" --source "出版方(许可)" --published-at 2020-01-01 \
+    --category <趋势分析|竞品分析|季节性规律|行业洞察> \
+    [--pages-url <报告页链接>] [--license-note "CC BY 3.0 IGO"]
+
+# 重灌:语料文件 → 切块 → 嵌入(本机/容器 Ollama bge-m3)→ Milvus upsert + PG 投影 + 批次台账
+cd python-backend && uv run python scripts/ingest_corpus.py ingest [--corpus docs/corpus/market-intel.yaml …]
+```
+
+- **幂等**:切块标识确定性派生 `<文档标识>#<序号>`,重灌同 id 覆盖、不产生重复行;每次 ingest 在
+  `corpus_batches` 记一条批次(文档标识 / 内容哈希 / 切块数 / 摄入时间)——评测跑批据此绑定语料版本。
+  ⚠️ 计数核验用 `count(*)`(Milvus `get_collection_stats().row_count` 计的是**未压缩删除标记**,
+  upsert 后重灌一次会显示翻倍,看着像重复写入——不是)。
+- **耗时**:全量重灌一次 ≈20 分钟(BGE-M3 ≈0.5 秒/块 × 2288 + 100 块;台账实测一次全量 18:59→19:17;USITC 单份 1466 块占一半以上)。
+- **取材口径(只取条款干净者)**:白名单 = CC BY / CC BY IGO / CC0 / 美国**联邦机构**作品(17 U.S.C. §105);
+  黑名单 = CC BY-NC*、All rights reserved、付费墙(USPS OIG 一类站点自标 © 的也不收);
+  中文侧只收平台官方主动发放的白皮书。来源与许可逐份记进语料文件(`license-note` / `attribution`)。
+- **现状(2026-09-14)**:情报 5 份四类齐(World Bank / ADB CAREC / USITC Global Digital Trade / Census 季度 + 月度,
+  共 2288 块)+ FAQ 七主题 100 条(自造高保真:LLM 生成候选 → 人工筛选修订 → 冻结入仓)。
+- **已知边界(issue #48 记录)**:覆盖按「同 id」生效——文档**变短**(重冻结后切块数变少)时旧的后段块不清尾,
+  PG / Milvus 两侧会留孤儿行;清尾需 `VectorRepository` 先补按 payload 查询接口(见 `corpus/pipeline.py` docstring)。
+- **与「试运行数据 provisioning」的关系**:语料侧已是**真实公开数据**(非合成);商品/买家/订单侧仍是合成数据
+  代跑——ADR-0005「真实数据 CSV 导入」一环仍欠,真实数据到手后走同一导入路径(与本节的语料 CLI 无关)。
 
 ## 生产切换清单(试运行前)
 
@@ -268,3 +302,5 @@ docker compose exec postgres psql -U postgres mae -c \
 | 跨 origin 访问须手工维护 `CORS_ORIGINS`(局域网 IP/域名一变就要同步,否则实时通道静默失效) | 本手册「快速启动」第 5 步下第二条警告;`.env.example` 同注 |
 | 下单入口 REST `/api/orders` 保留且需认证,供模拟流量使用 | ADR-0005「业务强化」节:数据入口 |
 | 买家前台维持移除(旧「演示买家前台直购」叙述已过时) | ADR-0005「被修订/取代的既有决策」节:ADR-0003 条 |
+| 语料覆盖按「同 id」生效,文档变短时旧后段块不清尾(PG/Milvus 留孤儿行) | `python_backend/corpus/pipeline.py` docstring(#48 记录;清尾需 `VectorRepository` 先补按 payload 查询接口) |
+| 语料摄入走**离线 CLI**,无上传界面(大文件解析/超时/重试不进运行时产品面) | ADR-0007「摄入管线」;本手册「语料供给」节 |
