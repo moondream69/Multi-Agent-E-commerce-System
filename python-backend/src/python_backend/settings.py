@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     embedding_dimension: int = 1024
     # Milvus Standalone
     milvus_uri: str = "http://localhost:19530"
+    # 评测 judge(独立于 llm_*:跨厂判据模型,指中转站;缺配置即显式报错)
+    judge_model: str = "claude-opus-5"
+    judge_api_url: str = ""
+    judge_api_key: str = ""
     # Langfuse(观测层;留空禁用)
     langfuse_host: str = ""
     langfuse_public_key: str = ""
