@@ -203,7 +203,10 @@ def score(args: argparse.Namespace) -> None:
 
 def _score(args: argparse.Namespace) -> None:
     run_dir = _run_dir(args.run)
-    snapshots = load_run_snapshots(run_dir)
+    try:
+        snapshots = load_run_snapshots(run_dir)
+    except ValueError as error:  # 快照坏形状(read_snapshot 的 ValueError)→ 与配置闸同一条报错姿态
+        raise RuntimeError(f"快照读不动({run_dir}):{error}") from error
     scenarios = _load(args)
     judge_config = load_judge_config()
     judge = AnthropicJudge(judge_config)

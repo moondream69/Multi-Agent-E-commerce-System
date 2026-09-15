@@ -11,10 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from python_backend.evals.judge import JudgeError, JudgeRequest, RubricScore, eval_root_trace_id
+from python_backend.evals.judge import JudgeError, JudgeRequest, RubricScore
 from python_backend.evals.schema import Scenario
 from python_backend.evals.scoring import (
     ScoreRecord,
+    eval_root_trace_id,
     load_run_snapshots,
     score_run,
 )
@@ -238,6 +239,16 @@ def test_workbench_snapshot_falls_back_to_eval_root_trace(tmp_path: Path) -> Non
     assert {record.trace_id for record in sink.records} == {eval_root_trace_id("coffee-maker-us")}
 
 
+def test_eval_root_trace_id_is_hex32_and_deterministic() -> None:
+    """评测根 trace id:32 位小写十六进制(langfuse 契约)、按场景确定性派生、异场景不相撞。"""
+    trace_id = eval_root_trace_id("coffee-maker-us")
+
+    assert len(trace_id) == 32 and trace_id == trace_id.lower()
+    assert all(char in "0123456789abcdef" for char in trace_id)
+    assert trace_id == eval_root_trace_id("coffee-maker-us")
+    assert trace_id != eval_root_trace_id("smart-band-us")
+
+
 def test_snapshot_without_dataset_run_id_scores_without_link(tmp_path: Path) -> None:
     """投影缺席(dataset_run_id 为 None)时照评:分数照落,只是不挂 dataset run(如实,不编)。"""
     write_snapshot(tmp_path / "run-1", _snapshot(_slice(), dataset_run_id=None))
@@ -257,7 +268,7 @@ def test_unknown_scenario_id_in_snapshot_fails_explicitly(tmp_path: Path) -> Non
 
 
 def test_judge_failure_aborts_with_no_judge_scores_landed(tmp_path: Path) -> None:
-    """judge 失败即中止:该片的 judge 分一条都不落(机械线已落的那条仍在池里,可重跑)。"""
+    """judge 失败即中止:该片**一条分都不落**(整片判定先组装、后写池,judge 抛错即无写入)。"""
     write_snapshot(tmp_path / "run-1", _snapshot(_slice()))
     judge = FakeJudge(fail_on="coffee-maker-us")
     sink = RecordingSink()

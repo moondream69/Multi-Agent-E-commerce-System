@@ -19,9 +19,9 @@ dataset item metadata 里的副本:改 rubric 才算「换 rubric」,取副本�
 分数形状(落 Langfuse 的键与互链):
 
 - **稳定键 = ``<场景id>#<切片号>#<判据序号>``**(机械线为 ``…#机械``):改判据文案不改键,换
-  rubric 重评后历史分数不断成两条线(``schema.py`` 的稳定键口径)。
+  rubric 重评后历史分数不断成两条线(键形状的定义在 ``schema.py``——切片号段是回评面补的,见其 docstring)。
 - 分数挂 ``trace_id``:任务线 = 快照随带的任务 trace(由 thread_id 派生);工作台线快照无 trace,
-  挂**跑批器自建的评测根 trace** ``eval:<场景id>``(id 由场景 id 确定性派生,载体由 T4 落)。
+  挂**跑批器自建的评测根 trace** ``eval:<场景id>``(id 由 ``eval_root_trace_id`` 确定性派生,载体由 T4 落)。
 - 随带 ``dataset_run_id``(快照由投影回填)+ metadata(语料指纹为主锚、批次号为附记)。
 """
 
@@ -34,12 +34,23 @@ from typing import Protocol
 from uuid import NAMESPACE_OID, uuid5
 
 from python_backend.core.citations import check_citations
-from python_backend.evals.judge import Judge, JudgeRequest, eval_root_trace_id
+from python_backend.evals.judge import Judge, JudgeRequest
 from python_backend.evals.schema import Scenario
 from python_backend.evals.snapshot import Snapshot, read_snapshot
 
 # 机械防伪引在分数稳定键里的段名(判据序号段的并列物):零 LLM、全量跑、不设开关(ADR-0008)
 MECHANICAL_KEY = "机械"
+
+
+def eval_root_trace_id(scenario_id: str) -> str:
+    """工作台线的**评测根 trace** id:由场景 id 确定性派生(与 ``task_trace_id`` 同法)。
+
+    工作台线(起草台)没有任务轨迹,分数得挂在跑批器自建的评测根 trace 上(ADR-0008);
+    任务线用快照随带的任务 trace,**只有缺 trace 的快照**走这里——两条线共用一套分数形状。
+    langfuse 的 trace_id 契约是 32 位小写十六进制(4.x ``_is_valid_trace_id``),故取
+    ``uuid5(NAMESPACE_OID, …)`` 的 hex;可读标记留给 trace 名(``eval:<场景id>``,T4 落点)。
+    """
+    return uuid5(NAMESPACE_OID, f"eval:{scenario_id}").hex
 
 
 @dataclass(frozen=True)
@@ -74,7 +85,6 @@ class ScoringResult:
     """一次回评的**全部落分**(顺序即写入顺序;调用方据此打印汇总)。"""
 
     records: tuple[ScoreRecord, ...]
-    snapshots: tuple[Snapshot, ...]
 
     @property
     def passed(self) -> int:
@@ -147,7 +157,7 @@ def score_run(
             records.append(record)
             if on_record is not None:
                 on_record(record)
-    return ScoringResult(records=tuple(records), snapshots=tuple(snapshots))
+    return ScoringResult(records=tuple(records))
 
 
 def _criteria_pairing(rubric: tuple[str, ...], slice_count: int) -> list[tuple[tuple[str, ...], tuple[int, ...]]]:

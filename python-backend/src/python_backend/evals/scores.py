@@ -7,9 +7,10 @@
 「``traceId`` / ``sessionId`` / ``datasetRunId`` 三选一」——同发 ``traceId`` + ``datasetRunId``
 被 400 拒(高层 SDK 的 ``create_score`` 签名允许两者同传,是签名的宽,不是服务的允)。
 取舍:锚取 ``trace_id``(分数进任务 trace 的 Scores 面板,「从分数跳到 trace 看全过程」是主用途);
-``dataset_run_id`` 经 **metadata** 随带(按 dataset run 归组、可查)+ 落进 ``score_id``(确定性 id,
-换 rubric 重评覆盖同一条,不叠层)。★ 待维护者确认:若 dataset run 面板的关联优先于 trace 面板,
-把锚换成 ``dataset_run_id`` 即可(一行),代价是分数不再挂 trace。
+``dataset_run_id`` 经 **metadata** 随带(按 dataset run 归组、可查)。确定性 ``score_id`` 挂在稳定键上
+(``scoring.py`` 的 ``ScoreRecord.score_id``),与 dataset run 无关——换 rubric 重评覆盖同一条,不叠层。
+★ 待维护者确认:若 dataset run 面板的关联优先于 trace 面板,把锚换成 ``dataset_run_id`` 即可(一行),
+代价是分数不再挂 trace。
 
 **落分要看得见**:langfuse 4.x 的 ``create_score`` 内部把异常吞成日志(不抛)——一份「写没写
 进去都不知道」的评分类似于静默降级。故 ``verify`` 在 ``flush`` 后从服务端读回,逐条核对分数名与

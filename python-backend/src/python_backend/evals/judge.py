@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
-from uuid import NAMESPACE_OID, uuid5
 
 from python_backend.settings import Settings, get_settings
 
@@ -241,13 +240,3 @@ def _text_of(response: Any) -> str:
     if not joined.strip():
         raise JudgeError(f"judge 响应没有文本块:{response!r}"[: _RAW_EXCERPT + 60])
     return joined
-
-
-def eval_root_trace_id(scenario_id: str) -> str:
-    """工作台线的**评测根 trace** id:由场景 id 确定性派生(与 ``task_trace_id`` 同法)。
-
-    工作台线(起草台)没有任务轨迹,分数得挂在跑批器自建的评测根 trace 上(ADR-0008)。
-    langfuse 的 trace_id 契约是 32 位小写十六进制(4.x ``_is_valid_trace_id``),故同取
-    ``uuid5(NAMESPACE_OID, …)`` 的 hex;可读标记留给 trace 名(``eval:<场景id>``,T4 落点)。
-    """
-    return uuid5(NAMESPACE_OID, f"eval:{scenario_id}").hex

@@ -18,7 +18,6 @@ from python_backend.evals.judge import (
     JudgeError,
     JudgeRequest,
     api_base_url,
-    eval_root_trace_id,
     parse_judgment,
     render_prompt,
 )
@@ -159,16 +158,6 @@ def test_api_base_url_strips_messages_and_version_segments() -> None:
     assert api_base_url("https://relay.example.com/v1/messages/") == "https://relay.example.com"
     assert api_base_url("https://relay.example.com/v1") == "https://relay.example.com"
     assert api_base_url("https://relay.example.com") == "https://relay.example.com"
-
-
-def test_eval_root_trace_id_is_hex32_and_deterministic() -> None:
-    """工作台线的评测根 trace id:32 位小写十六进制(langfuse 契约)、按场景确定性派生。"""
-    trace_id = eval_root_trace_id("coffee-maker-us")
-
-    assert len(trace_id) == 32 and trace_id == trace_id.lower()
-    assert all(char in "0123456789abcdef" for char in trace_id)
-    assert trace_id == eval_root_trace_id("coffee-maker-us")
-    assert trace_id != eval_root_trace_id("smart-band-us")
 
 
 def _client(handler) -> Anthropic:
