@@ -66,10 +66,12 @@ def load_langfuse_config(settings: Settings | None = None) -> LangfuseConfig:
 class Projection(Protocol):
     """跑批依赖的投影面(测试注入记录式假件;实现 = ``LangfuseProjection``)。
 
-    只列 run 用到的两件;``flush`` 属 SDK 收尾(CLI 在真投影上调用),不进本协议。
+    只列 run 用到的三件;``flush`` 属 SDK 收尾(CLI 在真投影上调用),不进本协议。
     """
 
     def sync_scenarios(self, scenarios: list[Scenario]) -> None: ...
+
+    def create_eval_trace(self, *, trace_id: str, name: str, input: str, output: str) -> None: ...
 
     def record_run(self, *, run_name: str, scenario_id: str, trace_id: str, metadata: dict) -> str | None: ...
 
@@ -94,6 +96,18 @@ class LangfuseProjection:
                 input=scenario.input,
                 metadata={"surface": scenario.surface, "rubric": list(scenario.rubric), "note": scenario.note},
             )
+
+    def create_eval_trace(self, *, trace_id: str, name: str, input: str, output: str) -> None:
+        """工作台线的**评测根 trace**:该线没有任务轨迹,由跑批器自建,分数挂它(ADR-0008)。
+
+        建法与 app 侧任务 trace 同一机制(``tracing.py``:带 ``trace_context.trace_id`` 的 span)
+        ——langfuse 4.x 下 trace 随 observation 隐式建出,**trace 名即该 observation 名**;
+        ``input`` / ``output`` 取买家消息与草稿:从分数跳过来要能直接看见产出。
+        """
+        with self._client.start_as_current_observation(
+            name=name, as_type="span", trace_context={"trace_id": trace_id}, input=input, output=output
+        ):
+            pass
 
     def record_run(self, *, run_name: str, scenario_id: str, trace_id: str, metadata: dict) -> str | None:
         """一条场景的一次运行 → dataset run item(挂任务 trace);返回 dataset_run_id(供分数互链)。

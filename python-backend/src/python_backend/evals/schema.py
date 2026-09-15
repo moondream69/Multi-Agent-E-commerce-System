@@ -11,6 +11,8 @@ Langfuse datasets 只是它的投影——同「知识库」哲学:真源在仓�
         surface: <选品报告 | 客服草稿·工作台 | 客服草稿·任务内 | 规划切片>
         input: |-                        # 固定输入文本(选品=指令;客服=买家消息)
           ...
+        locale: zh                       # 可选(缺省 zh);**只对「客服草稿·工作台」有意义**——
+                                         # 那条线经端点参数定语言,其余线的语言随输入文本走
         rubric:                          # LLM-as-judge 判据(每条 0/1 + 理由)
           - <判据一句话>
         note: <备注:这条场景想守住什么>
@@ -36,17 +38,26 @@ from typing import Any
 import yaml
 
 # 评测面:决定场景怎么跑(打哪个入口)与判据维度(spec #55 Solution C)
-SURFACES = ("选品报告", "客服草稿·工作台", "客服草稿·任务内", "规划切片")
+# 工作台线具名:跑批器按它分派(同步端点、无任务轨迹、跑批器自建评测根 trace),不散写字面量
+WORKBENCH_SURFACE = "客服草稿·工作台"
+SURFACES = ("选品报告", WORKBENCH_SURFACE, "客服草稿·任务内", "规划切片")
+# 工作台线的目标语言缺省:与端点缺省一致(其余线的语言随输入文本,该字段对它们无意义)
+DEFAULT_LOCALE = "zh"
 
 
 @dataclass(frozen=True)
 class Scenario:
-    """一条金标场景:固定输入 + 判据清单(真源文件里的一条)。"""
+    """一条金标场景:固定输入 + 判据清单(真源文件里的一条)。
+
+    ``locale`` 只对工作台线有意义(该线经端点参数定草案语言);其余线上带它即报错
+    (静默忽略等于让作者以为改了语言)。
+    """
 
     id: str
     surface: str
     input: str
     rubric: tuple[str, ...]
+    locale: str = DEFAULT_LOCALE
     note: str = ""
 
 
@@ -95,10 +106,29 @@ def _build_scenario(entry: Any, path: Path, index: int) -> Scenario:
         raise ValueError(f"{where} 的 rubric 含空判据")
     if len(set(criteria)) != len(criteria):
         raise ValueError(f"{where} 的 rubric 含重复判据(判据文案是稳定键的索引依据,重复即歧义)")
+    locale = _build_locale(entry.get("locale"), surface, where)
     return Scenario(
         id=scenario_id,
         surface=surface,
         input=text,
         rubric=criteria,
+        locale=locale,
         note=str(entry.get("note", "")).strip(),
     )
+
+
+def _build_locale(raw: Any, surface: str, where: str) -> str:
+    """``locale`` 字段 → 目标语言:缺省 zh;**只对工作台线有效**(其余线上带它即报错)。
+
+    静默忽略 = 作者以为换了语言而草稿纹丝不动(工作台线的语言由端点参数定,不从消息文本推)。
+    """
+    if raw is None:
+        return DEFAULT_LOCALE
+    locale = str(raw).strip()
+    if not locale:
+        raise ValueError(f"{where} 的 locale 为空(工作台线的目标语言,缺省 {DEFAULT_LOCALE})")
+    if surface != WORKBENCH_SURFACE:
+        raise ValueError(
+            f"{where} 带了 locale({locale!r}):该字段只对「{WORKBENCH_SURFACE}」线有效(其余线的语言随输入文本)"
+        )
+    return locale

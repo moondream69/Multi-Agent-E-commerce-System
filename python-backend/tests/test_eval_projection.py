@@ -30,12 +30,28 @@ class FakeApi:
         self.dataset_run_items = FakeDatasetRunItems()
 
 
+class FakeSpan:
+    """假 observation 上下文(真 SDK 的 ``start_as_current_observation`` 返回**上下文管理器**)。"""
+
+    def __init__(self, spans: list[dict], kwargs: dict) -> None:
+        self._spans = spans
+        self._kwargs = kwargs
+
+    def __enter__(self) -> FakeSpan:
+        self._spans.append(self._kwargs)  # 真 SDK 在进入时建 observation(与 trace)
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
 class FakeLangfuseClient:
-    """假 Langfuse client:记录 dataset / item / run item 三件写入,不依赖真 SDK。"""
+    """假 Langfuse client:记录 dataset / item / run item / span 四处写入,不依赖真 SDK。"""
 
     def __init__(self) -> None:
         self.datasets: list[dict] = []
         self.items: list[dict] = []
+        self.spans: list[dict] = []
         self.api = FakeApi()
         self.flushed = 0
 
@@ -44,6 +60,9 @@ class FakeLangfuseClient:
 
     def create_dataset_item(self, **kwargs: object) -> None:
         self.items.append(kwargs)
+
+    def start_as_current_observation(self, **kwargs: object) -> FakeSpan:
+        return FakeSpan(self.spans, kwargs)
 
     def flush(self) -> None:
         self.flushed += 1
@@ -114,6 +133,28 @@ def test_record_run_links_task_trace_and_returns_dataset_run_id() -> None:
             "dataset_item_id": "coffee-maker-us",
             "trace_id": "a3f1c2d4e5b60718293a4b5c6d7e8f90",
             "metadata": {"surface": "选品报告", "corpus_fingerprint": "f" * 64},
+        }
+    ]
+
+
+def test_create_eval_trace_builds_root_trace_with_readable_name() -> None:
+    """工作台线评测根 trace:带 trace_context 的 span——langfuse 4.x 随 observation 隐式建 trace,
+    trace 名即该 observation 名(可读标记 ``eval:<场景id>``,探针实测见票 #60 证据)。"""
+    client = FakeLangfuseClient()
+    LangfuseProjection(client).create_eval_trace(
+        trace_id="a3f1c2d4e5b60718293a4b5c6d7e8f90",
+        name="eval:cs-workbench-stock-zh",
+        input="桌面收纳架 深空黑款现在还有货吗?",
+        output="目前在库 2 件 [1]",
+    )
+
+    assert client.spans == [
+        {
+            "name": "eval:cs-workbench-stock-zh",
+            "as_type": "span",
+            "trace_context": {"trace_id": "a3f1c2d4e5b60718293a4b5c6d7e8f90"},
+            "input": "桌面收纳架 深空黑款现在还有货吗?",
+            "output": "目前在库 2 件 [1]",
         }
     ]
 

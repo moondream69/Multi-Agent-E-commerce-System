@@ -1,5 +1,5 @@
-"""缝 2(票 #58):``run`` 编排分支——注入假 HTTP(``httpx.MockTransport``)与假投影,断言
-「发了什么、落了什么」;不触真网、不触库、不烧 token。
+"""缝 2(票 #58 / #60 工作台线):``run`` 编排分支——注入假 HTTP(``httpx.MockTransport``)与假投影,
+断言「发了什么、落了什么」;不触真网、不触库、不烧 token。
 
 先例 = ``tests/test_simulator.py``(真 AsyncClient + 假传输)。
 """
@@ -17,6 +17,7 @@ import pytest
 from python_backend.evals.corpus_anchor import CorpusAnchor
 from python_backend.evals.runner import SEED_STEPS, SENTINEL_SKU, EvalRunner
 from python_backend.evals.schema import Scenario
+from python_backend.evals.scoring import eval_root_trace_id, eval_root_trace_name
 from python_backend.evals.snapshot import read_snapshot
 from python_backend.infrastructure.tracing import task_trace_id
 
@@ -31,6 +32,17 @@ SLICE_RESULT = {
     "citations": [{"number": 1, "doc_id": "usitc-digital-trade", "chunks": [{"id": "usitc-digital-trade#3"}]}],
 }
 
+DRAFT = "Delivery usually takes 5-10 business days [1]"
+DRAFT_CITATIONS = [
+    {
+        "number": 1,
+        "doc_id": "faq-logistics",
+        "title": "物流配送 FAQ",
+        "source": "自造 FAQ",
+        "chunks": [{"id": "faq-logistics#6"}],
+    }
+]
+
 
 class FakeProjection:
     """假投影:记录「发了什么」(先例 = tests/conftest.py 的 Recording* 形状)。"""
@@ -38,10 +50,14 @@ class FakeProjection:
     def __init__(self, dataset_run_id: str | None = "ds-run-1") -> None:
         self.synced: list[list[Scenario]] = []
         self.runs: list[dict] = []
+        self.traces: list[dict] = []
         self._dataset_run_id = dataset_run_id
 
     def sync_scenarios(self, scenarios: list[Scenario]) -> None:
         self.synced.append(list(scenarios))
+
+    def create_eval_trace(self, *, trace_id: str, name: str, input: str, output: str) -> None:
+        self.traces.append({"trace_id": trace_id, "name": name, "input": input, "output": output})
 
     def record_run(self, *, run_name: str, scenario_id: str, trace_id: str, metadata: dict) -> str | None:
         self.runs.append({"run_name": run_name, "scenario_id": scenario_id, "trace_id": trace_id, "metadata": metadata})
@@ -54,12 +70,24 @@ def _scenario(scenario_id: str = "coffee-maker-us") -> Scenario:
     )
 
 
+def _workbench_scenario() -> Scenario:
+    return Scenario(
+        id="cs-workbench-shipping-en",
+        surface="客服草稿·工作台",
+        input="How long does delivery usually take?",
+        rubric=("不编造发货时效",),
+        locale="en",
+    )
+
+
 def _handler(
     *,
     created: dict | None = None,
     detail: dict | None = None,
     products: list[dict] | None = None,
     login_status: int = 200,
+    drafting: dict | None = None,
+    drafting_status: int = 200,
     calls: dict[str, list] | None = None,
 ) -> Callable[[httpx.Request], httpx.Response]:
     calls = calls if calls is not None else {}
@@ -73,6 +101,13 @@ def _handler(
             return httpx.Response(200, json={"token": "test-token", "username": "admin"})
         if path == "/api/products":
             return httpx.Response(200, json={"products": products if products is not None else []})
+        if path == "/api/drafting":
+            if drafting_status != 200:
+                return httpx.Response(drafting_status, json={"detail": "不支持的语言"})
+            payload = (
+                drafting if drafting is not None else {"draft": DRAFT, "evidence": {}, "citations": DRAFT_CITATIONS}
+            )
+            return httpx.Response(200, json=payload)
         if path == "/api/tasks":
             return httpx.Response(201, json=created or {"threadId": "t-1", "status": "completed"})
         if path.startswith("/api/tasks/"):
@@ -98,6 +133,114 @@ def _runner(
         now=lambda: NOW,
     )
     return runner, projection
+
+
+async def test_workbench_scenario_writes_snapshot_with_its_own_root_trace(tmp_path: Path) -> None:
+    """工作台线(票 #60):POST /api/drafting(带 locale)→ 单切片快照 → 自建评测根 trace → 投影 run item。
+
+    快照与任务线**同一份 schema**:answer = 草稿、citations = 引用载荷、trace_id = 根 trace 派生
+    (与建出的 trace 同一 id)、thread_id 留空(该线无任务线程——如实标注,不编一个)。
+    """
+    calls: dict[str, list] = {}
+    runner, projection = _runner(tmp_path, _handler(calls=calls))
+    await runner.login("admin", "pw")
+
+    [snapshot] = await runner.run_scenarios([_workbench_scenario()])
+
+    assert json.loads(calls["/api/drafting"][0].content) == {
+        "message": "How long does delivery usually take?",
+        "locale": "en",
+    }
+    assert "/api/tasks" not in calls  # 工作台线不走任务线(T4 的分派分支)
+
+    path = tmp_path / "runs" / "run-1" / "cs-workbench-shipping-en.json"
+    saved = read_snapshot(path)
+    assert saved.surface == "客服草稿·工作台"
+    assert saved.thread_id == ""
+    assert saved.trace_id == eval_root_trace_id("cs-workbench-shipping-en")
+    assert saved.status == "completed"
+    assert [item.no for item in saved.slices] == [1]
+    assert saved.slices[0].answer == DRAFT
+    assert saved.slices[0].citations == tuple(DRAFT_CITATIONS)
+    assert saved.dataset_run_id == "ds-run-1"  # 投影回填(#59 的分数据此互链)
+
+    # 评测根 trace:名字可读(eval:<场景id>),input/output 取买家消息与草稿
+    assert projection.traces == [
+        {
+            "trace_id": eval_root_trace_id("cs-workbench-shipping-en"),
+            "name": eval_root_trace_name("cs-workbench-shipping-en"),
+            "input": "How long does delivery usually take?",
+            "output": DRAFT,
+        }
+    ]
+    # dataset run item:挂自建根 trace,metadata 与任务线同形(零分叉)
+    assert projection.runs == [
+        {
+            "run_name": "run-1",
+            "scenario_id": "cs-workbench-shipping-en",
+            "trace_id": eval_root_trace_id("cs-workbench-shipping-en"),
+            "metadata": {
+                "surface": "客服草稿·工作台",
+                "corpus_fingerprint": "f" * 64,
+                "corpus_batch_id": "batch-1",
+                "slice_count": 1,
+            },
+        }
+    ]
+    assert snapshot.dataset_run_id == "ds-run-1"
+
+
+async def test_run_dispatches_each_surface_to_its_endpoint(tmp_path: Path) -> None:
+    """同一跑批里两条线各走各的入口:任务线 → /api/tasks,工作台线 → /api/drafting,快照同目录落盘。"""
+    calls: dict[str, list] = {}
+    runner, _ = _runner(tmp_path, _handler(calls=calls))
+    await runner.login("admin", "pw")
+
+    snapshots = await runner.run_scenarios([_scenario(), _workbench_scenario()])
+
+    assert [snapshot.scenario_id for snapshot in snapshots] == ["coffee-maker-us", "cs-workbench-shipping-en"]
+    assert len(calls["/api/tasks"]) == 1
+    assert len(calls["/api/drafting"]) == 1
+    run_dir = tmp_path / "runs" / "run-1"
+    assert (run_dir / "coffee-maker-us.json").exists()
+    assert (run_dir / "cs-workbench-shipping-en.json").exists()
+
+
+async def test_workbench_drafting_failure_fails_explicitly(tmp_path: Path) -> None:
+    """端点拒绝(如 locale 非法 422)→ 显式报错带场景 id,不留半份快照。"""
+    runner, _ = _runner(tmp_path, _handler(drafting_status=422))
+    await runner.login("admin", "pw")
+
+    with pytest.raises(RuntimeError, match="起草失败"):
+        await runner.run_scenarios([_workbench_scenario()])
+    assert not (tmp_path / "runs" / "run-1").exists()
+
+
+async def test_workbench_empty_draft_fails_explicitly(tmp_path: Path) -> None:
+    """端点返回空草稿 = 无可评对象 → 显式报错,不落空快照充数(同任务线「无切片产出」口径)。"""
+    runner, _ = _runner(tmp_path, _handler(drafting={"draft": "   ", "citations": []}))
+    await runner.login("admin", "pw")
+
+    with pytest.raises(RuntimeError, match="草稿产出为空"):
+        await runner.run_scenarios([_workbench_scenario()])
+
+
+async def test_workbench_keeps_snapshot_when_trace_creation_fails(tmp_path: Path) -> None:
+    """建根 trace 抛错 → 快照仍在盘上(草稿已烧真 token),报错点明快照无恙,且不投影 run item。"""
+
+    class BrokenTraceProjection(FakeProjection):
+        def create_eval_trace(self, **kwargs: object) -> None:
+            raise RuntimeError("Langfuse 不可达")
+
+    projection = BrokenTraceProjection()
+    runner, _ = _runner(tmp_path, _handler(), projection=projection)
+    await runner.login("admin", "pw")
+
+    with pytest.raises(RuntimeError, match="投影失败") as error:
+        await runner.run_scenarios([_workbench_scenario()])
+    assert "快照已落盘" in str(error.value)
+    assert (tmp_path / "runs" / "run-1" / "cs-workbench-shipping-en.json").exists()
+    assert projection.runs == []  # trace 没建出来,run item 不落(trace 互链的落点是那条 trace)
 
 
 async def test_run_scenario_writes_snapshot_and_projects(tmp_path: Path) -> None:

@@ -176,6 +176,77 @@ scenarios:
     assert "input" in str(error.value)
 
 
+def test_load_scenarios_defaults_locale_to_zh(tmp_path: Path) -> None:
+    """locale 可省:缺省 zh(工作台线的目标语言;其余线本就不看它)。"""
+    path = _write(tmp_path, "product-report.yaml", VALID)
+
+    [scenario] = load_scenarios([path])
+
+    assert scenario.locale == "zh"
+
+
+def test_load_scenarios_reads_locale_for_workbench_line(tmp_path: Path) -> None:
+    """工作台线带 locale:目标语言经端点参数下发(B19 多语草稿的评测入口)。"""
+    path = _write(
+        tmp_path,
+        "customer-draft.yaml",
+        """
+scenarios:
+  - id: cs-workbench-shipping-en
+    surface: 客服草稿·工作台
+    input: How long does delivery usually take?
+    locale: en
+    rubric: [结论有查证证据支撑]
+""",
+    )
+
+    [scenario] = load_scenarios([path])
+
+    assert scenario.locale == "en"
+
+
+def test_load_scenarios_rejects_locale_on_other_surfaces(tmp_path: Path) -> None:
+    """locale 只对工作台线有意义:其余线上带它即报错——静默忽略等于让作者以为换了语言(草稿纹丝不动)。"""
+    path = _write(
+        tmp_path,
+        "a.yaml",
+        """
+scenarios:
+  - id: coffee-maker-us
+    surface: 选品报告
+    input: 分析一下便携咖啡机
+    locale: en
+    rubric: [有检索依据]
+""",
+    )
+
+    with pytest.raises(ValueError) as error:
+        load_scenarios([path])
+
+    assert "coffee-maker-us" in str(error.value)  # 哪条
+    assert "locale" in str(error.value)  # 哪个字段
+    assert "客服草稿·工作台" in str(error.value)  # 以及它只对哪条线有效
+
+
+def test_load_scenarios_rejects_empty_locale(tmp_path: Path) -> None:
+    """locale 留空即无从起草(工作台线的语言不从消息文本推),报错而非兜底猜一个。"""
+    path = _write(
+        tmp_path,
+        "a.yaml",
+        """
+scenarios:
+  - id: cs-workbench-shipping-en
+    surface: 客服草稿·工作台
+    input: How long does delivery take?
+    locale: '  '
+    rubric: [有检索依据]
+""",
+    )
+
+    with pytest.raises(ValueError, match="locale 为空"):
+        load_scenarios([path])
+
+
 def test_load_scenarios_rejects_non_list_scenarios(tmp_path: Path) -> None:
     """顶层形状坏掉时也要有清晰报错(不是 AttributeError 崩栈)。"""
     path = _write(tmp_path, "a.yaml", "scenarios:\n  coffee-maker-us: 选品报告\n")

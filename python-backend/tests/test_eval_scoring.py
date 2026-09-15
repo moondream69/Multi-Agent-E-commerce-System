@@ -39,6 +39,17 @@ def _scenario(scenario_id: str = "coffee-maker-us", rubric: tuple[str, ...] = ("
     return Scenario(id=scenario_id, surface="选品报告", input="分析一下便携咖啡机在美国市场的选品机会", rubric=rubric)
 
 
+def _workbench_scenario() -> Scenario:
+    """工作台线场景(票 #60):无任务线程的快照,产出 = 一条草稿。"""
+    return Scenario(
+        id="cs-workbench-shipping-en",
+        surface="客服草稿·工作台",
+        input="How long does delivery usually take?",
+        rubric=("不编造发货时效", "结论有查证证据支撑"),
+        locale="en",
+    )
+
+
 def _snapshot(
     *slices: SliceOutput,
     scenario_id: str = "coffee-maker-us",
@@ -262,6 +273,56 @@ def test_workbench_snapshot_falls_back_to_eval_root_trace(tmp_path: Path) -> Non
     score_run(load_run_snapshots(tmp_path / "run-1"), [_scenario()], judge=FakeJudge(), sink=sink)
 
     assert {record.trace_id for record in sink.records} == {eval_root_trace_id("coffee-maker-us")}
+
+
+def test_workbench_snapshot_scores_like_task_line(tmp_path: Path) -> None:
+    """工作台线快照与任务线**同一份消费**(#60 的零分叉):机械线 + judge 线照跑,两条线的分数形状一致。
+
+    该线快照随带的就是自建根 trace(跑批器建的那条),``thread_id`` 空如实进 metadata。
+    """
+    trace_id = eval_root_trace_id("cs-workbench-shipping-en")
+    write_snapshot(
+        tmp_path / "run-1",
+        Snapshot(
+            scenario_id="cs-workbench-shipping-en",
+            surface="客服草稿·工作台",
+            run_name="run-1",
+            thread_id="",
+            trace_id=trace_id,
+            status="completed",
+            slices=(
+                SliceOutput(
+                    no=1,
+                    agent="drafting",
+                    description="起草工作台:查证(FAQ/订单/商品)→ 多语草稿",
+                    answer=ANSWER_WITH_CITATIONS,
+                    citations=CITATIONS,
+                    executed=True,
+                ),
+            ),
+            corpus_fingerprint=FINGERPRINT,
+            corpus_batch_id="batch-1",
+            dataset_run_id="ds-run-1",
+            recorded_at=NOW,
+        ),
+    )
+    judge = FakeJudge()
+    sink = RecordingSink()
+
+    result = score_run(load_run_snapshots(tmp_path / "run-1"), [_workbench_scenario()], judge=judge, sink=sink)
+
+    assert [record.name for record in sink.records] == [
+        "cs-workbench-shipping-en#1#机械",
+        "cs-workbench-shipping-en#1#1",
+        "cs-workbench-shipping-en#1#2",
+    ]
+    assert all(record.value == 1 for record in sink.records)  # 引用对得上 + 假 judge 全过
+    assert result.passed == 3
+    assert {record.trace_id for record in sink.records} == {trace_id}
+    assert {record.dataset_run_id for record in sink.records} == {"ds-run-1"}
+    assert all(record.metadata["surface"] == "客服草稿·工作台" for record in sink.records)
+    assert all(record.metadata["thread_id"] == "" for record in sink.records)
+    assert judge.requests[0].input == "How long does delivery usually take?"
 
 
 def test_eval_root_trace_id_is_hex32_and_deterministic() -> None:

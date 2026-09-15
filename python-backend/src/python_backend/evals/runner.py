@@ -1,9 +1,13 @@
-"""``run`` 子命令的编排(spec #55 B / 票 #58):哨兵校验 → 合成数据播种 → 逐条串行驱动 → 快照 + 投影。
+"""``run`` 子命令的编排(spec #55 B / 票 #58;客服草稿两线 #60):哨兵校验 → 合成数据播种 →
+逐条串行驱动 → 快照 + 投影。
 
-黑盒走 REST(评的是**产品面产出**,不是图内部):``POST /api/tasks``(同步语义,图跑完才响应)
-→ ``GET /api/tasks/{thread_id}`` 取切片级产出。**串行**执行(仓内 LLM 并发闸 = 2,ADR-0008);
-金标场景一律免审(dev 剖面影子段直行),遇 ``interrupted`` / 失败**显式报错**——不自动批准
-(不把机器决定混进评测语义;场景挂起 = 场景设计缺陷,该改场景而不是让机器替人拍板)。
+黑盒走 REST(评的是**产品面产出**,不是图内部),**按 surface 分派两条产出线**:任务线
+``POST /api/tasks``(同步语义,图跑完才响应)→ ``GET /api/tasks/{thread_id}`` 取切片级产出;
+工作台线 ``POST /api/drafting``(同步、无任务轨迹)→ 草稿 + 引用载荷即产出,**跑批器自建评测根
+trace**(``eval:<场景id>``,分数挂它)。两线落**同一份快照 schema**,回评面零分叉。**串行**执行
+(仓内 LLM 并发闸 = 2,ADR-0008);金标场景一律免审(dev 剖面影子段直行),遇 ``interrupted`` /
+失败**显式报错**——不自动批准(不把机器决定混进评测语义;场景挂起 = 场景设计缺陷,该改场景而不是
+让机器替人拍板)。
 
 **净库哨兵**:``reset-db`` 在净库插一条固定 SKU 的商品,跑批前校验它必须在场——防「忘了把 app
 切到净库」:那会把播种与跑批写进演示库(reset-db 与 run 之间隔着一次 app 重启,人是最不可靠的一环)。
@@ -23,14 +27,24 @@ import httpx
 
 from python_backend.evals.corpus_anchor import CorpusAnchor
 from python_backend.evals.projection import Projection
-from python_backend.evals.schema import Scenario
-from python_backend.evals.snapshot import Snapshot, slices_from_results, snapshot_path, write_snapshot
+from python_backend.evals.schema import WORKBENCH_SURFACE, Scenario
+from python_backend.evals.scoring import eval_root_trace_id, eval_root_trace_name
+from python_backend.evals.snapshot import (
+    SliceOutput,
+    Snapshot,
+    slices_from_results,
+    snapshot_path,
+    write_snapshot,
+)
 from python_backend.infrastructure.tracing import task_trace_id
 
 # 净库哨兵商品 SKU(reset-db 写入、run 校验;固定值,勿改——两处共用同一常量)
 SENTINEL_SKU = "EVAL-SENTINEL"
 # 同步端点要等图跑完才响应:一次真跑选品 ≈2-3 分钟,超时留足余量(先例 = simulator 的 120s)
 CLIENT_TIMEOUT = 900.0
+
+# 工作台线快照的单切片落点(该线一次 = 一条草稿;切片号是标识不是下标,恒 1)
+WORKBENCH_SLICE_NO = 1
 
 # 合成数据播种步骤(顺序硬约束,照 OPERATIONS「试运行数据 provisioning」:商品 → 买家 → 订单)
 SEED_STEPS: tuple[tuple[str, str], ...] = (
@@ -115,7 +129,13 @@ class EvalRunner:
         return snapshots
 
     async def _run_one(self, scenario: Scenario) -> Snapshot:
-        """一条场景:触发任务 → 校验终态 → 读切片产出 → 落快照 → 投影 dataset run item。"""
+        """一条场景 → 快照:按 surface 分派产出线(工作台线走同步端点,其余走任务线)。"""
+        if scenario.surface == WORKBENCH_SURFACE:
+            return await self._run_workbench(scenario)
+        return await self._run_task(scenario)
+
+    async def _run_task(self, scenario: Scenario) -> Snapshot:
+        """任务线一条场景:触发任务 → 校验终态 → 读切片产出 → 落快照 → 投影 dataset run item。"""
         response = await self._client.post(
             "/api/tasks", json={"request": scenario.input, "session_id": f"eval-{self._run_name}"}
         )
@@ -152,13 +172,72 @@ class EvalRunner:
             recorded_at=self._now(),
         )
         # 先落盘再投影:任务已烧真 token,投影失败(网络/Langfuse 抖动)也不该丢产出
+        return await self._write_and_project(snapshot)
+
+    async def _run_workbench(self, scenario: Scenario) -> Snapshot:
+        """工作台线一条场景:同步端点出草稿 → 单切片快照 → **自建评测根 trace** → 投影 run item。
+
+        该线没有任务轨迹:快照 trace_id 走 ``eval_root_trace_id``(与建出的根 trace 同一派生,
+        两处恒等),``thread_id`` 留空(如实:无任务线程)。产出落盘先于投影,同任务线一条口径。
+        """
+        response = await self._client.post("/api/drafting", json={"message": scenario.input, "locale": scenario.locale})
+        if response.status_code != 200:
+            raise RuntimeError(f"场景 {scenario.id} 起草失败({response.status_code}):{response.text[:200]}")
+        payload = response.json()
+        draft = str(payload.get("draft") or "")
+        if not draft.strip():
+            raise RuntimeError(f"场景 {scenario.id} 草稿产出为空——无可评对象(端点返回了空草稿)")
+        trace_id = eval_root_trace_id(scenario.id)
+        snapshot = Snapshot(
+            scenario_id=scenario.id,
+            surface=scenario.surface,
+            run_name=self._run_name,
+            thread_id="",
+            trace_id=trace_id,
+            status="completed",
+            slices=(
+                SliceOutput(
+                    no=WORKBENCH_SLICE_NO,
+                    agent="drafting",
+                    description="起草工作台:查证(FAQ/订单/商品)→ 多语草稿",
+                    answer=draft,
+                    citations=tuple(payload.get("citations") or ()),
+                    executed=True,
+                ),
+            ),
+            corpus_fingerprint=self._anchor.fingerprint,
+            corpus_batch_id=self._anchor.batch_id,
+            dataset_run_id=None,
+            recorded_at=self._now(),
+        )
+        return await self._write_and_project(
+            snapshot,
+            create_trace=lambda: self._projection.create_eval_trace(
+                trace_id=trace_id,
+                name=eval_root_trace_name(scenario.id),
+                input=scenario.input,
+                output=draft,
+            ),
+        )
+
+    async def _write_and_project(
+        self, snapshot: Snapshot, *, create_trace: Callable[[], None] | None = None
+    ) -> Snapshot:
+        """落盘 → (可选)自建评测根 trace → 投影 dataset run item → 回填 dataset run id。
+
+        **先落盘再投影**:产出已烧真 token,投影失败(Langfuse 抖动 / 不可达)也不该丢产出——
+        报错里点明快照无恙。``create_trace`` 是工作台线的评测根 trace 步骤(该线无任务轨迹,
+        分数得挂自建的 trace);任务线的 trace 由 app 容器在跑任务时建好,不走此步。
+        metadata 取快照自身字段(单一来源:落盘的那份即投影的那份),两线同形。
+        """
         path = write_snapshot(self._run_dir, snapshot)
         try:
+            if create_trace is not None:
+                create_trace()
             dataset_run_id = self._projection.record_run(
                 run_name=self._run_name,
-                scenario_id=scenario.id,
+                scenario_id=snapshot.scenario_id,
                 trace_id=snapshot.trace_id,
-                # 元数据取快照自身字段(单一来源:落盘的那份即投影的那份)
                 metadata={
                     "surface": snapshot.surface,
                     "corpus_fingerprint": snapshot.corpus_fingerprint,
@@ -167,7 +246,7 @@ class EvalRunner:
                 },
             )
         except Exception as error:  # SDK 异常(Langfuse 5xx / 不可达):转成编排层的显式报错,并点明快照无恙
-            raise RuntimeError(f"场景 {scenario.id} 投影失败(产出快照已落盘:{path}):{error}") from error
+            raise RuntimeError(f"场景 {snapshot.scenario_id} 投影失败(产出快照已落盘:{path}):{error}") from error
         if dataset_run_id is None:
             return snapshot
         snapshot = replace(snapshot, dataset_run_id=dataset_run_id)
