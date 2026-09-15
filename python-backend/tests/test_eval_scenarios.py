@@ -137,6 +137,24 @@ scenarios:
     assert "rubric" in str(error.value)
 
 
+def test_load_scenarios_rejects_duplicate_criterion(tmp_path: Path) -> None:
+    """判据文案唯一:判据文案是稳定键的索引依据,重复即「第几条」有歧义——收分时对不上号。"""
+    path = _write(
+        tmp_path,
+        "a.yaml",
+        """
+scenarios:
+  - id: coffee-maker-us
+    surface: 选品报告
+    input: 分析一下便携咖啡机
+    rubric: [结论有检索依据, 结论有检索依据]
+""",
+    )
+
+    with pytest.raises(ValueError, match="重复判据"):
+        load_scenarios([path])
+
+
 def test_load_scenarios_rejects_empty_input(tmp_path: Path) -> None:
     """输入非空:输入是固定文本入仓(LLM 不生成),空输入的场景无从跑起。"""
     path = _write(

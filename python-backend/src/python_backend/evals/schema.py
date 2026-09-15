@@ -91,6 +91,8 @@ def _build_scenario(entry: Any, path: Path, index: int) -> Scenario:
     criteria = tuple(str(item).strip() for item in rubric)
     if any(not criterion for criterion in criteria):
         raise ValueError(f"{where} 的 rubric 含空判据")
+    if len(set(criteria)) != len(criteria):
+        raise ValueError(f"{where} 的 rubric 含重复判据(判据文案是稳定键的索引依据,重复即歧义)")
     return Scenario(
         id=scenario_id,
         surface=surface,

@@ -114,9 +114,17 @@ class LangfuseProjection:
         self._client.flush()
 
 
-def build_projection(settings: Settings | None = None) -> LangfuseProjection:
-    """真实投影:过配置闸(缺密钥显式报错)→ 官方 SDK client。"""
-    config = load_langfuse_config(settings)
+def build_langfuse_client(config: LangfuseConfig) -> Any:
+    """官方 SDK client(host 按配置给;SDK 惰性导入,未用到评测面时不拖启动)。"""
     from langfuse import Langfuse
 
-    return LangfuseProjection(Langfuse(public_key=config.public_key, secret_key=config.secret_key, host=config.host))
+    return Langfuse(public_key=config.public_key, secret_key=config.secret_key, host=config.host)
+
+
+def build_projection(settings: Settings | None = None) -> LangfuseProjection:
+    """真实投影:过配置闸(缺密钥显式报错)→ 官方 SDK client。
+
+    ``score`` 与 ``run`` 共用同一个 client(``build_langfuse_client``):两个实例各有独立缓冲,
+    收尾要 flush 两次、读回要跨实例,没有好处。
+    """
+    return LangfuseProjection(build_langfuse_client(load_langfuse_config(settings)))

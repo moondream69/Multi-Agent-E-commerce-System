@@ -225,10 +225,15 @@ uv run python scripts/evals.py reset-db            # 1. 重建净库(dropdb/crea
 #    APP_DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/mae_eval docker compose up -d app
 uv run python scripts/evals.py run --base-url http://localhost:3000   # 3. 跑批(串行,烧真 token)
 docker compose up -d app                            # 跑完切回演示库
+
+uv run python scripts/evals.py score [--run <run 名>]  # 4. 回评(不重跑任务;缺省取最近一次 run)
 ```
 
-- **前置**:Langfuse 已启用(见「生产切换清单」第 6 步,含两条栈内前置);缺 Langfuse 密钥时跑批器**显式报错**。
+- **前置**:Langfuse 已启用(见「生产切换清单」第 6 步,含两条栈内前置);缺 Langfuse / judge 密钥时跑批器**显式报错**。
 - **防呆**:净库插有哨兵商品 `EVAL-SENTINEL`;app 没切到净库时 `run` 直接报错、不写任何数据。
+- **回评解耦(run/score)**:`score` 只读快照(`docs/evals/runs/<run 名>/*.json`),rubric 从 `docs/evals/*.yaml` **现读**
+  ——改 rubric / 换 judge(`.env` 的 `JUDGE_MODEL`)只重跑 score,任务不被重跑,分数恒覆盖同一条(稳定键派生 id)。
+  judge 走 Anthropic 原生面;`.env` 的 `JUDGE_API_URL` 按 messages 端点给(`…/v1/messages`,客户端自行去版本段)。
 - 场景/快照字段与编排语义见 `scripts/evals.py` 模块文档与 `python-backend/src/python_backend/evals/`。
 
 ## 生产切换清单(试运行前)

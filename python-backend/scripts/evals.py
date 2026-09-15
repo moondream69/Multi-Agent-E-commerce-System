@@ -6,7 +6,7 @@
 - **validate**:校验评测真源(形状非法即报错)——跑批前的自检
 - **reset-db**:重建评测净库(dropdb/createdb + 迁移 + 哨兵)——跑批与演示素材物理隔离
 - **run**:驱动真实任务 → 产出快照 → Langfuse 投影(票 #58 落地)
-- **score**:从已存快照回评(机械防伪引 + judge)→ 分数落 Langfuse(票 #59 落地)
+- **score**:从已存快照回评(机械防伪引 + judge)→ 分数落 Langfuse(票 #59 落地;不重跑任务)
 
 用法(在 python-backend/ 下)::
 
@@ -25,6 +25,14 @@
     uv run python scripts/evals.py run --base-url http://localhost:3000
 
     # 跑完切回演示库:docker compose up -d app
+
+回评(不重跑任务,票 #59)::
+
+    uv run python scripts/evals.py score [--run <run 名|路径>]   # 缺省取最近一次 run
+
+``score`` 只读快照回评(rubric 从真源现读 → **改 rubric / 换 judge 只重跑本命令**;run 烧真
+token,score 只烧 judge token):机械防伪引(零 LLM)+ judge 逐条 0/1 + comment,分数落 Langfuse
+(带 trace_id / dataset_run_id / 语料指纹),写完读回核实。``--scenarios`` 可指另一份 rubric 真源。
 
 真源目录 = ``docs/evals/*.yaml``(默认全量,可显式传文件);产出快照落 ``docs/evals/runs/<run 名>/``
 (gitignore)。``run`` / ``score`` 烧真 token、要真服务、走专用净库——与摄入 CLI 同待遇:不进快速套件
@@ -48,9 +56,16 @@ import psycopg
 from sqlalchemy.engine import URL, make_url
 
 from python_backend.evals.corpus_anchor import CorpusAnchor, corpus_anchor
-from python_backend.evals.projection import DATASET_NAME, build_projection, load_langfuse_config
+from python_backend.evals.judge import AnthropicJudge, load_judge_config
+from python_backend.evals.projection import DATASET_NAME, build_langfuse_client, build_projection, load_langfuse_config
 from python_backend.evals.runner import CLIENT_TIMEOUT, SENTINEL_SKU, EvalRunner
 from python_backend.evals.schema import Scenario, load_scenarios
+from python_backend.evals.scores import LangfuseScores
+from python_backend.evals.scoring import (
+    ScoreRecord,
+    load_run_snapshots,
+    score_run,
+)
 from python_backend.settings import get_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -175,7 +190,56 @@ async def _run(args: argparse.Namespace) -> None:
 
 
 def score(args: argparse.Namespace) -> None:
-    raise SystemExit("score 未实现(票 #59 落地:机械防伪引 + judge 判据 → Langfuse 分数)")
+    """从已存快照回评:机械防伪引 + judge 判据 → 分数落 Langfuse(不重跑任务,票 #59)。
+
+    快照是唯一输入:rubric 从真源现读,故**改 rubric / 换 judge 只重跑本命令**——run 烧真 token,
+    score 只烧 judge token(ADR-0008 的解耦点在此兑现)。
+    """
+    try:
+        _score(args)
+    except RuntimeError as error:  # 配置闸 / 快照 / judge 失败与坏输出——照实转达并中止
+        raise SystemExit(f"回评中止:{error}") from error
+
+
+def _score(args: argparse.Namespace) -> None:
+    run_dir = _run_dir(args.run)
+    snapshots = load_run_snapshots(run_dir)
+    scenarios = _load(args)
+    judge_config = load_judge_config()
+    judge = AnthropicJudge(judge_config)
+    config = load_langfuse_config()
+    client = build_langfuse_client(config)
+    sink = LangfuseScores(client)
+
+    print(f"回评 {run_dir.name}:快照 {len(snapshots)} 份(rubric 取自评测真源,改它即换判定口径)")
+    print(f"Langfuse {config.host} / judge {judge_config.model}")
+    print("场景:" + " → ".join(snapshot.scenario_id for snapshot in snapshots))
+
+    def announce(record: ScoreRecord) -> None:
+        comment = record.comment if len(record.comment) <= 40 else record.comment[:40] + "…"
+        print(f"  {record.name} = {record.value} | {comment}")
+
+    result = score_run(snapshots, scenarios, judge=judge, sink=sink, on_record=announce)
+    sink.flush()  # 冲掉 SDK 缓冲后读回,否则最近写入可能还没上报
+    sink.verify(result.records)
+    print(f"完成:分数 {len(result.records)} 条(通过 {result.passed} / 失败 {len(result.records) - result.passed})")
+    print("Langfuse 3001 → 任务的 Scores 面板(带 trace_id / dataset_run_id / 语料指纹)")
+
+
+def _run_dir(run: str | None) -> Path:
+    """``--run`` → 快照目录:绝对路径照用,否则按 run 名解析(缺省取最近一次 run)。"""
+    runs_root = EVALS_DIR / "runs"
+    if run is None:
+        candidates = [path for path in runs_root.glob("*") if path.is_dir()]
+        if not candidates:
+            raise SystemExit(f"{runs_root} 下没有 run——先跑 `evals.py run`(README 三步见模块文档)")
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+    path = Path(run)
+    if path.is_absolute():
+        return path
+    if (runs_root / run).is_dir():
+        return runs_root / run
+    return _resolve(path)
 
 
 async def _anchor() -> CorpusAnchor:
@@ -245,7 +309,12 @@ def main() -> None:
     run_parser.add_argument("--skip-seed", action="store_true", help="跳过合成数据播种(重跑时省几秒)")
     run_parser.set_defaults(func=run)
 
-    score_parser = subparsers.add_parser("score", help="从已存快照回评、分数落 Langfuse(未实现,票 #59)")
+    score_parser = subparsers.add_parser("score", help="从已存快照回评:机械防伪引 + judge → Langfuse 分数")
+    score_parser.add_argument(
+        "--run",
+        help=f"run 名或快照目录(缺省取 {EVALS_DIR / 'runs'} 下最近一次);run 名相对该目录解析",
+    )
+    score_parser.add_argument("--scenarios", nargs="*", help=f"判据真源(默认 {EVALS_DIR}/*.yaml)——改它即换 rubric")
     score_parser.set_defaults(func=score)
 
     args = parser.parse_args()
