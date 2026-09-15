@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     judge_model: str = "claude-opus-5"
     judge_api_url: str = ""
     judge_api_key: str = ""
-    # Langfuse(观测层;留空禁用)
+    # Langfuse(观测层;app 侧 host 留空即禁用;评测 CLI 投影另按本机约定兜底 localhost:3001,见 evals/projection.py)
     langfuse_host: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""

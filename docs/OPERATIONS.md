@@ -213,6 +213,24 @@ cd python-backend && uv run python scripts/ingest_corpus.py ingest [--corpus doc
 - **与「试运行数据 provisioning」的关系**:语料侧已是**真实公开数据**(非合成);商品/买家/订单侧仍是合成数据
   代跑——ADR-0005「真实数据 CSV 导入」一环仍欠,真实数据到手后走同一导入路径(与本节的语料 CLI 无关)。
 
+## 评测跑批(净库隔离,ADR-0008 / spec #55)
+
+Agent 产出质量的刻度:金标场景(`docs/evals/*.yaml`,真源)→ 真实任务产出快照(`docs/evals/runs/`,gitignore)
+→ Langfuse dataset run + 判据分数。**跑批走专用净库 `mae_eval`**,与演示素材物理隔离;三步:
+
+```bash
+cd python-backend
+uv run python scripts/evals.py reset-db            # 1. 重建净库(dropdb/createdb + 迁移 + 哨兵行;拒绝动 mae)
+# 2. 仓库根:把 app 切到净库(命令由 reset-db 打印)——APP_DATABASE_URL 是 compose 插值,不带即回演示库
+#    APP_DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/mae_eval docker compose up -d app
+uv run python scripts/evals.py run --base-url http://localhost:3000   # 3. 跑批(串行,烧真 token)
+docker compose up -d app                            # 跑完切回演示库
+```
+
+- **前置**:Langfuse 已启用(见「生产切换清单」第 6 步,含两条栈内前置);缺 Langfuse 密钥时跑批器**显式报错**。
+- **防呆**:净库插有哨兵商品 `EVAL-SENTINEL`;app 没切到净库时 `run` 直接报错、不写任何数据。
+- 场景/快照字段与编排语义见 `scripts/evals.py` 模块文档与 `python-backend/src/python_backend/evals/`。
+
 ## 生产切换清单(试运行前)
 
 > 2026-09-13 本机**同库**实切演练已跑通(库未清、dev 遗留在场,正好覆盖「同库跨剖面」最难场景;
@@ -244,7 +262,14 @@ origin 在 socket.io 握手被拒 400,而页面照常打开,症状是「登录�
 
 **5. 关模拟流量**:别在 prod 下启 `--profile sim`(`ensure_demo_buyers` 亦仅 dev 生效)。
 
-**6. 启用观测(Langfuse)**:`.env` 填 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`(登录 3001 建项目后生成);`LANGFUSE_HOST` 容器内已由 compose 固定为 `http://langfuse-server:3000`(本机 uv 开发才在 `.env` 指 `http://localhost:3001`);密钥留空即 no-op(当前 dev 部署即如此)。验证:登录 3001 可见任务 trace。
+**6. 启用观测(Langfuse)**:`.env` 填 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`(登录 3001 建项目后生成);`LANGFUSE_HOST` 容器内已由 compose 固定为 `http://langfuse-server:3000`(本机 uv 开发才在 `.env` 指 `http://localhost:3001`);密钥留空即 no-op。验证:登录 3001 可见任务 trace。
+
+> ⚠️ **两个栈内前置(2026-09-15 评测跑批首跑实测补齐)**:缺任一个,**事件全落不进 ClickHouse、界面恒空**,
+> 而且页面不报错——只在容器日志里看得见:
+> ① **事件桶**:MinIO 需要 `langfuse-events` 桶(缺桶时 ingestion 直接 500 `NoSuchBucket`):
+> `docker compose exec minio sh -c "mc alias set local http://localhost:9000 minioadmin minioadmin && mc mb --ignore-existing local/langfuse-events"`
+> ② **worker 与 web 同 Redis 库**:web 写 `redis://redis:6379/1`(`REDIS_CONNECTION_STRING`),worker 原先读默认 db 0
+> → 队列永不被消费(事件只停在 MinIO/Redis)。compose 已改为同库(db 1),改后 `docker compose up -d langfuse-worker` 生效。
 
 **7. 验证点**(对照实测):
 

@@ -180,8 +180,9 @@ services:
       CLICKHOUSE_USER: langfuse
       CLICKHOUSE_PASSWORD: langfuse
       CLICKHOUSE_CLUSTER_ENABLED: "false"
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
+      # 与 web 同库(票 #58 实测:web 写 db 1、worker 读默认 db 0 → 队列永不被消费,
+      # 事件只停在 MinIO/Redis,ClickHouse 恒空——界面看不到任何 trace)
+      REDIS_CONNECTION_STRING: redis://redis:6379/1
       LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse-events
       LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
@@ -210,8 +211,10 @@ services:
     container_name: mae_app
     env_file: .env
     environment:
-      # 容器内 localhost 指向容器自身:.env 的本机地址须覆盖为 compose 服务名
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/mae
+      # 容器内 localhost 指向容器自身:.env 的本机地址须覆盖为 compose 服务名。
+      # 走插值是为了评测跑批(spec #55):APP_DATABASE_URL=…mae_eval docker compose up -d app
+      # 即把 app 切到评测净库(跑批与演示素材物理隔离);不带该变量即回演示库 mae。
+      DATABASE_URL: ${APP_DATABASE_URL:-postgresql+psycopg://postgres:postgres@postgres:5432/mae}
       REDIS_HOST: redis
       MILVUS_URI: http://milvus:19530
       LANGFUSE_HOST: http://langfuse-server:3000

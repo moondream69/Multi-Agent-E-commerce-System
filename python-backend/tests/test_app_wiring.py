@@ -1,8 +1,12 @@
-"""生产装配启动回归(issue #21):build_app 的 lifespan 必须把会话存储接到批真实例上。
+"""生产装配启动回归(issue #21 + 票 #58):build_app 的 lifespan 必须把会话存储接到批真实例上、
+把请求路径接上真 tracer。
 
 回归背景:会话存储的挂起审批判定依赖批次存储,而 create_app() 构建时 lifespan 尚未跑
 (批真实例在 lifespan 内创建)——曾漏接线,app.state.conversation_store 留 None,
 生产所有会话端点 500,而离线用例全部显式注入替身、不会红。本文件补「默认装配」守卫。
+
+票 #58 续:create_app 未传 tracer 即落 NullTaskTracer 默认值——任务 trace 全不落地,
+dataset run 的互链目标不存在(评测跑批的验收面撞出来的)。此处钉住装配必须传真 tracer。
 
 离线可跑:仅打桩外部依赖(PG 连接 / checkpoint saver / Agent 装配),被验证的接线是真代码;
 真实 seed 与真库启动另有实证(见 issue #21 评论)。
@@ -19,6 +23,7 @@ import python_backend.main as main_module
 from python_backend.db.approval_store import PostgresApprovalBatchStore
 from python_backend.db.conversation_store import PostgresConversationStore
 from python_backend.db.customer_store import PostgresCustomerStore
+from python_backend.infrastructure.tracing import LangfuseTaskTracer
 
 
 class _StubConnection:
@@ -80,3 +85,6 @@ def test_build_app_lifespan_wires_conversation_store(monkeypatch) -> None:
         assert isinstance(store, PostgresConversationStore), "生产启动必须把会话存储接上(回归 #21)"
         assert isinstance(fastapi_app.state.batch_store, PostgresApprovalBatchStore)
         assert store._batch_store is fastapi_app.state.batch_store, "会话存储须与图共用同一批真实例"
+        assert isinstance(fastapi_app.state.tracer, LangfuseTaskTracer), (
+            "生产启动必须把请求路径接上真 tracer(回归 #58):NullTaskTracer 默认值会让任务 trace 全不落地"
+        )

@@ -1,0 +1,141 @@
+"""缝 1(票 #58):快照读写往返与 schema 断言——离线纯逻辑,不触网不触库。
+
+先例 = ``tests/test_eval_scenarios.py``(评测包公开函数的逐字段断言)。
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from python_backend.evals.snapshot import (
+    SNAPSHOT_VERSION,
+    SliceOutput,
+    Snapshot,
+    read_snapshot,
+    slices_from_results,
+    snapshot_path,
+    write_snapshot,
+)
+
+RECORDED_AT = datetime(2026, 9, 15, 3, 30, tzinfo=UTC)
+
+CITATIONS = [
+    {
+        "number": 1,
+        "doc_id": "usitc-digital-trade",
+        "title": "Global Digital Trade",
+        "source": "USITC(公有领域)",
+        "published_at": "2024-05-01",
+        "chunks": [{"id": "usitc-digital-trade#3", "score": 0.71, "section": "3", "chunk_index": 3, "content": "…"}],
+    }
+]
+
+
+def _snapshot() -> Snapshot:
+    return Snapshot(
+        scenario_id="coffee-maker-us",
+        surface="选品报告",
+        run_name="run-20260915T033000Z",
+        thread_id="t-1",
+        trace_id="a3f1c2d4e5b60718293a4b5c6d7e8f90",
+        status="completed",
+        slices=(
+            SliceOutput(
+                no=1,
+                agent="product_research",
+                description="检索市场情报并给结论",
+                answer="美国市场咖啡机需求上行 [1]",
+                citations=tuple(CITATIONS),
+                executed=True,
+            ),
+            SliceOutput(no=2, agent="product_research", description="评分", answer=None, citations=(), executed=False),
+        ),
+        corpus_fingerprint="f" * 64,
+        corpus_batch_id=None,
+        dataset_run_id="ds-run-1",
+        recorded_at=RECORDED_AT,
+    )
+
+
+def test_write_read_roundtrip(tmp_path: Path) -> None:
+    """写-读往返:字段一一还原(含嵌套 citations、空批次留 None、切片序稳定)。"""
+    path = write_snapshot(tmp_path / "runs" / "run-1", _snapshot())  # 目录不存在即建
+    assert path == snapshot_path(tmp_path / "runs" / "run-1", "coffee-maker-us")
+
+    restored = read_snapshot(path)
+    assert restored == _snapshot()
+
+
+def test_write_is_idempotent_by_scenario(tmp_path: Path) -> None:
+    """同一场景重跑即覆盖同文件(快照文件名 = 场景 id,run 目录决定成组)。"""
+    run_dir = tmp_path / "run-1"
+    write_snapshot(run_dir, _snapshot())
+    write_snapshot(run_dir, _snapshot())
+    assert len(list(run_dir.glob("*.json"))) == 1
+
+
+def test_payload_is_readable_json(tmp_path: Path) -> None:
+    """落盘为可读 JSON(中文不转义、版本号在载荷里)——快照要能人眼复核。"""
+    path = write_snapshot(tmp_path, _snapshot())
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["version"] == SNAPSHOT_VERSION
+    assert raw["corpus_batch_id"] is None
+    assert "选品报告" in path.read_text(encoding="utf-8")
+
+
+def test_slices_from_results_parses_api_payload() -> None:
+    """GET /api/tasks 的 results(切片号字符串键)→ 按切片号升序的切片列表。"""
+    slices = slices_from_results(
+        {
+            "2": {"agent": "product_research", "description": "评分", "answer": "B 级", "executed": True},
+            "1": {
+                "agent": "product_research",
+                "description": "检索",
+                "answer": "结论 [1]",
+                "executed": True,
+                "citations": CITATIONS,
+            },
+        }
+    )
+    assert [item.no for item in slices] == [1, 2]
+    assert slices[0].citations == tuple(CITATIONS)
+    assert slices[1].answer == "B 级"
+    assert slices[1].citations == ()  # 无引用载荷 → 空(不编)
+
+
+def test_slices_from_results_rejects_broken_shape() -> None:
+    """形状不符即报错(API 契约违反而非「没产出」);空/缺席如实返回空列表。"""
+    assert slices_from_results(None) == ()
+    assert slices_from_results({}) == ()
+    with pytest.raises(ValueError, match="映射"):
+        slices_from_results(["not-a-mapping"])
+    with pytest.raises(ValueError, match="切片号 'x'"):
+        slices_from_results({"x": {"agent": "a"}})
+    with pytest.raises(ValueError, match="不是映射"):
+        slices_from_results({"1": "not-a-mapping"})
+
+
+def test_read_rejects_bad_shape(tmp_path: Path) -> None:
+    """坏快照报错点名文件与字段(不静默按新形状解释旧数据)。"""
+    path = tmp_path / "bad.json"
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="不是合法 JSON"):
+        read_snapshot(path)
+
+    path.write_text(json.dumps({"version": 99, "scenario_id": "x"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="版本 99"):
+        read_snapshot(path)
+
+    path.write_text(json.dumps({"version": SNAPSHOT_VERSION, "scenario_id": "x"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="缺字段"):
+        read_snapshot(path)
+
+    payload = json.loads((write_snapshot(tmp_path, _snapshot())).read_text(encoding="utf-8"))
+    payload["recorded_at"] = "不是时刻"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="ISO 8601"):
+        read_snapshot(path)

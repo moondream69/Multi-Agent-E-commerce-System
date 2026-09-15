@@ -110,6 +110,9 @@ def build_app() -> socketio.ASGIApp:
         drafting=DraftingService(vector=MilvusVectorRepository()),
         shadow_mode=settings.shadow_mode,  # 验收 B15:影子段可见性与补执行随剖面(issue #37)
         static_dir=static_dir,
+        # 请求路径也要真 tracer(票 #58 发现):不传即落 create_app 的 NullTaskTracer 默认值,
+        # 任务 trace 全不落地——dataset run 的互链目标、图内 span/generation 的归属都指着它
+        tracer=LangfuseTaskTracer(),
     )
     app.router.lifespan_context = lifespan
     logger.info("前端静态托管:%s", static_dir or "未启用(开发态走 Vite 5173)")

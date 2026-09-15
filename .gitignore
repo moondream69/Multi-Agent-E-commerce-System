@@ -10,3 +10,5 @@ coverage
 .screenshots/
 .playwright-cli/
 docs/handoffs/
+# 评测产出快照(本地产物;真源 = docs/evals/*.yaml,快照由 evals.py run 生成)
+docs/evals/runs/

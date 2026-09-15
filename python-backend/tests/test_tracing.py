@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 
 from python_backend.api.app import create_app
 from python_backend.core.graph import build_supervisor
-from python_backend.infrastructure.tracing import LangfuseTaskTracer, NullTaskTracer
+from python_backend.infrastructure.tracing import LangfuseTaskTracer, NullTaskTracer, task_trace_id
 from tests.conftest import (
     FakeApply,
     InMemoryApprovalBatchStore,
@@ -137,8 +139,8 @@ class FakeLangfuseClient:
 
 def test_langfuse_tracer_enabled_path_uses_context_manager_api() -> None:
     """启用路径(B14 + spec #8 resume_trace):trace/span 走 start_as_current_observation(上下文管理器 API),
-    trace_id 由 thread_id 确定性派生(跨 resume 合并同一 trace);record_event 走 start_observation + end;
-    langfuse 4.x 的 start_observation 返回值不是上下文管理器。"""
+    trace_id 由 thread_id 确定性派生(跨 resume 合并同一 trace,经 langfuse 4.x 的 trace_context 键);
+    record_event 走 start_observation + end;langfuse 4.x 的 start_observation 返回值不是上下文管理器。"""
     client = FakeLangfuseClient()
     tracer = LangfuseTaskTracer(client=client)
 
@@ -148,8 +150,19 @@ def test_langfuse_tracer_enabled_path_uses_context_manager_api() -> None:
         pass
 
     assert client.current_observations == [
-        {"name": "task:t1", "as_type": "span", "trace_id": "task-t1"},
+        {"name": "task:t1", "as_type": "span", "trace_context": {"trace_id": task_trace_id("t1")}},
         {"name": "manager.plan", "as_type": "span", "input": {"request": "x"}},
-        {"name": "task:t1", "as_type": "span", "trace_id": "task-t1"},
+        {"name": "task:t1", "as_type": "span", "trace_context": {"trace_id": task_trace_id("t1")}},
     ]
     assert client.observations == [{"name": "approval.requested", "as_type": "span", "output": {"batchIds": ["b1"]}}]
+
+
+def test_task_trace_id_is_langfuse_compatible() -> None:
+    """trace_id 契约 = 32 位小写十六进制(langfuse 4.x 拒收其余形状)+ 同 thread 恒定(票 #58 实测:
+
+    旧派生 ``task-{thread_id}`` 带前缀与连字符 → SDK 丢弃告警;分数/dataset run 互链也靠这个值。"""
+    trace_id = task_trace_id("0f6d5b1e-0000-4000-8000-000000000001")
+
+    assert re.fullmatch(r"[0-9a-f]{32}", trace_id), trace_id
+    assert task_trace_id("0f6d5b1e-0000-4000-8000-000000000001") == trace_id, "同 thread 恒等(跨 resume 合并)"
+    assert task_trace_id("other-thread") != trace_id

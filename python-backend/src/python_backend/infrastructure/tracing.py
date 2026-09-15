@@ -10,13 +10,19 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Protocol
+from uuid import NAMESPACE_OID, uuid5
 
 from python_backend.settings import get_settings
 
 
 def task_trace_id(thread_id: str) -> str:
-    """任务 trace 的确定性 trace_id:同一 thread 的所有阶段(创建/resume/重放)合并同一 trace。"""
-    return f"task-{thread_id}"
+    """任务 trace 的确定性 trace_id:同一 thread 的所有阶段(创建/resume/重放)合并同一 trace。
+
+    Langfuse 的 trace_id 契约是 **32 位小写十六进制**(langfuse 4.x 的 ``_is_valid_trace_id``;
+    非契约值会被丢弃并告警),故取 ``uuid5(NAMESPACE_OID, thread_id)`` 的 hex 形式——确定性、
+    无状态、无查库;可读标记留在 observation 名(``task:<thread_id>``)上。
+    """
+    return uuid5(NAMESPACE_OID, thread_id).hex
 
 
 class TaskTracer(Protocol):
@@ -71,9 +77,12 @@ class LangfuseTaskTracer:
     def trace(self, thread_id: str) -> AbstractContextManager:
         if not self._enabled:
             return nullcontext()
-        # trace_id 由 thread_id 确定性派生:create/resume/重放各阶段 observation 合并进同一任务 trace
+        # trace_id 由 thread_id 确定性派生:create/resume/重放各阶段 observation 合并进同一任务 trace。
+        # langfuse 4.x 的关联键是 trace_context(langfuse.types.TraceContext),不是旧版的 trace_id 直参。
         return self._require_client().start_as_current_observation(
-            name=f"task:{thread_id}", as_type="span", trace_id=task_trace_id(thread_id)
+            name=f"task:{thread_id}",
+            as_type="span",
+            trace_context={"trace_id": task_trace_id(thread_id)},
         )
 
     def span(self, name: str, input: dict | None = None) -> AbstractContextManager:
