@@ -4,6 +4,8 @@ LlmService 的 generation 埋点(LlmTracer)经 Langfuse contextvar 自动挂入�
 无需改 LlmService;未配置 Langfuse(host 留空)时全部 no-op。
 审批决定事件携带 batch_id 落 observation,与 approval_batches 审计行互链。
 任务 trace 的 trace_id 由 thread_id 确定性派生(spec #8 遗留:resume 续写同一 trace,不再分裂)。
+评测根 trace(评测线,无任务轨迹的起草工作台线)的 id 与名同法派生于此——两处派生同址,
+免得「谁依赖谁」的错觉(run 建它、score 挂它,两个编排都不是对方的依赖)。
 """
 
 from __future__ import annotations
@@ -23,6 +25,24 @@ def task_trace_id(thread_id: str) -> str:
     无状态、无查库;可读标记留在 observation 名(``task:<thread_id>``)上。
     """
     return uuid5(NAMESPACE_OID, thread_id).hex
+
+
+def eval_root_trace_name(scenario_id: str) -> str:
+    """评测根 trace 的**可读标记**(trace 名 = 该名字;id 是它的确定性派生)。
+
+    跑批器建 trace(``evals/projection.create_eval_trace``)与回评读分数两处共用——名与 id 拆开,
+    改名不悄悄改 id(两处须恒等,见 ``eval_root_trace_id``)。
+    """
+    return f"eval:{scenario_id}"
+
+
+def eval_root_trace_id(scenario_id: str) -> str:
+    """评测根 trace 的确定性 trace_id(与 ``task_trace_id`` 同法:uuid5 的 hex)。
+
+    起草工作台线没有任务轨迹(``POST /api/drafting`` 是同步端点),分数得挂在跑批器自建的
+    评测根 trace 上(ADR-0008)——id 由场景 id 派生,建与挂两处无状态对齐。
+    """
+    return uuid5(NAMESPACE_OID, eval_root_trace_name(scenario_id)).hex
 
 
 class TaskTracer(Protocol):

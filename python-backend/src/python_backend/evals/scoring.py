@@ -38,29 +38,10 @@ from python_backend.core.citations import check_citations
 from python_backend.evals.judge import Judge, JudgeRequest, RubricScore
 from python_backend.evals.schema import Scenario
 from python_backend.evals.snapshot import Snapshot, read_snapshot
+from python_backend.infrastructure.tracing import eval_root_trace_id
 
 # 机械防伪引在分数稳定键里的段名(判据序号段的并列物):零 LLM、全量跑、不设开关(ADR-0008)
 MECHANICAL_KEY = "机械"
-
-
-def eval_root_trace_name(scenario_id: str) -> str:
-    """工作台线评测根 trace 的**可读标记**(trace 名 = 该名字;id 是它的确定性派生)。
-
-    跑批器建 trace(``projection.create_eval_trace``)与回评读分数两处共用——原名与 id 拆开,
-    改名不悄悄改 id(两处须恒等,见 ``eval_root_trace_id``)。
-    """
-    return f"eval:{scenario_id}"
-
-
-def eval_root_trace_id(scenario_id: str) -> str:
-    """工作台线的**评测根 trace** id:由场景 id 确定性派生(与 ``task_trace_id`` 同法)。
-
-    工作台线(起草台)没有任务轨迹,分数得挂在跑批器自建的评测根 trace 上(ADR-0008);
-    任务线用快照随带的任务 trace,**只有缺 trace 的快照**走这里——两条线共用一套分数形状。
-    langfuse 的 trace_id 契约是 32 位小写十六进制(4.x ``_is_valid_trace_id``),故取
-    ``uuid5(NAMESPACE_OID, …)`` 的 hex;可读标记留给 trace 名(``eval_root_trace_name``,run 时落,#60)。
-    """
-    return uuid5(NAMESPACE_OID, eval_root_trace_name(scenario_id)).hex
 
 
 @dataclass(frozen=True)

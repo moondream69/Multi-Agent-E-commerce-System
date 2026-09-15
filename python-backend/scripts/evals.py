@@ -61,7 +61,13 @@ from python_backend.evals.corpus_anchor import CorpusAnchor, corpus_anchor
 from python_backend.evals.judge import AnthropicJudge, load_judge_config
 from python_backend.evals.projection import DATASET_NAME, build_langfuse_client, build_projection, load_langfuse_config
 from python_backend.evals.runner import CLIENT_TIMEOUT, SENTINEL_SKU, EvalRunner
-from python_backend.evals.schema import WORKBENCH_SURFACE, Scenario, load_scenarios
+from python_backend.evals.schema import (
+    CUSTOMER_TASK_SURFACE,
+    PRODUCT_REPORT_SURFACE,
+    WORKBENCH_SURFACE,
+    Scenario,
+    load_scenarios,
+)
 from python_backend.evals.scores import LangfuseScores
 from python_backend.evals.scoring import (
     ScoreRecord,
@@ -78,7 +84,7 @@ DEMO_DATA_DIR = REPO_ROOT / "docs" / "demo-data"
 
 # 已落地的产出面:选品报告(票 #58)/ 客服草稿两线(票 #60:工作台 = 同步端点 + 自建评测根 trace,
 # 任务内 = 经 /api/tasks 取客服切片);其余面(规划切片)的场景显式跳过并打印
-IMPLEMENTED_SURFACES = ("选品报告", WORKBENCH_SURFACE, "客服草稿·任务内")
+IMPLEMENTED_SURFACES = (PRODUCT_REPORT_SURFACE, WORKBENCH_SURFACE, CUSTOMER_TASK_SURFACE)
 
 # 评测净库默认名(与验证库 mae_verify、演示库 mae 各不相干)
 DEFAULT_EVAL_DB = "mae_eval"

@@ -39,7 +39,11 @@ class SliceOutput:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """一条场景的一次运行(快照文件名 = ``<scenario_id>.json``)。"""
+    """一条场景的一次运行(快照文件名 = ``<scenario_id>.json``)。
+
+    ``thread_id``:任务线 = 任务线程 id;工作台线(无任务轨迹的同步端点)留**空串**——
+    该字段是必填的 ``str``(改可空即改 schema、旧快照读不动),空串即「该线没有线程」的如实标注。
+    """
 
     scenario_id: str
     surface: str

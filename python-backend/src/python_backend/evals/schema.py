@@ -38,9 +38,13 @@ from typing import Any
 import yaml
 
 # 评测面:决定场景怎么跑(打哪个入口)与判据维度(spec #55 Solution C)
-# 工作台线具名:跑批器按它分派(同步端点、无任务轨迹、跑批器自建评测根 trace),不散写字面量
+# 四个面都具名:跑批器按面分派(工作台线 = 同步端点 + 自建评测根 trace)、CLI 按面筛可跑集——
+# 两处都引用常量,不散写字面量
+PRODUCT_REPORT_SURFACE = "选品报告"
 WORKBENCH_SURFACE = "客服草稿·工作台"
-SURFACES = ("选品报告", WORKBENCH_SURFACE, "客服草稿·任务内", "规划切片")
+CUSTOMER_TASK_SURFACE = "客服草稿·任务内"
+PLANNING_SURFACE = "规划切片"
+SURFACES = (PRODUCT_REPORT_SURFACE, WORKBENCH_SURFACE, CUSTOMER_TASK_SURFACE, PLANNING_SURFACE)
 # 工作台线的目标语言缺省:与端点缺省一致(其余线的语言随输入文本,该字段对它们无意义)
 DEFAULT_LOCALE = "zh"
 

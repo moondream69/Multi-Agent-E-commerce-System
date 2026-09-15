@@ -28,7 +28,6 @@ import httpx
 from python_backend.evals.corpus_anchor import CorpusAnchor
 from python_backend.evals.projection import Projection
 from python_backend.evals.schema import WORKBENCH_SURFACE, Scenario
-from python_backend.evals.scoring import eval_root_trace_id, eval_root_trace_name
 from python_backend.evals.snapshot import (
     SliceOutput,
     Snapshot,
@@ -36,7 +35,7 @@ from python_backend.evals.snapshot import (
     snapshot_path,
     write_snapshot,
 )
-from python_backend.infrastructure.tracing import task_trace_id
+from python_backend.infrastructure.tracing import eval_root_trace_id, eval_root_trace_name, task_trace_id
 
 # 净库哨兵商品 SKU(reset-db 写入、run 校验;固定值,勿改——两处共用同一常量)
 SENTINEL_SKU = "EVAL-SENTINEL"

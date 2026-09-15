@@ -17,9 +17,8 @@ import pytest
 from python_backend.evals.corpus_anchor import CorpusAnchor
 from python_backend.evals.runner import SEED_STEPS, SENTINEL_SKU, EvalRunner
 from python_backend.evals.schema import Scenario
-from python_backend.evals.scoring import eval_root_trace_id, eval_root_trace_name
 from python_backend.evals.snapshot import read_snapshot
-from python_backend.infrastructure.tracing import task_trace_id
+from python_backend.infrastructure.tracing import eval_root_trace_id, eval_root_trace_name, task_trace_id
 
 NOW = datetime(2026, 9, 15, 4, 0, tzinfo=UTC)
 ANCHOR = CorpusAnchor(fingerprint="f" * 64, batch_id="batch-1")

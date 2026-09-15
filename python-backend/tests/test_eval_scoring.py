@@ -15,11 +15,11 @@ from python_backend.evals.judge import JudgeError, JudgeRequest, RubricScore
 from python_backend.evals.schema import Scenario
 from python_backend.evals.scoring import (
     ScoreRecord,
-    eval_root_trace_id,
     load_run_snapshots,
     score_run,
 )
 from python_backend.evals.snapshot import SliceOutput, Snapshot, write_snapshot
+from python_backend.infrastructure.tracing import eval_root_trace_id
 
 NOW = datetime(2026, 9, 15, 6, 0, tzinfo=UTC)
 FINGERPRINT = "f" * 64
@@ -53,14 +53,16 @@ def _workbench_scenario() -> Scenario:
 def _snapshot(
     *slices: SliceOutput,
     scenario_id: str = "coffee-maker-us",
+    surface: str = "选品报告",
+    thread_id: str = "t-1",
     trace_id: str = "a3f1c2d4e5b60718293a4b5c6d7e8f90",
     dataset_run_id: str | None = "ds-run-1",
 ) -> Snapshot:
     return Snapshot(
         scenario_id=scenario_id,
-        surface="选品报告",
+        surface=surface,
         run_name="run-1",
-        thread_id="t-1",
+        thread_id=thread_id,
         trace_id=trace_id,
         status="completed",
         slices=slices,
@@ -71,10 +73,15 @@ def _snapshot(
     )
 
 
-def _slice(answer: str = ANSWER_WITH_CITATIONS, citations: tuple[dict, ...] = CITATIONS, no: int = 1) -> SliceOutput:
+def _slice(
+    answer: str = ANSWER_WITH_CITATIONS,
+    citations: tuple[dict, ...] = CITATIONS,
+    no: int = 1,
+    agent: str = "product_research",
+) -> SliceOutput:
     return SliceOutput(
         no=no,
-        agent="product_research",
+        agent=agent,
         description="检索情报并给出结论",
         answer=answer,
         citations=citations,
@@ -283,27 +290,12 @@ def test_workbench_snapshot_scores_like_task_line(tmp_path: Path) -> None:
     trace_id = eval_root_trace_id("cs-workbench-shipping-en")
     write_snapshot(
         tmp_path / "run-1",
-        Snapshot(
+        _snapshot(
+            _slice(agent="drafting"),
             scenario_id="cs-workbench-shipping-en",
             surface="客服草稿·工作台",
-            run_name="run-1",
             thread_id="",
             trace_id=trace_id,
-            status="completed",
-            slices=(
-                SliceOutput(
-                    no=1,
-                    agent="drafting",
-                    description="起草工作台:查证(FAQ/订单/商品)→ 多语草稿",
-                    answer=ANSWER_WITH_CITATIONS,
-                    citations=CITATIONS,
-                    executed=True,
-                ),
-            ),
-            corpus_fingerprint=FINGERPRINT,
-            corpus_batch_id="batch-1",
-            dataset_run_id="ds-run-1",
-            recorded_at=NOW,
         ),
     )
     judge = FakeJudge()
@@ -323,16 +315,6 @@ def test_workbench_snapshot_scores_like_task_line(tmp_path: Path) -> None:
     assert all(record.metadata["surface"] == "客服草稿·工作台" for record in sink.records)
     assert all(record.metadata["thread_id"] == "" for record in sink.records)
     assert judge.requests[0].input == "How long does delivery usually take?"
-
-
-def test_eval_root_trace_id_is_hex32_and_deterministic() -> None:
-    """评测根 trace id:32 位小写十六进制(langfuse 契约)、按场景确定性派生、异场景不相撞。"""
-    trace_id = eval_root_trace_id("coffee-maker-us")
-
-    assert len(trace_id) == 32 and trace_id == trace_id.lower()
-    assert all(char in "0123456789abcdef" for char in trace_id)
-    assert trace_id == eval_root_trace_id("coffee-maker-us")
-    assert trace_id != eval_root_trace_id("smart-band-us")
 
 
 def test_snapshot_without_dataset_run_id_scores_without_link(tmp_path: Path) -> None:

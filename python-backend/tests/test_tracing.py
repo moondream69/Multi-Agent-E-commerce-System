@@ -12,7 +12,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from python_backend.api.app import create_app
 from python_backend.core.graph import build_supervisor
-from python_backend.infrastructure.tracing import LangfuseTaskTracer, NullTaskTracer, task_trace_id
+from python_backend.infrastructure.tracing import (
+    LangfuseTaskTracer,
+    NullTaskTracer,
+    eval_root_trace_id,
+    task_trace_id,
+)
 from tests.conftest import (
     FakeApply,
     InMemoryApprovalBatchStore,
@@ -166,3 +171,12 @@ def test_task_trace_id_is_langfuse_compatible() -> None:
     assert re.fullmatch(r"[0-9a-f]{32}", trace_id), trace_id
     assert task_trace_id("0f6d5b1e-0000-4000-8000-000000000001") == trace_id, "同 thread 恒等(跨 resume 合并)"
     assert task_trace_id("other-thread") != trace_id
+
+
+def test_eval_root_trace_id_is_hex32_and_deterministic() -> None:
+    """评测根 trace id(票 #60):同契约(hashlib 家族小写 hex)+ 按场景确定性派生、异场景不相撞。"""
+    trace_id = eval_root_trace_id("coffee-maker-us")
+
+    assert re.fullmatch(r"[0-9a-f]{32}", trace_id), trace_id
+    assert eval_root_trace_id("coffee-maker-us") == trace_id, "同场景恒等(建与挂两处对齐)"
+    assert eval_root_trace_id("smart-band-us") != trace_id
