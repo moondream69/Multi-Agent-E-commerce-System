@@ -47,6 +47,7 @@ def _record(
     *,
     dataset_run_id: str | None = "ds-run-1",
     trace_id: str = "a3f1c2d4e5b60718293a4b5c6d7e8f90",
+    judge_model: str = "",
 ) -> ScoreRecord:
     return ScoreRecord(
         name=name,
@@ -55,6 +56,7 @@ def _record(
         trace_id=trace_id,
         dataset_run_id=dataset_run_id,
         metadata={"corpus_fingerprint": "f" * 64},
+        judge_model=judge_model,
     )
 
 
@@ -79,6 +81,17 @@ def test_write_anchors_on_trace_and_carries_dataset_run_in_metadata() -> None:
             "metadata": {"corpus_fingerprint": "f" * 64, "dataset_run_id": "ds-run-1"},
         }
     ]
+
+
+def test_write_carries_judge_model_in_metadata_when_present() -> None:
+    """所判型号随分落库(judge 线);机械线无型号,不塞空字段(如实,不编)。"""
+    client = FakeLangfuseClient()
+
+    LangfuseScores(client).write(_record(judge_model="claude-opus-5"))
+    LangfuseScores(client).write(_record("coffee-maker-us#1#机械", judge_model=""))
+
+    assert client.scores[0]["metadata"]["judge_model"] == "claude-opus-5"
+    assert "judge_model" not in client.scores[1]["metadata"]
 
 
 def test_score_id_is_deterministic_per_stable_key() -> None:

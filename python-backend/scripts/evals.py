@@ -222,7 +222,7 @@ def _score(args: argparse.Namespace) -> None:
         comment = record.comment if len(record.comment) <= 40 else record.comment[:40] + "…"
         print(f"  {record.name} = {record.value} | {comment}")
 
-    result = score_run(snapshots, scenarios, judge=judge, sink=sink, on_record=announce)
+    result = score_run(snapshots, scenarios, judge=judge, sink=sink, on_record=announce, judge_model=judge_config.model)
     sink.flush()  # 冲掉 SDK 缓冲后读回,否则最近写入可能还没上报
     sink.verify(result.records)
     print(f"完成:分数 {len(result.records)} 条(通过 {result.passed} / 失败 {len(result.records) - result.passed})")

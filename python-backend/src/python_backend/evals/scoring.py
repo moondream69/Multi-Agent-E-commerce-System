@@ -34,7 +34,7 @@ from typing import Protocol
 from uuid import NAMESPACE_OID, uuid5
 
 from python_backend.core.citations import check_citations
-from python_backend.evals.judge import Judge, JudgeRequest
+from python_backend.evals.judge import Judge, JudgeRequest, RubricScore
 from python_backend.evals.schema import Scenario
 from python_backend.evals.snapshot import Snapshot, read_snapshot
 
@@ -67,11 +67,28 @@ class ScoreRecord:
     trace_id: str
     dataset_run_id: str | None
     metadata: dict
+    judge_model: str = ""  # judge 判据线所判型号(机械线为空):换 judge 即换分数,型号随分落库
 
     @property
     def score_id(self) -> str:
         """落库 id:``<稳定键>`` 的确定性派生(langfuse 对同 id 幂等覆盖)。"""
         return f"eval-{uuid5(NAMESPACE_OID, self.name).hex}"
+
+
+@dataclass(frozen=True)
+class JudgeSession:
+    """一次回评的判据会话:judge 客户端 + **所判型号**(型号随分数落库——换 judge 即换分数,
+    不记型号就没法按版本读历史)。
+
+    包一层是为了让「客户端 + 型号」作为**一个对象**穿过编排:否则型号得逐层加参数,而分数记录
+    的组装在最后一层(``_record``)。``__call__`` 让会话可直接当 judge 客户端用。
+    """
+
+    judge: Judge
+    model: str = ""
+
+    def __call__(self, request: JudgeRequest) -> list[RubricScore]:
+        return self.judge.judge(request)
 
 
 class ScoreSink(Protocol):
@@ -117,7 +134,7 @@ def scenario_map(scenarios: Sequence[Scenario], snapshots: Sequence[Snapshot]) -
     return by_id
 
 
-def score_snapshot(snapshot: Snapshot, scenario: Scenario, judge: Judge) -> tuple[ScoreRecord, ...]:
+def score_snapshot(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) -> tuple[ScoreRecord, ...]:
     """一份快照 → 分数清单:逐切片跑机械线 + judge 线,组装成可落库的记录(不写库)。
 
     空切片即报错(跑批不落空快照,快照无产出等于无可评对象);未实现的产出面在 CLI 层跳过
@@ -142,17 +159,20 @@ def score_run(
     judge: Judge,
     sink: ScoreSink,
     on_record: Callable[[ScoreRecord], None] | None = None,
+    judge_model: str = "",
 ) -> ScoringResult:
     """快照集与真源场景配对后逐条评分并落库;返回全部记录(与写入顺序一致)。
 
-    ``on_record`` 只作进度回显(一条场景烧一次 judge 调用,CLI 要能报出刚评到哪)。judge 失败
-    或坏输出经 ``JudgeError`` 抛出:评到一半中止(留下的分是**已判定的那部分**,不是半份判定),
+    ``judge_model`` 是**所判型号**(随分数落 metadata,供按 judge 版本读历史);机械线无 judge
+    不记。``on_record`` 只作进度回显(一条场景烧一次 judge 调用,CLI 要能报出刚评到哪)。judge
+    失败或坏输出经 ``JudgeError`` 抛出:评到一半中止(已落的分是**已判定的那部分**,不是半份判定),
     快照仍在盘上,可原样重跑。
     """
+    session = JudgeSession(judge=judge, model=judge_model)
     by_id = scenario_map(scenarios, snapshots)
     records: list[ScoreRecord] = []
     for snapshot in snapshots:
-        for record in score_snapshot(snapshot, by_id[snapshot.scenario_id], judge):
+        for record in score_snapshot(snapshot, by_id[snapshot.scenario_id], session):
             sink.write(record)
             records.append(record)
             if on_record is not None:
@@ -200,10 +220,10 @@ def _judge_records(
     citations: tuple[dict, ...],
     criteria: tuple[str, ...],
     indexes: tuple[int, ...],
-    judge: Judge,
+    judge: JudgeSession,
 ) -> tuple[ScoreRecord, ...]:
     """judge 判据:一次请求发全部判据,逐条收 0/1 + comment(坏输出在 judge 层即报错)。"""
-    scores = judge.judge(
+    scores = judge(
         JudgeRequest(
             scenario_id=snapshot.scenario_id,
             slice_no=slice_no,
@@ -221,13 +241,27 @@ def _judge_records(
             value=1 if score.passed else 0,
             comment=score.comment,
             criterion=criteria[score.index - 1],
+            judge_model=judge.model,
         )
         for score in scores
     )
 
 
-def _record(snapshot: Snapshot, slice_no: int, *, suffix: str, value: int, comment: str, criterion: str) -> ScoreRecord:
-    """一条分数记录:稳定键 + 互链(trace / dataset run)+ 语料版本锚(主锚 + 附记)。"""
+def _record(
+    snapshot: Snapshot,
+    slice_no: int,
+    *,
+    suffix: str,
+    value: int,
+    comment: str,
+    criterion: str,
+    judge_model: str = "",
+) -> ScoreRecord:
+    """一条分数记录:稳定键 + 互链(trace / dataset run)+ 语料版本锚(主锚 + 附记)。
+
+    ``judge_model`` 由 judge 线带上(机械线留空)——型号入 metadata 是**版本锚的一部分**:
+    与语料指纹同理,不记型号的历史分数无从按 judge 版本归因。
+    """
     return ScoreRecord(
         name=f"{snapshot.scenario_id}#{slice_no}#{suffix}",
         value=value,
@@ -244,4 +278,5 @@ def _record(snapshot: Snapshot, slice_no: int, *, suffix: str, value: int, comme
             "corpus_batch_id": snapshot.corpus_batch_id,
             "criterion": criterion,
         },
+        judge_model=judge_model,
     )

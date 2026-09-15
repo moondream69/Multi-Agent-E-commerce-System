@@ -49,10 +49,17 @@ class LangfuseScores:
         )
 
     def _metadata(self, record: ScoreRecord) -> dict:
-        """分数 metadata:编排给的原样带上,另补 dataset run id(锚只能给一个,它走这里)。"""
-        if record.dataset_run_id is None:
-            return record.metadata
-        return {**record.metadata, "dataset_run_id": record.dataset_run_id}
+        """分数 metadata:编排给的原样带上,另补 dataset run id(锚只能给一个,它走这里)。
+
+        ``judge_model`` 非空时同样随带:换 judge 会换分数,不记型号就无法按版本读历史
+        (机械线无 judge,如实不写)。
+        """
+        extra = {}
+        if record.dataset_run_id is not None:
+            extra["dataset_run_id"] = record.dataset_run_id
+        if record.judge_model:
+            extra["judge_model"] = record.judge_model
+        return {**record.metadata, **extra} if extra else record.metadata
 
     def flush(self) -> None:
         """冲掉 SDK 缓冲(写完必须调,否则最近写入可能还没上报)。"""

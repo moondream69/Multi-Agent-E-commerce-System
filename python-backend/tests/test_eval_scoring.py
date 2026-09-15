@@ -152,7 +152,13 @@ def test_full_score_records_link_trace_dataset_run_and_corpus_anchor(tmp_path: P
     write_snapshot(tmp_path / "run-1", _snapshot(_slice()))
     sink = RecordingSink()
 
-    score_run(load_run_snapshots(tmp_path / "run-1"), [_scenario()], judge=FakeJudge(), sink=sink)
+    score_run(
+        load_run_snapshots(tmp_path / "run-1"),
+        [_scenario()],
+        judge=FakeJudge(),
+        sink=sink,
+        judge_model="claude-opus-5",
+    )
 
     record = sink.records[0]
     assert record.trace_id == "a3f1c2d4e5b60718293a4b5c6d7e8f90"
@@ -167,6 +173,25 @@ def test_full_score_records_link_trace_dataset_run_and_corpus_anchor(tmp_path: P
         "corpus_batch_id": "batch-1",
         "criterion": "机械防伪引:答案引用标记 ⇄ citations 载荷一一对应,残留未解析标记 = 疑似伪造",
     }
+
+
+def test_judge_model_rides_judge_scores_only(tmp_path: Path) -> None:
+    """所判型号随 judge 分落库(换 judge 即换分数,不记型号无从按版本归因);机械线无 judge,不记。"""
+    write_snapshot(tmp_path / "run-1", _snapshot(_slice()))
+    sink = RecordingSink()
+
+    score_run(
+        load_run_snapshots(tmp_path / "run-1"),
+        [_scenario()],
+        judge=FakeJudge(),
+        sink=sink,
+        judge_model="claude-opus-5",
+    )
+
+    by_name = {record.name: record for record in sink.records}
+    assert by_name["coffee-maker-us#1#1"].judge_model == "claude-opus-5"
+    assert by_name["coffee-maker-us#1#1"].metadata["criterion"] == "判据甲"
+    assert by_name["coffee-maker-us#1#机械"].judge_model == ""  # 机械判据零 LLM,无型号可记
 
 
 def test_judge_comment_and_criterion_land_in_score_record(tmp_path: Path) -> None:
