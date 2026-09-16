@@ -232,7 +232,12 @@ uv run python scripts/evals.py score [--run <run 名>]  # 4. 回评(不重跑任
 - **前置**:Langfuse 已启用(见「生产切换清单」第 6 步,含两条栈内前置);缺 Langfuse / judge 密钥时跑批器**显式报错**。
 - **防呆**:净库插有哨兵商品 `EVAL-SENTINEL`;app 没切到净库时 `run` 直接报错、不写任何数据。
 - **回评解耦(run/score)**:`score` 只读快照(`docs/evals/runs/<run 名>/*.json`),rubric 从 `docs/evals/*.yaml` **现读**
-  ——改 rubric / 换 judge(`.env` 的 `JUDGE_MODEL`)只重跑 score,任务不被重跑,分数恒覆盖同一条(稳定键派生 id)。
+  ——改 rubric / 换 judge(`.env` 的 `JUDGE_MODEL`)只重跑 score,任务不被重跑,新口径**另落一条**分数
+  (id 由「稳定键 + run + trace + 判据文案 + judge 型号」确定性派生)。
+  ⚠️ **同 id 的重写不是「覆盖」,是就地更新且 trace 不动**(2026-09-16 实测:事件带已存在的 `score_id` 时,
+  name/comment/value 覆盖到那行既有记录上,而 `trace_id` 保持原值,分数不会迁到这次给的 trace)。
+  任务线每 run 换 trace,所以 id 里少「哪一次跑批」就会把重评全更新到**上一次 run 的 trace** 上——
+  实测 33 条全落空、读回一条不剩。故 id 由「稳定键 + run + trace + 判据文案 + judge 型号」五分量派生。
   judge 走 Anthropic 原生面;`.env` 的 `JUDGE_API_URL` 按 messages 端点给(`…/v1/messages`,客户端自行去版本段)。
 - **产出面按 surface 分派(四个面 / 两条产出线)**:任务线(`选品报告` / `客服草稿·任务内` / `规划切片`)
   经 `POST /api/tasks` 取切片产出;**规划切片面取同一次跑批的 plan 段**(任务详情的 `plan` 随快照落盘,

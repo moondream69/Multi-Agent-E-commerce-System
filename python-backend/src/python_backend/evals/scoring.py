@@ -55,8 +55,9 @@ PLAN_SLICE_KEY = "plan"
 class ScoreRecord:
     """一条待落的分数:稳定键 + 值(0/1)+ 理由 + 互链(trace / dataset run)+ 语料版本锚。
 
-    ``score_id`` 由稳定键确定性派生(同一场景/切片/判据恒同一 id):换 rubric 重评**覆盖同一
-    条分数**而不是叠一层,历史不因重评堆成两条线(与稳定键同一目的)。
+    ``score_id`` 由**被评对象 + 判定口径**确定性派生(见 ``score_id``):同一份产出用同一套判据、
+    同一个 judge 评 ⇒ 恒同一 id(重评不再叠一行);任一变了(换 run / 改 rubric / 换 judge)⇒
+    换 id,新分数照落。
     """
 
     name: str
@@ -66,11 +67,27 @@ class ScoreRecord:
     dataset_run_id: str | None
     metadata: dict
     judge_model: str = ""  # judge 判据线所判型号(机械线为空):换 judge 即换分数,型号随分落库
+    criterion: str = ""  # 该条的判据文案(rubric 指纹的实体):改它 = 改判定口径 ⇒ 换 id
+    run_name: str = ""  # 跑批名(**哪一次跑批**):工作台线的 trace 按场景确定性派生、跨 run 恒同,故「换 run」只有它认得出
 
     @property
     def score_id(self) -> str:
-        """落库 id:``<稳定键>`` 的确定性派生(langfuse 对同 id 幂等覆盖)。"""
-        return f"eval-{uuid5(NAMESPACE_OID, self.name).hex}"
+        """落库 id:``稳定键 + run + trace + 判据文案 + judge 型号`` 的确定性派生。
+
+        **五个分量缺一不可**(2026-09-16 实测,少任一个,分数都会落到**上一次 run 的 trace** 上):
+
+        - 稳定键:同一场景/切片/判据的定位;
+        - ``run_name``:**哪一次跑批**。工作台线的 ``trace_id`` 由 ``eval_root_trace_id(场景id)``
+          派生、跨 run 恒同,所以「换 run 该另落一条」这件事只有 ``run_name`` 认得出;
+        - ``trace_id``:分数锚在哪条 trace 上(任务线逐 run 不同,与上一条互为印证);
+        - ``criterion``:rubric 指纹——改 rubric 重评要另落一条,id 不变就落不到新 trace;
+        - ``judge_model``:换 judge 即换判定口径,同理。
+
+        **不含值与理由**:判定结果不参与身份,故同口径重评恒同 id(命中同一条记录)。
+        落库侧的实测语义(**同 id 的写入是就地更新、``trace_id`` 不动**)见 ``scores.py`` 模块文档。
+        """
+        material = "\x1f".join((self.name, self.run_name, self.trace_id, self.criterion, self.judge_model))
+        return f"eval-{uuid5(NAMESPACE_OID, material).hex}"
 
 
 @dataclass(frozen=True)
@@ -351,4 +368,6 @@ def _record(
             "criterion": criterion,
         },
         judge_model=judge_model,
+        criterion=criterion,
+        run_name=snapshot.run_name,
     )
