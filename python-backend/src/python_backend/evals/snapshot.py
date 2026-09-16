@@ -1,12 +1,16 @@
 """产出快照(spec #55 B / 票 #58):跑批的**本地真源**——``score`` 只读快照回评,不重跑任务。
 
 一条场景一次运行 = 一个 JSON 文件(``<快照目录>/<run 名>/<场景 id>.json``):场景 id / thread_id /
-trace_id / **切片级产出**(answer / citations / executed)/ 语料版本锚 / 时间。目录由调用方给定
-(CLI 默认 ``docs/evals/runs/``,gitignore)。
+trace_id / **切片级产出**(answer / citations / executed)/ **规划段**(plan,票 #61)/ 语料版本锚 / 时间。
+目录由调用方给定(CLI 默认 ``docs/evals/runs/``,gitignore)。
 
 **切片级保真,不拼顶层长文**:citations 编号是**切片内**编号(``build_citations`` 每片各自从 1 排),
 把多片答案拼成长文会让机械防伪引(#57)的编号集跨片串味——A 片幻觉的 ``[2]`` 撞上 B 片合法的 ``[2]``
 就洗成了合法引用(假通过)。故快照保持 ``slices[]`` 分组,回评逐片判。
+
+**规划段随任务线产出一起落盘**(票 #61):规划切片场景评的就是它——plan 不是单独跑出来的,是**同一次
+任务跑批**的规划产物(暂存假设 5:不另设「只规划」捷径)。任务线快照一律随带(零分叉:同一条产出线的
+快照同一种形状,不给「要不要带」加开关);工作台线无任务轨迹,该字段如实留空。
 
 语料版本锚两种(ADR-0008):``corpus_fingerprint`` 为主锚(真源内容哈希,离线可重算、不受净库重建
 影响)、``corpus_batch_id`` 为尽力附记(台账读不到即 null,如实标注);``dataset_run_id`` 由投影回填,
@@ -21,8 +25,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# 快照 schema 版本:字段增删即升版(读旧快照时报错清晰,不静默按新形状解释)
-SNAPSHOT_VERSION = 1
+# 快照 schema 版本:字段增删即升版(读旧快照时报错清晰,不静默按新形状解释)。
+# **2**(票 #61):随带 ``plan`` 规划段——规划切片场景的判分对象。
+# **1** → 2 的断代是**有意**的:版本闸拒读旧快照,而旧 run 的快照重跑一次即可(产出快照是
+# 一次性产物,不承担历史可比性——历史分数归 Langfuse,不归本地 JSON)。
+SNAPSHOT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -38,11 +45,28 @@ class SliceOutput:
 
 
 @dataclass(frozen=True)
+class SlicePlanOutput:
+    """一条切片的**规划声明**(``GET /api/tasks/{thread_id}`` 的 plan 段里的一条;票 #61)。
+
+    名字带 Output 以别于 ``core/planning.Slice``(那是规划器内部对象)——本类是 API 响应的载荷投影。
+    """
+
+    no: int
+    agent: str
+    description: str
+    depends_on: tuple[int, ...]
+    approval_points: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """一条场景的一次运行(快照文件名 = ``<scenario_id>.json``)。
 
     ``thread_id``:任务线 = 任务线程 id;工作台线(无任务轨迹的同步端点)留**空串**——
     该字段是必填的 ``str``(改可空即改 schema、旧快照读不动),空串即「该线没有线程」的如实标注。
+
+    ``plan``:同任务跑批的规划段(任务线一律随带;工作台线无任务轨迹即空元组)——规划切片场景
+    评的就是它(票 #61),其余线的产出不消费它,如实带着不另设开关。
     """
 
     scenario_id: str
@@ -52,6 +76,7 @@ class Snapshot:
     trace_id: str
     status: str
     slices: tuple[SliceOutput, ...]
+    plan: tuple[SlicePlanOutput, ...]  # 同任务跑批的规划段(#61);工作台线无任务轨迹即空
     corpus_fingerprint: str
     corpus_batch_id: str | None  # 摄入台账附记:读不到即 None(如实标注,不编)
     dataset_run_id: str | None  # Langfuse dataset run 回填(#59 落分互链);投影未成功即 None
@@ -89,6 +114,64 @@ def slices_from_results(results: object) -> tuple[SliceOutput, ...]:
     return tuple(sorted(slices, key=lambda item: item.no))
 
 
+def slices_from_plan(plan: object) -> tuple[SlicePlanOutput, ...]:
+    """``GET /api/tasks/{thread_id}`` 的 ``plan``(切片计划载荷)→ 规划切片列表(按切片号升序)。
+
+    缺席(``None``/空)如实返回空元组——工作台线没有规划段,由调用方判「该线不该有」还是「没跑出计划」;
+    形状不符(条目不是映射 / 切片号不是整数 / depends_on 不是整数清单)即报错:那是 API 契约违反。
+    """
+    if plan is None:
+        return ()
+    if not isinstance(plan, dict):
+        raise ValueError(f"plan 须是「slices 清单」映射,实际是 {type(plan).__name__}")
+    entries = plan.get("slices")
+    if not isinstance(entries, list):
+        raise ValueError("plan.slices 须是清单")
+    slices: list[SlicePlanOutput] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"plan 的切片不是映射(实际 {type(entry).__name__})")
+        depends_on = entry.get("depends_on") or []
+        if not isinstance(depends_on, list) or not all(isinstance(item, int) for item in depends_on):
+            raise ValueError(f"plan 切片 depends_on 须是整数清单:{depends_on!r}")
+        slices.append(
+            SlicePlanOutput(
+                no=_plan_integer(entry.get("no")),
+                agent=str(entry.get("agent", "")),
+                description=str(entry.get("description", "")),
+                depends_on=tuple(depends_on),
+                approval_points=tuple(str(point) for point in entry.get("approval_points") or ()),
+            )
+        )
+    return tuple(sorted(slices, key=lambda item: item.no))
+
+
+def plan_lines(plan: tuple[SlicePlanOutput, ...]) -> list[str]:
+    """规划段 → 判据提示词里的可读行(依赖声明 / 审批点如实呈现,缺即标「无」)。
+
+    **不在这里替 judge 判断合理性**(「划分是否合理」是判据的活),也不各自抄一份计划拼法:
+    ``SlicePlanOutput`` 的定义处即它的渲染处(判分面只收已成形文本)。
+    """
+    lines = [f"(共 {len(plan)} 片)"]
+    lines.extend(
+        f"切片 {item.no}:业务域 {item.agent} | 说明:{item.description}"
+        f" | 依赖:{_number_list(item.depends_on)} | 审批点:{'、'.join(item.approval_points) or '无'}"
+        for item in plan
+    )
+    return lines
+
+
+def _number_list(numbers: tuple[int, ...]) -> str:
+    return "、".join(str(number) for number in numbers) if numbers else "无"
+
+
+def _plan_integer(value: Any) -> int:
+    """plan 条目的切片号:非整数即报错(不 ``int()`` 硬转——那会把 ``"x"`` 崩成栈)。"""
+    if not isinstance(value, int):
+        raise ValueError(f"plan 的切片号不是整数:{value!r}")
+    return value
+
+
 def snapshot_path(run_dir: Path, scenario_id: str) -> Path:
     """快照文件路径 = ``<run 目录>/<场景 id>.json``(场景 id 全局唯一,即文件名的唯一性来源)。"""
     return run_dir / f"{scenario_id}.json"
@@ -103,7 +186,12 @@ def write_snapshot(run_dir: Path, snapshot: Snapshot) -> Path:
 
 
 def read_snapshot(path: Path) -> Snapshot:
-    """读快照 → 快照对象;形状非法即报错(报错须指明**哪个文件、哪个字段**)。"""
+    """读快照 → 快照对象;形状非法即报错(报错须指明**哪个文件、哪个字段**)。
+
+    ``plan`` 字段缺席读成空(工作台线**当前版本**的快照本就不带这一项:``slices_from_plan`` 对
+    空载荷返回空元组)——这是**同一版本内**的合法留空,与「版本闸拒读**旧版**文件」是两回事:
+    前者是字段级容错,后者是断代(旧 run 重跑一次即可)。
+    """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -132,11 +220,24 @@ def read_snapshot(path: Path) -> Snapshot:
         trace_id=str(raw["trace_id"]),
         status=str(raw["status"]),
         slices=tuple(_slice_from_json(entry, path) for entry in entries),
+        plan=_plan_from_json(raw.get("plan"), path),
         corpus_fingerprint=str(raw.get("corpus_fingerprint", "")),
         corpus_batch_id=_optional_str(raw.get("corpus_batch_id")),
         dataset_run_id=_optional_str(raw.get("dataset_run_id")),
         recorded_at=recorded_at,
     )
+
+
+def _plan_from_json(raw: Any, path: Path) -> tuple[SlicePlanOutput, ...]:
+    """快照里的规划段 → 规划切片列表;形状坏掉即报错点名文件(``slices_from_plan`` 同一套规则)。"""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}:plan 须是清单(切片计划载荷的切片数组)")
+    try:
+        return slices_from_plan({"slices": raw})
+    except ValueError as error:
+        raise ValueError(f"{path}:{error}") from error
 
 
 def _slice_from_json(entry: Any, path: Path) -> SliceOutput:
@@ -179,6 +280,16 @@ def _payload(snapshot: Snapshot) -> dict:
                 "executed": item.executed,
             }
             for item in snapshot.slices
+        ],
+        "plan": [
+            {
+                "no": item.no,
+                "agent": item.agent,
+                "description": item.description,
+                "depends_on": list(item.depends_on),
+                "approval_points": list(item.approval_points),
+            }
+            for item in snapshot.plan
         ],
         "corpus_fingerprint": snapshot.corpus_fingerprint,
         "corpus_batch_id": snapshot.corpus_batch_id,

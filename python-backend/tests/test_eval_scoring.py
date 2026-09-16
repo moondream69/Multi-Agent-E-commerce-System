@@ -1,4 +1,4 @@
-"""缝 2(票 #59):``score`` 编排分支——注入假 judge 与假分数池,断言「发了什么、落了什么」。
+"""缝 2(票 #59;规划切片面 #61):``score`` 编排分支——注入假 judge 与假分数池,断言「发了什么、落了什么」。
 
 离线:不触网、不触 Langfuse、不烧 token。快照经**真读写**(``snapshot.py`` 的落盘格式)产生,
 故也是快照回读路径的联测;机械防伪引判直接消费 ``core/citations.py`` 的纯函数(#57)。
@@ -14,11 +14,12 @@ import pytest
 from python_backend.evals.judge import JudgeError, JudgeRequest, RubricScore
 from python_backend.evals.schema import Scenario
 from python_backend.evals.scoring import (
+    PLAN_SLICE_KEY,
     ScoreRecord,
     load_run_snapshots,
     score_run,
 )
-from python_backend.evals.snapshot import SliceOutput, Snapshot, write_snapshot
+from python_backend.evals.snapshot import SliceOutput, Snapshot, plan_lines, slices_from_plan, write_snapshot
 from python_backend.infrastructure.tracing import eval_root_trace_id
 
 NOW = datetime(2026, 9, 15, 6, 0, tzinfo=UTC)
@@ -33,6 +34,27 @@ CITATIONS = (
     },
 )
 ANSWER_WITH_CITATIONS = "美国市场咖啡机需求上行 [1]"
+
+# GET /api/tasks/{thread_id} 的 plan 段(票 #61):两片,第二片声明依赖第一片
+PLAN = {
+    "slices": [
+        {
+            "no": 1,
+            "agent": "product_research",
+            "description": "检索美国市场情报",
+            "depends_on": [],
+            "approval_points": [],
+        },
+        {
+            "no": 2,
+            "agent": "product_research",
+            "description": "按情报给选品结论",
+            "depends_on": [1],
+            "approval_points": [],
+        },
+    ]
+}
+PLAN_RUBRIC = ("依赖声明与执行先序一致", "切片划分合理(≤5 片)", "领域路由正确")
 
 
 def _scenario(scenario_id: str = "coffee-maker-us", rubric: tuple[str, ...] = ("判据甲", "判据乙")) -> Scenario:
@@ -50,8 +72,19 @@ def _workbench_scenario() -> Scenario:
     )
 
 
+def _planning_scenario(rubric: tuple[str, ...] = PLAN_RUBRIC) -> Scenario:
+    """规划切片场景(票 #61):判分对象是快照随带的 plan 段,不是切片产出。"""
+    return Scenario(
+        id="plan-category-trend-zh",
+        surface="规划切片",
+        input="分析一下便携咖啡机在美国市场的选品机会",
+        rubric=rubric,
+    )
+
+
 def _snapshot(
     *slices: SliceOutput,
+    plan: tuple | None = None,
     scenario_id: str = "coffee-maker-us",
     surface: str = "选品报告",
     thread_id: str = "t-1",
@@ -66,6 +99,7 @@ def _snapshot(
         trace_id=trace_id,
         status="completed",
         slices=slices,
+        plan=plan or (),
         corpus_fingerprint=FINGERPRINT,
         corpus_batch_id="batch-1",
         dataset_run_id=dataset_run_id,
@@ -184,7 +218,7 @@ def test_full_score_records_link_trace_dataset_run_and_corpus_anchor(tmp_path: P
     assert record.metadata == {
         "scenario_id": "coffee-maker-us",
         "surface": "选品报告",
-        "slice_no": 1,
+        "slice_no": "1",
         "thread_id": "t-1",
         "run_name": "run-1",
         "corpus_fingerprint": FINGERPRINT,
@@ -355,3 +389,73 @@ def test_missing_run_dir_and_empty_dir_fail_explicitly(tmp_path: Path) -> None:
     (tmp_path / "empty").mkdir()
     with pytest.raises(RuntimeError, match="没有快照"):
         load_run_snapshots(tmp_path / "empty")
+
+
+def test_planning_scenario_scores_plan_segment(tmp_path: Path) -> None:
+    """规划切片面(票 #61):整份计划 → 三条判据一次全判,键走 ``#plan#`` 段;无机械线。
+
+    该面的判分对象是**同任务跑批的 plan 段**(快照随带),不是切片产出——故切片产出照在快照里,
+    一条分也不挂它。
+    """
+    write_snapshot(
+        tmp_path / "run-1",
+        _snapshot(
+            _slice(),
+            plan=slices_from_plan(PLAN),
+            scenario_id="plan-category-trend-zh",
+            surface="规划切片",
+        ),
+    )
+    judge = FakeJudge()
+    sink = RecordingSink()
+
+    result = score_run(load_run_snapshots(tmp_path / "run-1"), [_planning_scenario()], judge=judge, sink=sink)
+
+    assert [record.name for record in sink.records] == [
+        f"plan-category-trend-zh#{PLAN_SLICE_KEY}#1",
+        f"plan-category-trend-zh#{PLAN_SLICE_KEY}#2",
+        f"plan-category-trend-zh#{PLAN_SLICE_KEY}#3",
+    ]
+    assert all(record.value == 1 for record in sink.records)  # 假 judge 全过
+    assert result.passed == 3
+    assert [record.metadata["criterion"] for record in sink.records] == list(PLAN_RUBRIC)
+    assert all(record.metadata["slice_no"] == PLAN_SLICE_KEY for record in sink.records)
+    assert all(record.metadata["surface"] == "规划切片" for record in sink.records)
+
+
+def test_planning_judge_receives_whole_plan_and_no_slices(tmp_path: Path) -> None:
+    """判据一次全发、plan 段整份给(不逐片配对):「依赖声明与先序一致」看的是片间关系。"""
+    write_snapshot(
+        tmp_path / "run-1",
+        _snapshot(
+            _slice(),
+            plan=slices_from_plan(PLAN),
+            scenario_id="plan-category-trend-zh",
+            surface="规划切片",
+        ),
+    )
+    judge = FakeJudge()
+
+    score_run(load_run_snapshots(tmp_path / "run-1"), [_planning_scenario()], judge=judge, sink=RecordingSink())
+
+    assert len(judge.requests) == 1  # 整份计划 = 一次请求(不按切片数拆)
+    request = judge.requests[0]
+    assert request.scenario_id == "plan-category-trend-zh"
+    assert request.criteria == PLAN_RUBRIC
+    assert request.answer == ""  # 该面不判切片文本
+    assert request.citations == ()
+    assert request.plan == "\n".join(plan_lines(slices_from_plan(PLAN)))
+    assert "切片 2:业务域 product_research | 说明:按情报给选品结论 | 依赖:1 | 审批点:无" in request.plan
+
+
+def test_planning_snapshot_without_plan_fails_explicitly(tmp_path: Path) -> None:
+    """规划切片面的快照没有规划段 → 报错点名(不判一份空计划,把「没评到」洗成判定)。"""
+    write_snapshot(
+        tmp_path / "run-1",
+        _snapshot(_slice(), scenario_id="plan-category-trend-zh", surface="规划切片"),
+    )
+
+    with pytest.raises(RuntimeError, match="没有规划段"):
+        score_run(
+            load_run_snapshots(tmp_path / "run-1"), [_planning_scenario()], judge=FakeJudge(), sink=RecordingSink()
+        )

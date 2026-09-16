@@ -31,6 +31,26 @@ SLICE_RESULT = {
     "citations": [{"number": 1, "doc_id": "usitc-digital-trade", "chunks": [{"id": "usitc-digital-trade#3"}]}],
 }
 
+# GET /api/tasks/{thread_id} 的 plan 段(票 #61):同一次任务跑批的规划产出
+PLAN = {
+    "slices": [
+        {
+            "no": 1,
+            "agent": "product_research",
+            "description": "检索美国市场情报",
+            "depends_on": [],
+            "approval_points": [],
+        },
+        {
+            "no": 2,
+            "agent": "product_research",
+            "description": "按情报给选品结论",
+            "depends_on": [1],
+            "approval_points": [],
+        },
+    ]
+}
+
 DRAFT = "Delivery usually takes 5-10 business days [1]"
 DRAFT_CITATIONS = [
     {
@@ -79,6 +99,16 @@ def _workbench_scenario() -> Scenario:
     )
 
 
+def _planning_scenario() -> Scenario:
+    """规划切片场景(票 #61):走任务线,判分对象是任务详情的 plan 段(不另设「只规划」捷径)。"""
+    return Scenario(
+        id="plan-category-trend-zh",
+        surface="规划切片",
+        input="分析一下便携咖啡机在美国市场的选品机会",
+        rubric=("依赖声明与执行先序一致", "切片划分合理(≤5 片)", "领域路由正确"),
+    )
+
+
 def _handler(
     *,
     created: dict | None = None,
@@ -110,7 +140,8 @@ def _handler(
         if path == "/api/tasks":
             return httpx.Response(201, json=created or {"threadId": "t-1", "status": "completed"})
         if path.startswith("/api/tasks/"):
-            return httpx.Response(200, json=detail or {"status": "completed", "results": {"1": SLICE_RESULT}})
+            payload = detail or {"status": "completed", "results": {"1": SLICE_RESULT}, "plan": PLAN}
+            return httpx.Response(200, json=payload)
         if path.startswith("/api/import/"):
             return httpx.Response(200, json={"report": {"created": 1, "skipped": 0, "errors": []}})
         raise AssertionError(f"未预期请求:{path}")
@@ -190,19 +221,55 @@ async def test_workbench_scenario_writes_snapshot_with_its_own_root_trace(tmp_pa
 
 
 async def test_run_dispatches_each_surface_to_its_endpoint(tmp_path: Path) -> None:
-    """同一跑批里两条线各走各的入口:任务线 → /api/tasks,工作台线 → /api/drafting,快照同目录落盘。"""
+    """同一跑批里两条线各走各的入口:任务线 → /api/tasks,工作台线 → /api/drafting,快照同目录落盘。
+
+    规划切片面**复用任务线**(票 #61):它没有自己的入口,走的就是 ``/api/tasks``。
+    """
     calls: dict[str, list] = {}
     runner, _ = _runner(tmp_path, _handler(calls=calls))
     await runner.login("admin", "pw")
 
-    snapshots = await runner.run_scenarios([_scenario(), _workbench_scenario()])
+    snapshots = await runner.run_scenarios([_scenario(), _workbench_scenario(), _planning_scenario()])
 
-    assert [snapshot.scenario_id for snapshot in snapshots] == ["coffee-maker-us", "cs-workbench-shipping-en"]
-    assert len(calls["/api/tasks"]) == 1
+    assert [snapshot.scenario_id for snapshot in snapshots] == [
+        "coffee-maker-us",
+        "cs-workbench-shipping-en",
+        "plan-category-trend-zh",
+    ]
+    assert len(calls["/api/tasks"]) == 2  # 选品线 + 规划面(同一条产出线)
     assert len(calls["/api/drafting"]) == 1
     run_dir = tmp_path / "runs" / "run-1"
     assert (run_dir / "coffee-maker-us.json").exists()
     assert (run_dir / "cs-workbench-shipping-en.json").exists()
+    assert (run_dir / "plan-category-trend-zh.json").exists()
+
+
+async def test_planning_scenario_snapshot_carries_plan_segment(tmp_path: Path) -> None:
+    """规划切片面(票 #61):走任务线 → 快照随带 plan 段(该面的判分对象),thread/trace 与选品线同形。
+
+    同一次任务跑批的规划产出即产出——不为评测另设「只规划」捷径(暂存假设 5)。
+    """
+    calls: dict[str, list] = {}
+    runner, _ = _runner(tmp_path, _handler(calls=calls))
+    await runner.login("admin", "pw")
+
+    [snapshot] = await runner.run_scenarios([_planning_scenario()])
+
+    assert json.loads(calls["/api/tasks"][0].content) == {
+        "request": "分析一下便携咖啡机在美国市场的选品机会",
+        "session_id": "eval-run-1",
+    }
+    path = tmp_path / "runs" / "run-1" / "plan-category-trend-zh.json"
+    saved = read_snapshot(path)
+    assert saved.surface == "规划切片"
+    assert saved.thread_id == "t-1"
+    assert saved.trace_id == task_trace_id("t-1")  # 分数挂任务 trace(该线有任务轨迹)
+    assert [(item.no, item.description, item.depends_on, item.approval_points) for item in saved.plan] == [
+        (1, "检索美国市场情报", (), ()),
+        (2, "按情报给选品结论", (1,), ()),
+    ]
+    assert saved.slices  # 切片产出照带(同一次跑批的产物),只是该面的判据不评它
+    assert snapshot.dataset_run_id == "ds-run-1"
 
 
 async def test_workbench_drafting_failure_fails_explicitly(tmp_path: Path) -> None:
@@ -270,6 +337,11 @@ async def test_run_scenario_writes_snapshot_and_projects(tmp_path: Path) -> None
     assert [item.no for item in snapshot.slices] == [1]
     assert snapshot.slices[0].answer == "美国市场咖啡机需求上行 [1]"
     assert snapshot.slices[0].citations[0]["doc_id"] == "usitc-digital-trade"
+    # 规划段随任务线快照一起落盘(票 #61):切片号升序、依赖声明原样
+    assert [(item.no, item.agent, item.depends_on) for item in snapshot.plan] == [
+        (1, "product_research", ()),
+        (2, "product_research", (1,)),
+    ]
     assert projection.runs == [
         {
             "run_name": "run-1",

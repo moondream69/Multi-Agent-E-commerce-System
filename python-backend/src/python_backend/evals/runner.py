@@ -2,12 +2,12 @@
 逐条串行驱动 → 快照 + 投影。
 
 黑盒走 REST(评的是**产品面产出**,不是图内部),**按 surface 分派两条产出线**:任务线
-``POST /api/tasks``(同步语义,图跑完才响应)→ ``GET /api/tasks/{thread_id}`` 取切片级产出;
-工作台线 ``POST /api/drafting``(同步、无任务轨迹)→ 草稿 + 引用载荷即产出,**跑批器自建评测根
-trace**(``eval:<场景id>``,分数挂它)。两线落**同一份快照 schema**,回评面零分叉。**串行**执行
-(仓内 LLM 并发闸 = 2,ADR-0008);金标场景一律免审(dev 剖面影子段直行),遇 ``interrupted`` /
-失败**显式报错**——不自动批准(不把机器决定混进评测语义;场景挂起 = 场景设计缺陷,该改场景而不是
-让机器替人拍板)。
+``POST /api/tasks``(同步语义,图跑完才响应)→ ``GET /api/tasks/{thread_id}`` 取切片级产出**与规划段**
+(plan 随快照落盘,票 #61 的规划切片场景评的就是它);工作台线 ``POST /api/drafting``(同步、无任务轨迹)
+→ 草稿 + 引用载荷即产出,**跑批器自建评测根 trace**(``eval:<场景id>``,分数挂它)。两线落**同一份快照
+schema**,回评面零分叉。**串行**执行(仓内 LLM 并发闸 = 2,ADR-0008);金标场景一律免审(dev 剖面影子段
+直行),遇 ``interrupted`` / 失败**显式报错**——不自动批准(不把机器决定混进评测语义;场景挂起 = 场景
+设计缺陷,该改场景而不是让机器替人拍板)。
 
 **净库哨兵**:``reset-db`` 在净库插一条固定 SKU 的商品,跑批前校验它必须在场——防「忘了把 app
 切到净库」:那会把播种与跑批写进演示库(reset-db 与 run 之间隔着一次 app 重启,人是最不可靠的一环)。
@@ -31,6 +31,7 @@ from python_backend.evals.schema import WORKBENCH_SURFACE, Scenario
 from python_backend.evals.snapshot import (
     SliceOutput,
     Snapshot,
+    slices_from_plan,
     slices_from_results,
     snapshot_path,
     write_snapshot,
@@ -134,7 +135,11 @@ class EvalRunner:
         return await self._run_task(scenario)
 
     async def _run_task(self, scenario: Scenario) -> Snapshot:
-        """任务线一条场景:触发任务 → 校验终态 → 读切片产出 → 落快照 → 投影 dataset run item。"""
+        """任务线一条场景:触发任务 → 校验终态 → 读切片产出与规划段 → 落快照 → 投影 dataset run item。
+
+        规划段(``plan``)随快照一起落盘(票 #61):规划切片场景评的就是它——**同一次任务跑批**的规划
+        产物,不另设「只规划」捷径。
+        """
         response = await self._client.post(
             "/api/tasks", json={"request": scenario.input, "session_id": f"eval-{self._run_name}"}
         )
@@ -165,6 +170,8 @@ class EvalRunner:
             trace_id=task_trace_id(thread_id),
             status=str(detail.get("status") or status),
             slices=slices,
+            # 规划段随任务线快照一起落盘(票 #61):规划切片场景评的就是它,别的线不消费、如实带着
+            plan=slices_from_plan(detail.get("plan")),
             corpus_fingerprint=self._anchor.fingerprint,
             corpus_batch_id=self._anchor.batch_id,
             dataset_run_id=None,
@@ -204,6 +211,7 @@ class EvalRunner:
                     executed=True,
                 ),
             ),
+            plan=(),  # 该线无任务轨迹 ⇒ 无规划段(如实留空,不编一个)
             corpus_fingerprint=self._anchor.fingerprint,
             corpus_batch_id=self._anchor.batch_id,
             dataset_run_id=None,

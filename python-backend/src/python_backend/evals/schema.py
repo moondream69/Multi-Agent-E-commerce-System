@@ -12,7 +12,8 @@ Langfuse datasets 只是它的投影——同「知识库」哲学:真源在仓�
         input: |-                        # 固定输入文本(选品=指令;客服=买家消息)
           ...
         locale: zh                       # 可选(缺省 zh);**只对「客服草稿·工作台」有意义**——
-                                         # 那条线经端点参数定语言,其余线的语言随输入文本走
+                                         # 那条线经端点参数定语言,其余线(含规划切片)的语言
+                                         # 随输入文本走
         rubric:                          # LLM-as-judge 判据(每条 0/1 + 理由)
           - <判据一句话>
         note: <备注:这条场景想守住什么>
@@ -38,8 +39,8 @@ from typing import Any
 import yaml
 
 # 评测面:决定场景怎么跑(打哪个入口)与判据维度(spec #55 Solution C)
-# 四个面都具名:跑批器按面分派(工作台线 = 同步端点 + 自建评测根 trace)、CLI 按面筛可跑集——
-# 两处都引用常量,不散写字面量
+# 四个面都具名:跑批器按面分派(工作台线 = 同步端点 + 自建评测根 trace;**规划切片面复用任务线**,
+# 评的是同一次跑批落进快照的 plan 段)、CLI 按面筛可跑集——两处都引用常量,不散写字面量
 PRODUCT_REPORT_SURFACE = "选品报告"
 WORKBENCH_SURFACE = "客服草稿·工作台"
 CUSTOMER_TASK_SURFACE = "客服草稿·任务内"
@@ -132,7 +133,9 @@ def _build_locale(raw: Any, surface: str, where: str) -> str:
     if not locale:
         raise ValueError(f"{where} 的 locale 为空(工作台线的目标语言,缺省 {DEFAULT_LOCALE})")
     if surface != WORKBENCH_SURFACE:
+        others = "、".join(item for item in SURFACES if item != WORKBENCH_SURFACE)
         raise ValueError(
-            f"{where} 带了 locale({locale!r}):该字段只对「{WORKBENCH_SURFACE}」线有效(其余线的语言随输入文本)"
+            f"{where} 带了 locale({locale!r}):该字段**只**对「{WORKBENCH_SURFACE}」线有效"
+            f"(该线的目标语言由端点参数定;其余线——{others}——的语言随输入文本走)"
         )
     return locale

@@ -234,10 +234,12 @@ uv run python scripts/evals.py score [--run <run 名>]  # 4. 回评(不重跑任
 - **回评解耦(run/score)**:`score` 只读快照(`docs/evals/runs/<run 名>/*.json`),rubric 从 `docs/evals/*.yaml` **现读**
   ——改 rubric / 换 judge(`.env` 的 `JUDGE_MODEL`)只重跑 score,任务不被重跑,分数恒覆盖同一条(稳定键派生 id)。
   judge 走 Anthropic 原生面;`.env` 的 `JUDGE_API_URL` 按 messages 端点给(`…/v1/messages`,客户端自行去版本段)。
-- **两条产出线按 surface 分派**:任务线(`选品报告` / `客服草稿·任务内`)经 `POST /api/tasks` 取切片产出;
-  工作台线(`客服草稿·工作台`)经 `POST /api/drafting` 取草稿——该线无任务轨迹,跑批器**自建评测根 trace**
-  `eval:<场景id>`(分数挂它)。两线落同一份快照 schema、同一套分数形状;`--scenarios docs/evals/customer-draft.yaml`
-  可只跑客服面(改一条线的场景不必重跑整批)。
+- **产出面按 surface 分派(四个面 / 两条产出线)**:任务线(`选品报告` / `客服草稿·任务内` / `规划切片`)
+  经 `POST /api/tasks` 取切片产出;**规划切片面取同一次跑批的 plan 段**(任务详情的 `plan` 随快照落盘,
+  评的是 Manager 的切片划分 + 依赖声明——不另设「只规划」捷径);工作台线(`客服草稿·工作台`)经
+  `POST /api/drafting` 取草稿——该线无任务轨迹,跑批器**自建评测根 trace** `eval:<场景id>`(分数挂它)。
+  四个面落同一份快照 schema、同一套分数形状;`--scenarios docs/evals/customer-draft.yaml` 可只跑客服面
+  (改一条线的场景不必重跑整批)。
 - 场景/快照字段与编排语义见 `scripts/evals.py` 模块文档与 `python-backend/src/python_backend/evals/`。
 
 ## 生产切换清单(试运行前)

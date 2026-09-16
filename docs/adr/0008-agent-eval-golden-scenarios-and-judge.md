@@ -76,3 +76,4 @@ ADR-0007「评测对接」段对本线提出三项义务:LLM-as-judge 评「引�
 |---|---|---|---|---|
 | 2026-09-14 | 新建 | — | 金标场景集(YAML 真源 + Langfuse 投影)、跑批器(run/score 解耦 CLI + 专用净库)、判据(中转站 claude-opus-5 judge + 机械防伪引,0/1 + comment)、落库(只 Langfuse;内容哈希版本锚为主 + batch_id 附记);边界(黑盒 REST、不改三域、不阻塞任务链路) | #45 定格需求;评测线四轮访谈;官方模型页与 langfuse SDK 实测核实 |
 | 2026-09-14 | judge 协议 | OpenAI 兼容协议(与 `LlmService` 同形状) | **Anthropic 原生 Messages API**(官方 `anthropic` SDK,`base_url` 指中转站)——用户实测告知:其中转站对 `claude-opus-5` 只开原生格式 | 用户实测;claude-api 官方文档核实 |
+| 2026-09-16 | judge 可达性(实测,决策未改) | 中转站对原生 Messages API 放行 | 该站已改策略:**裸 Messages 调用一律 403**「This API endpoint is only accessible via the official Claude CLI」⇒ 现行 judge 调用面(官方 SDK + base_url 指中转站)被拒。**本 ADR 的决策不变**(judge 端点/型号仍是配置面切换,不动结构);实测记录见 `docs/handoffs/evidence-2026-09-16-issue61/`,恢复/换站待维护者裁决 | 票 #61 跑批实测(2026-09-16 08:47) |

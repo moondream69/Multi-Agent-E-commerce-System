@@ -78,6 +78,10 @@ class JudgeRequest:
 
     切片级保真(不拼多片长文):citations 编号是**切片内**编号,跨片拼文会让编号集串味
     (假通过)——与 ``snapshot.py`` 同一条口径。
+
+    ``plan``:规划切片场景的判分对象(票 #61)——渲染好的切片计划文本(``snapshot.plan_lines``)。
+    **整段给**,不逐片拆:三条判据(依赖声明 / 划分 / 领域路由)评的就是整份计划,拆片看会把
+    「依赖跨片」这一半信息切掉。非规划面如实留 ``""``。
     """
 
     scenario_id: str
@@ -86,6 +90,7 @@ class JudgeRequest:
     answer: str
     citations: tuple[dict, ...]
     criteria: tuple[str, ...]
+    plan: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,9 @@ def render_prompt(request: JudgeRequest) -> str:
 
     引用条目**只给溯源与切块标识,不给原文**:判「结论是否有检索依据」看的是引用的出处是否
     对得上题目,而答案文本已含锚定的 ``[n]``;塞进全文只会放大 token 且让 judge 转去评文风。
+
+    判分对象二选一:``plan`` 非空 = 规划切片面(评的是整份切片计划,产出段换成【切片计划】);
+    否则 = 既有「文本产出 + 引用条目」形状(票 #59/#60 的线原样不动)。
     """
     lines = [
         "你是资深电商选品与客服质量评审。请对下面**一条** Agent 产出逐条判定评分标准是否通过。",
@@ -115,13 +123,21 @@ def render_prompt(request: JudgeRequest) -> str:
         "【任务指令】",
         request.input,
         "",
-        f"【产出(切片 {request.slice_no})】",
-        request.answer,
-        "",
-        "【该产出的引用条目(编号 → 出处)】",
     ]
-    lines.extend(_citation_lines(request.citations))
-    lines.extend(["", "【评分标准】"])
+    if request.plan:
+        lines.extend(["【切片计划(Manager 的规划产出:切片划分 + 依赖声明)】", request.plan, ""])
+    else:
+        lines.extend(
+            [
+                f"【产出(切片 {request.slice_no})】",
+                request.answer,
+                "",
+                "【该产出的引用条目(编号 → 出处)】",
+            ]
+        )
+        lines.extend(_citation_lines(request.citations))
+        lines.append("")
+    lines.extend(["【评分标准】"])
     lines.extend(f"{index}. {criterion}" for index, criterion in enumerate(request.criteria, start=1))
     lines.extend(
         [

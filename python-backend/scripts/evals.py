@@ -35,10 +35,11 @@ token,score 只烧 judge token):机械防伪引(零 LLM)+ judge 逐条 0/1 + com
 (带 trace_id / dataset_run_id / 语料指纹),写完读回核实。``--scenarios`` 可指另一份 rubric 真源。
 
 真源目录 = ``docs/evals/*.yaml``(默认全量,可显式传文件);产出快照落 ``docs/evals/runs/<run 名>/``
-(gitignore)。场景按 surface 分派产出线:``选品报告`` / ``客服草稿·任务内`` 走任务线(``/api/tasks``),
-``客服草稿·工作台`` 走同步起草端点(该线无任务轨迹,跑批器自建评测根 trace ``eval:<场景id>``)。
-``run`` / ``score`` 烧真 token、要真服务、走专用净库——与摄入 CLI 同待遇:不进快速套件
-(核心逻辑离线替身测于 ``python_backend.evals`` 包)。
+(gitignore)。场景按 surface 分派产出线:``选品报告`` / ``客服草稿·任务内`` / ``规划切片`` 走任务线
+(``/api/tasks``;规划面的**规划段**随任务详解落进快照——同一次跑批的 plan 段即它的产出,不另设
+「只规划」捷径,票 #61),``客服草稿·工作台`` 走同步起草端点(该线无任务轨迹,跑批器自建评测根
+trace ``eval:<场景id>``)。``run`` / ``score`` 烧真 token、要真服务、走专用净库——与摄入 CLI 同待遇:
+不进快速套件(核心逻辑离线替身测于 ``python_backend.evals`` 包)。
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ from python_backend.evals.projection import DATASET_NAME, build_langfuse_client,
 from python_backend.evals.runner import CLIENT_TIMEOUT, SENTINEL_SKU, EvalRunner
 from python_backend.evals.schema import (
     CUSTOMER_TASK_SURFACE,
+    PLANNING_SURFACE,
     PRODUCT_REPORT_SURFACE,
     WORKBENCH_SURFACE,
     Scenario,
@@ -82,9 +84,9 @@ EVALS_DIR = REPO_ROOT / "docs" / "evals"
 CORPUS_DIR = REPO_ROOT / "docs" / "corpus"
 DEMO_DATA_DIR = REPO_ROOT / "docs" / "demo-data"
 
-# 已落地的产出面:选品报告(票 #58)/ 客服草稿两线(票 #60:工作台 = 同步端点 + 自建评测根 trace,
-# 任务内 = 经 /api/tasks 取客服切片);其余面(规划切片)的场景显式跳过并打印
-IMPLEMENTED_SURFACES = (PRODUCT_REPORT_SURFACE, WORKBENCH_SURFACE, CUSTOMER_TASK_SURFACE)
+# 已落地的产出面(票 #58 选品 / #60 客服草稿两线 / #61 规划切片):规划面**复用任务线**——同一次
+# 任务跑批的 plan 段即产出(不另设「只规划」捷径),故跑批路径与选品/客服任务线是同一条。
+IMPLEMENTED_SURFACES = (PRODUCT_REPORT_SURFACE, WORKBENCH_SURFACE, CUSTOMER_TASK_SURFACE, PLANNING_SURFACE)
 
 # 评测净库默认名(与验证库 mae_verify、演示库 mae 各不相干)
 DEFAULT_EVAL_DB = "mae_eval"
@@ -160,12 +162,9 @@ def run(args: argparse.Namespace) -> None:
 
 
 async def _run(args: argparse.Namespace) -> None:
+    # 四个产出面都已在跑批器落地(#58 选品 / #60 客服两线 / #61 规划切片):真源里的场景即全部可跑集,
+    # 不再有「已实现 / 未实现」的筛选——再铺新面时在这里加回筛选(按 surface)
     scenarios = _load(args)
-    runnable = [scenario for scenario in scenarios if scenario.surface in IMPLEMENTED_SURFACES]
-    for skipped in (scenario for scenario in scenarios if scenario.surface not in IMPLEMENTED_SURFACES):
-        print(f"跳过 {skipped.id}({skipped.surface}):该产出面尚未实现(规划切片见票 #61)")
-    if not runnable:
-        raise SystemExit("没有已实现产出面的场景——先补 docs/evals/*.yaml")
 
     settings = get_settings()
     projection = build_projection(settings)  # 缺密钥即显式报错(不静默降级为「跑完但没落库」)
@@ -175,7 +174,7 @@ async def _run(args: argparse.Namespace) -> None:
     print(f"Langfuse {load_langfuse_config(settings).host}(投影目标;dataset 名 {DATASET_NAME})")
     if anchor.note:
         print(f"  语料批次附记:{anchor.note}")
-    print(f"场景 {len(runnable)} 条(串行,单条真跑 ≈2-3 分钟):" + " → ".join(item.id for item in runnable))
+    print(f"场景 {len(scenarios)} 条(串行,单条真跑 ≈2-3 分钟):" + " → ".join(item.id for item in scenarios))
 
     async with httpx.AsyncClient(base_url=args.base_url, timeout=CLIENT_TIMEOUT) as client:
         runner = EvalRunner(
@@ -188,13 +187,15 @@ async def _run(args: argparse.Namespace) -> None:
             print("播种:" + " / ".join(f"新建 {item['created']} 跳过 {item['skipped']}" for item in reports))
 
         snapshots = await runner.run_scenarios(
-            runnable,
+            scenarios,
             on_scenario=lambda snapshot: print(
                 f"  完成 {snapshot.scenario_id}:"
                 # 工作台线无任务线程(thread 留空)——不打印一个空占位
                 + (f"thread {snapshot.thread_id} / " if snapshot.thread_id else "")
                 + f"trace {snapshot.trace_id} / 切片 {len(snapshot.slices)} / "
-                f"快照 {runner.snapshot_path(snapshot.scenario_id)}"
+                # 规划段只在任务线有(工作台线如实为空)——不打印一个「规划 0 片」的噪声
+                + (f"规划 {len(snapshot.plan)} 片 / " if snapshot.plan else "")
+                + f"快照 {runner.snapshot_path(snapshot.scenario_id)}"
             ),
         )
     projection.flush()  # 冲刷 SDK 缓冲,退出前把最近写入报上去

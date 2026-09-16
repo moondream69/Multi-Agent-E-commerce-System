@@ -15,7 +15,9 @@ from python_backend.evals.snapshot import (
     SNAPSHOT_VERSION,
     SliceOutput,
     Snapshot,
+    plan_lines,
     read_snapshot,
+    slices_from_plan,
     slices_from_results,
     snapshot_path,
     write_snapshot,
@@ -33,6 +35,20 @@ CITATIONS = [
         "chunks": [{"id": "usitc-digital-trade#3", "score": 0.71, "section": "3", "chunk_index": 3, "content": "…"}],
     }
 ]
+
+# GET /api/tasks/{thread_id} 的 plan 段(切片计划载荷,票 #61)
+PLAN = {
+    "slices": [
+        {"no": 2, "agent": "product_research", "description": "评分", "depends_on": [1], "approval_points": []},
+        {
+            "no": 1,
+            "agent": "product_research",
+            "description": "检索市场情报",
+            "depends_on": [],
+            "approval_points": ["上架"],
+        },
+    ]
+}
 
 
 def _snapshot() -> Snapshot:
@@ -54,6 +70,7 @@ def _snapshot() -> Snapshot:
             ),
             SliceOutput(no=2, agent="product_research", description="评分", answer=None, citations=(), executed=False),
         ),
+        plan=slices_from_plan(PLAN),
         corpus_fingerprint="f" * 64,
         corpus_batch_id=None,
         dataset_run_id="ds-run-1",
@@ -119,6 +136,38 @@ def test_slices_from_results_rejects_broken_shape() -> None:
         slices_from_results({"1": "not-a-mapping"})
 
 
+def test_slices_from_plan_parses_api_payload() -> None:
+    """GET /api/tasks 的 plan 段 → 按切片号升序的规划切片(依赖声明与审批点原样保留)。"""
+    plan = slices_from_plan(PLAN)
+
+    assert [item.no for item in plan] == [1, 2]  # 载荷给的是 2、1,读回按切片号升序
+    assert plan[0].agent == "product_research"
+    assert plan[0].depends_on == ()
+    assert plan[0].approval_points == ("上架",)
+    assert plan[1].depends_on == (1,)
+
+
+def test_slices_from_plan_rejects_broken_shape() -> None:
+    """形状不符即报错(API 契约违反);缺席(工作台线无规划段)如实返回空。"""
+    assert slices_from_plan(None) == ()
+    assert slices_from_plan({"slices": []}) == ()
+    with pytest.raises(ValueError, match="须是清单"):
+        slices_from_plan({"slices": "not-a-list"})
+    with pytest.raises(ValueError, match="切片号"):
+        slices_from_plan({"slices": [{"no": 1}, {"no": "x"}]})
+    with pytest.raises(ValueError, match="depends_on"):
+        slices_from_plan({"slices": [{"no": 1, "depends_on": ["1"]}]})
+
+
+def test_plan_lines_render_dependencies_and_approval_points() -> None:
+    """规划段 → 判据提示词的可读行:片数、业务域、说明、依赖、审批点(缺即标「无」)。"""
+    lines = plan_lines(slices_from_plan(PLAN))
+
+    assert lines[0] == "(共 2 片)"
+    assert lines[1] == "切片 1:业务域 product_research | 说明:检索市场情报 | 依赖:无 | 审批点:上架"
+    assert lines[2] == "切片 2:业务域 product_research | 说明:评分 | 依赖:1 | 审批点:无"
+
+
 def test_read_rejects_bad_shape(tmp_path: Path) -> None:
     """坏快照报错点名文件与字段(不静默按新形状解释旧数据)。"""
     path = tmp_path / "bad.json"
@@ -126,8 +175,8 @@ def test_read_rejects_bad_shape(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="不是合法 JSON"):
         read_snapshot(path)
 
-    path.write_text(json.dumps({"version": 99, "scenario_id": "x"}), encoding="utf-8")
-    with pytest.raises(ValueError, match="版本 99"):
+    path.write_text(json.dumps({"version": SNAPSHOT_VERSION - 1, "scenario_id": "x"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="不受支持"):
         read_snapshot(path)
 
     path.write_text(json.dumps({"version": SNAPSHOT_VERSION, "scenario_id": "x"}), encoding="utf-8")
@@ -139,3 +188,24 @@ def test_read_rejects_bad_shape(tmp_path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="ISO 8601"):
         read_snapshot(path)
+
+
+def test_read_rejects_broken_plan_shape(tmp_path: Path) -> None:
+    """快照里的规划段坏形状 → 报错点名文件(不把坏数据当「没有计划」静默吞掉)。"""
+    payload = json.loads((write_snapshot(tmp_path, _snapshot())).read_text(encoding="utf-8"))
+    payload["plan"] = [{"no": "x"}]
+    path = tmp_path / "bad-plan.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"bad-plan\.json"):
+        read_snapshot(path)
+
+
+def test_snapshot_without_plan_reads_as_empty(tmp_path: Path) -> None:
+    """同一版本内 ``plan`` 缺席 → 空规划段(版本闸管**旧版断代**,不管字段级留空,两回事)。"""
+    payload = json.loads((write_snapshot(tmp_path, _snapshot())).read_text(encoding="utf-8"))
+    del payload["plan"]
+    path = tmp_path / "no-plan.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert read_snapshot(path).plan == ()

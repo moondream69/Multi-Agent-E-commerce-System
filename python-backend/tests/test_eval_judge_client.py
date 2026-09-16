@@ -108,6 +108,27 @@ def test_render_prompt_marks_absent_citations() -> None:
     assert "(无——该产出没有引用条目)" in render_prompt(request)
 
 
+def test_render_prompt_swaps_production_block_for_plan_request() -> None:
+    """规划切片面(票 #61):判分对象是整份切片计划 → 产出段换成【切片计划】,不带答案与引用条目区。"""
+    request = JudgeRequest(
+        scenario_id="plan-category-trend-zh",
+        slice_no=0,
+        input="分析一下便携咖啡机在美国市场的选品机会",
+        answer="",
+        citations=(),
+        criteria=("依赖声明与执行先序一致", "切片划分合理(≤5 片)", "领域路由正确"),
+        plan="(共 2 片)\n切片 1:业务域 product_research | 说明:检索美国市场情报 | 依赖:无 | 审批点:无",
+    )
+
+    prompt = render_prompt(request)
+
+    assert "【切片计划(Manager 的规划产出:切片划分 + 依赖声明)】" in prompt
+    assert "切片 1:业务域 product_research | 说明:检索美国市场情报 | 依赖:无 | 审批点:无" in prompt
+    assert "【产出(切片 0)】" not in prompt  # 计划面不摆一个空产出段
+    assert "【该产出的引用条目(编号 → 出处)】" not in prompt
+    assert "1. 依赖声明与执行先序一致" in prompt and "3. 领域路由正确" in prompt
+
+
 def test_anthropic_judge_sends_naive_messages_request() -> None:
     """真实客户端 + 假传输:打到 ``<基址>/v1/messages``,体里只有朴素字段(messages + max_tokens)。"""
     seen: list[httpx2.Request] = []

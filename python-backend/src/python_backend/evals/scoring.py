@@ -1,4 +1,5 @@
-"""``score`` 的编排(spec #55 B/C / 票 #59):已存快照 → 机械防伪引 + judge 判据 → 分数落 Langfuse。
+"""``score`` 的编排(spec #55 B/C / 票 #59;规划切片面 #61):已存快照 → 机械防伪引 + judge 判据 →
+分数落 Langfuse。
 
 **快照是唯一输入**(ADR-0008 的 run/score 解耦):评分不驱动任何任务,只读 ``docs/evals/runs/<run 名>/``
 下的 JSON——换 rubric、换 judge 只烧 judge token,任务不被重跑。rubric 从**真源 YAML 现读**,不取
@@ -15,11 +16,14 @@ dataset item metadata 里的副本:改 rubric 才算「换 rubric」,取副本�
 
 判据与切片的配对:条数相等 ⇒ 一条判据对一片(rubric 即按片写的);不等 ⇒ 每条判据对每片
 (广播)——**配对规则本身即口径**,改动它等于改动历史分数的含义,故写在这里而非常量外置。
+**规划切片面不走这条配对**:该面判分对象是**整份计划**(快照 ``plan`` 段),判据三条一次全判
+(依赖声明 / 划分 / 领域路由彼此不是「一片一条」的关系),切片号段用常量 ``PLAN_SLICE_KEY``。
 
 分数形状(落 Langfuse 的键与互链):
 
-- **稳定键 = ``<场景id>#<切片号>#<判据序号>``**(机械线为 ``…#机械``):改判据文案不改键,换
-  rubric 重评后历史分数不断成两条线(键形状的定义在 ``schema.py``——切片号段是回评面补的,见其 docstring)。
+- **稳定键 = ``<场景id>#<切片号>#<判据序号>``**(机械线为 ``…#机械``,规划面为 ``…#plan#…``):
+  改判据文案不改键,换 rubric 重评后历史分数不断成两条线(键形状的定义在 ``schema.py``——
+  切片号段是回评面补的,见其 docstring)。
 - 分数挂 ``trace_id``:任务线 = 快照随带的任务 trace(由 thread_id 派生);工作台线挂**跑批器
   自建的评测根 trace** ``eval:<场景id>``(快照 trace_id 即它,id 由 ``eval_root_trace_id`` 确定性派生,
   trace 由跑批器在 run 时建出,#60)。
@@ -36,12 +40,15 @@ from uuid import NAMESPACE_OID, uuid5
 
 from python_backend.core.citations import check_citations
 from python_backend.evals.judge import Judge, JudgeRequest, RubricScore
-from python_backend.evals.schema import Scenario
-from python_backend.evals.snapshot import Snapshot, read_snapshot
+from python_backend.evals.schema import PLANNING_SURFACE, Scenario
+from python_backend.evals.snapshot import Snapshot, plan_lines, read_snapshot
 from python_backend.infrastructure.tracing import eval_root_trace_id
 
 # 机械防伪引在分数稳定键里的段名(判据序号段的并列物):零 LLM、全量跑、不设开关(ADR-0008)
 MECHANICAL_KEY = "机械"
+# 规划切片面在稳定键里的切片号段(票 #61):判分对象是**整份计划**而非某个切片,故用固定段名
+# (同工作台线恒用切片号 1 的做法——切片号是标识不是下标)
+PLAN_SLICE_KEY = "plan"
 
 
 @dataclass(frozen=True)
@@ -128,19 +135,56 @@ def scenario_map(scenarios: Sequence[Scenario], snapshots: Sequence[Snapshot]) -
 def score_snapshot(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) -> tuple[ScoreRecord, ...]:
     """一份快照 → 分数清单:逐切片跑机械线 + judge 线,组装成可落库的记录(不写库)。
 
-    空切片即报错(跑批不落空快照,快照无产出等于无可评对象);未实现的产出面在 CLI 层跳过
-    (``evals.py`` 的 ``IMPLEMENTED_SURFACES``,票 #60/#61 铺开),不在此处悄悄漏评。
+    **规划切片面**(票 #61)走另一条:判分对象是快照随带的 ``plan`` 段(整份计划),三条判据一次全判,
+    不带机械线(计划没有答案文本、没有引用载荷,机械线在那里的「不适用」不是信息)。空切片即报错
+    (跑批不落空快照,快照无产出等于无可评对象);四个产出面都已在跑批器落地,不存在「未实现即跳过」的面。
     """
+    if scenario.surface == PLANNING_SURFACE:
+        return _plan_records(snapshot, scenario, judge)
     if not snapshot.slices:
         raise RuntimeError(f"快照 {snapshot.scenario_id} 没有切片产出——无可评对象(跑批不落空快照)")
     records: list[ScoreRecord] = []
     criteria_for = _criteria_pairing(scenario.rubric, len(snapshot.slices))
     for position, item in enumerate(snapshot.slices):  # 切片号是标识不是下标,配对按切片在快照里的次序
         answer = item.answer or ""
-        records.extend(_mechanical_records(snapshot, item.no, answer, item.citations))
+        records.extend(_mechanical_records(snapshot, str(item.no), answer, item.citations))
         criteria, indexes = criteria_for[position]
         records.extend(_judge_records(snapshot, item.no, scenario, answer, item.citations, criteria, indexes, judge))
     return tuple(records)
+
+
+def _plan_records(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) -> tuple[ScoreRecord, ...]:
+    """规划切片面:整份计划 → 三条判据一次判(依赖声明 / 划分 / 领域路由)。
+
+    切片计划缺席即报错:该面的场景必须由任务线跑出 ``plan`` 段(跑批时的任务详情随带),快照里没有
+    就是跑批没带上——**报错不猜**(空计划判出来的分会把「没评到」洗成一条判定)。判据是**整份**计划的
+    判据(不逐片配对):「依赖声明与先序一致」看的是片与片之间的关系,拆片判会把这一半信息切掉。
+    """
+    if not snapshot.plan:
+        raise RuntimeError(
+            f"快照 {snapshot.scenario_id} 没有规划段(plan 为空)——规划切片面评的就是它:"
+            "该场景须走任务线跑批(task 详情的 plan 段随快照落盘)"
+        )
+    scores = judge(
+        JudgeRequest(
+            scenario_id=snapshot.scenario_id,
+            slice_no=0,  # 整份计划不是某一「片」:0 只进 judge 的报错定位文案,不进稳定键
+            input=scenario.input,
+            answer="",
+            citations=(),
+            criteria=scenario.rubric,
+            plan="\n".join(plan_lines(snapshot.plan)),
+        )
+    )
+    # 稳定键的段名取 PLAN_SLICE_KEY;判据序号即判据在真源 rubric 里的位置(请求内位置与它同值)
+    return _record_scores(
+        snapshot,
+        PLAN_SLICE_KEY,
+        scores=scores,
+        suffix_of=lambda score: str(score.index),
+        criterion=lambda score: scenario.rubric[score.index - 1],
+        judge_model=judge.model,
+    )
 
 
 def score_run(
@@ -184,7 +228,7 @@ def _criteria_pairing(rubric: tuple[str, ...], slice_count: int) -> list[tuple[t
 
 
 def _mechanical_records(
-    snapshot: Snapshot, slice_no: int, answer: str, citations: tuple[dict, ...]
+    snapshot: Snapshot, slice_no: str, answer: str, citations: tuple[dict, ...]
 ) -> tuple[ScoreRecord, ...]:
     """机械防伪引:applicable=False(既无标记也无载荷)→ 不落分(不适用,不作通过计)。"""
     check = check_citations(answer, list(citations))
@@ -213,7 +257,13 @@ def _judge_records(
     indexes: tuple[int, ...],
     judge: JudgeSession,
 ) -> tuple[ScoreRecord, ...]:
-    """judge 判据:一次请求发全部判据,逐条收 0/1 + comment(坏输出在 judge 层即报错)。"""
+    """judge 判据:一次请求发全部判据,逐条收 0/1 + comment(坏输出在 judge 层即报错)。
+
+    ``slice_no`` 在本层是 ``int``(切片号,进 ``JudgeRequest`` 的定位文案);落分时转成键里的段名
+    (``_record`` 收 ``str``)。``indexes`` 是**1 起的判据序号**(见 ``_criteria_pairing``):该号既是
+    键里的段名、也是**真源 rubric 里的位置**——本条判据的文案取自真源(本片只带一条时,请求里的
+    ``criteria`` 是子集,拿它取文案会错位)。
+    """
     scores = judge(
         JudgeRequest(
             scenario_id=snapshot.scenario_id,
@@ -224,15 +274,43 @@ def _judge_records(
             criteria=criteria,
         )
     )
+
+    def criterion_of(score: RubricScore) -> str:
+        return scenario.rubric[indexes[score.index - 1] - 1]
+
+    return _record_scores(
+        snapshot,
+        str(slice_no),
+        scores=scores,
+        suffix_of=lambda score: str(indexes[score.index - 1]),  # 键里是**判据序号**(真源位置),非请求内位置
+        criterion=criterion_of,
+        judge_model=judge.model,
+    )
+
+
+def _record_scores(
+    snapshot: Snapshot,
+    slice_no: str,
+    *,
+    scores: Sequence[RubricScore],
+    suffix_of: Callable[[RubricScore], str],
+    criterion: Callable[[RubricScore], str],
+    judge_model: str,
+) -> tuple[ScoreRecord, ...]:
+    """逐条判定 → 分数记录(**两条判定线共用的组装配法**):键段 = 切片号/``plan`` + 判据序号。
+
+    ``suffix_of`` / ``criterion`` 是两条线各自的序号映射(逐片判要经配对映射:键取**判据在真源里的
+    序号**、文案同样回真源取;整份计划判直接用序号)——**组装与取值分开**,同一套落分写法不为面复制一份。
+    """
     return tuple(
         _record(
             snapshot,
             slice_no,
-            suffix=str(indexes[score.index - 1]),
+            suffix=suffix_of(score),
             value=1 if score.passed else 0,
             comment=score.comment,
-            criterion=criteria[score.index - 1],
-            judge_model=judge.model,
+            criterion=criterion(score),
+            judge_model=judge_model,
         )
         for score in scores
     )
@@ -240,7 +318,7 @@ def _judge_records(
 
 def _record(
     snapshot: Snapshot,
-    slice_no: int,
+    slice_no: str,
     *,
     suffix: str,
     value: int,
@@ -249,6 +327,9 @@ def _record(
     judge_model: str = "",
 ) -> ScoreRecord:
     """一条分数记录:稳定键 + 互链(trace / dataset run)+ 语料版本锚(主锚 + 附记)。
+
+    ``slice_no`` 是**段名**不是数字:切片产出给切片号(如 ``"2"``),规划面给 ``PLAN_SLICE_KEY``
+    ——键拼的是文本段,类型本就不必是 int(改名只为如实,行为不变)。
 
     ``judge_model`` 由 judge 线带上(机械线留空)——型号入 metadata 是**版本锚的一部分**:
     与语料指纹同理,不记型号的历史分数无从按 judge 版本归因。
