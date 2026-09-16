@@ -135,7 +135,7 @@ async def test_slice_completed_after_approval_resume() -> None:
 async def test_slice_completed_failed_on_incomplete() -> None:
     """未完成切片(步数超限/子图 LLM 失败)→ completed 事件 status=failed,面板如实显示。"""
 
-    async def incomplete_agent(slice_) -> dict:
+    async def incomplete_agent(slice_, _task_request: str) -> dict:
         return {"agent": slice_.agent, "incomplete": "步数超限(10)"}
 
     emitter = RecordingEmitter()

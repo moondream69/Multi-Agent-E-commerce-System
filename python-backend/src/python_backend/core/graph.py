@@ -93,15 +93,17 @@ class SupervisorState(TypedDict, total=False):
     # Send 注入的切片数据(Send 状态为完整替换,execute_slice 经这些 key 取切片)
     slice_no: int
     slice: dict  # 完整切片字段(Slice 构造参数),无损往返
+    # 同键随切片下发(#64 B2):Send 是完整替换,执行段看不到主 state,原请求只能这样带过去
+    # (由 _next_step 从主 state 的 request 复制)
 
 
-AgentRunner = Callable[[Slice], Awaitable[dict]]
+AgentRunner = Callable[[Slice, str], Awaitable[dict]]
 
 # 重规划回流次数上限(spec #6 D3):超限强制终止,防 LLM 反复产出被拒计划
 REPLAN_LIMIT = 2
 
 
-async def _default_agent(slice_: Slice) -> dict:
+async def _default_agent(slice_: Slice, task_request: str) -> dict:
     """业务子图占位(装配未挂真实子图时使用):记录执行、返回占位结果。"""
     return {"agent": slice_.agent, "description": slice_.description, "executed": True}
 
@@ -210,6 +212,9 @@ def _next_step(state: SupervisorState) -> list[Send] | str:
                 {
                     "thread_id": state.get("thread_id", ""),
                     "slice_no": no,
+                    # 原请求随切片下发(#64 B2):执行段据此把「全局任务」摆在切片职责之前——
+                    # 描述缺主语时(规划器漏写对象),执行段不再只能从字面猜
+                    "request": state.get("request", ""),
                     "slice": {
                         "no": s.no,
                         "agent": s.agent,
@@ -257,7 +262,8 @@ async def _execute_slice(
         runner = agents.get(slice_.agent, _default_agent)
         with tracer.span(f"slice.{slice_.agent}", input={"description": slice_.description}):
             try:
-                run = await runner(slice_)
+                # 第二参数 = 原请求(#64 B2):执行段据此组装「全局任务 + 本切片职责」
+                run = await runner(slice_, state.get("request", ""))
             except Exception:
                 await audit.record(
                     thread_id=thread_id,

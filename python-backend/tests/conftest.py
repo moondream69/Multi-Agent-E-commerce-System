@@ -718,11 +718,11 @@ def slice_agent(
     *,
     actions: list[dict] | None = None,
     answer: str | None = None,
-) -> Callable[[Slice], Awaitable[dict]]:
+) -> Callable[[Slice, str], Awaitable[dict]]:
     """切片执行桩(spec #7):记录执行序号,返回占位结果;可脚本化收集的审批动作。"""
     executed = executed if executed is not None else []
 
-    async def run(slice_: Slice) -> dict:
+    async def run(slice_: Slice, _task_request: str) -> dict:
         executed.append(slice_.no)
         result: dict = {"agent": slice_.agent, "description": slice_.description, "executed": True}
         if actions is not None:

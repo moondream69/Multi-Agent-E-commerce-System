@@ -174,3 +174,26 @@ class TestManagerPlanner:
         result = await ManagerPlanner(FakeLlm([LlmFailure("挂")])).plan("在吗")
         assert isinstance(result, SlicePlan)
         assert result.slices[0].agent == "customer_service"
+
+    async def test_system_prompt_forbids_lumping_multiple_jobs_into_one_slice(self) -> None:
+        """#64 B5:切片划分规则须写死「不把多件事并成一片」。
+
+        依据:``plan-order-logistics-zh#plan#2`` 把「查订单 + 查物流 + 异常处置」并成 1 片(且未设
+        审批点),判据「切片划分合理」判失败——规则原先只说「切片数上限 5」与「高危写动作后是断点」,
+        没有正面禁止并片。
+        """
+        llm = FakeLlm([json.dumps(plan_dict([slice_(1)]))])
+        await ManagerPlanner(llm).plan("看看订单和物流,有异常的处理一下")
+
+        system_prompt = llm.calls[0]["messages"][0]["content"]
+        assert "不把多件事并成一片" in system_prompt
+        assert "逐片可独立完成" in system_prompt
+
+    async def test_system_prompt_requires_approval_points_for_write_slices(self) -> None:
+        """#64 B5:含写操作的切片必须声明审批点(approval_points 不是可选装饰)。"""
+        llm = FakeLlm([json.dumps(plan_dict([slice_(1)]))])
+        await ManagerPlanner(llm).plan("上架这个商品")
+
+        system_prompt = llm.calls[0]["messages"][0]["content"]
+        assert "写操作" in system_prompt and "approval_points" in system_prompt
+        assert "不得留空" in system_prompt

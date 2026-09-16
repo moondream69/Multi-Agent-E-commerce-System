@@ -83,7 +83,7 @@ async def test_slice_failure_audited() -> None:
     """子图 runner 抛错:failed 记录后异常如实上抛(500,不静默吞错)。"""
     audit = RecordingAudit()
 
-    async def failing(slice_) -> dict:
+    async def failing(slice_, _task_request: str) -> dict:
         raise RuntimeError("子图爆炸")
 
     graph = build_supervisor(

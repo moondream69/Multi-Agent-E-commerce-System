@@ -15,14 +15,15 @@ from langgraph.graph.state import CompiledStateGraph
 
 from python_backend.agents.base import (
     ToolCallingLlmClient,
+    answer_turn,
     assistant_message,
     merge_lists,
     resolve_tool_calls,
     retrieval_hits_from,
+    slice_prompt,
 )
 from python_backend.agents.customer_service.tools import DRAFT_TOOLS, VERIFY_TOOLS
 from python_backend.agents.executor import Executor
-from python_backend.core.citations import build_citations
 from python_backend.domain.tools import ToolRegistry
 
 VERIFY_SYSTEM = """你是跨境电商客服的查证助手。买家消息需要先查证再作答:
@@ -44,8 +45,10 @@ DRAFT_SYSTEM = """你是跨境电商客服的多语言起草助手。基于买�
 
 class CustomerState(TypedDict, total=False):
     slice_description: str
+    task_request: str  # 原始用户请求(#64 B2:与 ReAct 线同一口径,见 base.slice_prompt)
     messages: Annotated[list[dict], merge_lists]
     step_count: int
+    blank_retried: bool  # 终稿空正文已重试过一次(#64 B1:只重试一次即止)
     tool_calls: list[dict]
     collected: Annotated[list[dict], merge_lists]
     evidence: Annotated[list[dict], merge_lists]  # 已执行的查证调用 {tool, params}
@@ -72,7 +75,7 @@ def build_customer_agent(
     def _messages(state: CustomerState, system: str) -> list[dict]:
         return [
             {"role": "system", "content": system},
-            {"role": "user", "content": state["slice_description"]},
+            {"role": "user", "content": slice_prompt(state.get("task_request", ""), state["slice_description"])},
             *state.get("messages", []),
         ]
 
@@ -136,14 +139,8 @@ def build_customer_agent(
                 "tool_calls": result.tool_calls,
             }
         # issue #51:终稿把命中标识归一化为上标编号;无检索命中则引用为空(不硬标)
-        answer, citations = build_citations(result.content or "", state.get("retrieval", []))
-        return {
-            **step,
-            "messages": [assistant_message(result)],
-            "tool_calls": [],
-            "answer": answer,
-            "citations": citations,
-        }
+        # #64 B1:终稿是客服线的「作答轮」,空正文走与 ReAct 线同一个出口(重试一次 → 未完成)
+        return answer_turn(state, result, step)
 
     async def draft_tools(state: CustomerState) -> dict:
         observations, collected, _executed = await resolve_tool_calls(
@@ -165,7 +162,9 @@ def build_customer_agent(
             return "end"
         if state.get("tool_calls"):
             return "draft_tools"
-        return "end"
+        # 到此只剩一种情形:终稿空正文的**重试轮**(#64 B1,节点已把提示词追加进消息史)——
+        # 回 draft 再问一次;仍空时节点会给出 incomplete,不走这里。
+        return "draft"
 
     builder = StateGraph(CustomerState)  # ty: ignore
     builder.add_node("verify", verify_node)
@@ -179,6 +178,6 @@ def build_customer_agent(
     )
     builder.add_edge("verify_tools", "verify")
     builder.add_edge("nudge", "verify")
-    builder.add_conditional_edges("draft", after_draft, {"draft_tools": "draft_tools", "end": END})
+    builder.add_conditional_edges("draft", after_draft, {"draft_tools": "draft_tools", "draft": "draft", "end": END})
     builder.add_edge("draft_tools", "draft")
     return builder.compile(name="customer_service"), registry

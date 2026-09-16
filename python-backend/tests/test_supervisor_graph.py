@@ -17,8 +17,8 @@ class StubPlanner:
         return self._plan
 
 
-def slice_agent(executed: list[int], *, record_order: bool = True) -> Callable[[Slice], Awaitable[dict]]:
-    async def run(slice_: Slice) -> dict:
+def slice_agent(executed: list[int], *, record_order: bool = True) -> Callable[[Slice, str], Awaitable[dict]]:
+    async def run(slice_: Slice, _task_request: str) -> dict:
         if record_order:
             executed.append(slice_.no)
         return {"agent": slice_.agent, "description": slice_.description, "executed": True}
@@ -53,6 +53,25 @@ async def test_supervisor_compiles_and_runs_single_slice() -> None:
     assert result["summary"] == "完成 1/1 个切片"  # 汇总环节:人类可读摘要(issue #25 字符串口径)
 
 
+async def test_request_travels_with_slice_to_runner() -> None:
+    """#64 B2:原请求随切片下发到执行段。
+
+    Send 状态是**完整替换**——execute_slice 看不到主 state,原请求必须由 Send 载荷自己带;
+    否则执行段只拿到切片描述,描述缺主语时只能猜(2026-09-16 实录:猜成「宠物饮水机」)。
+    """
+    received: list[str] = []
+
+    async def run(slice_: Slice, task_request: str) -> dict:
+        received.append(task_request)
+        return {"agent": slice_.agent, "description": slice_.description, "executed": True}
+
+    graph = build_supervisor(StubPlanner(plan((1, "order_management", []))), agents={"order_management": run})
+
+    await invoke(graph, "分析一下便携咖啡机在美国市场的选品机会")
+
+    assert received == ["分析一下便携咖啡机在美国市场的选品机会"]
+
+
 async def test_citations_ride_along_with_answer_into_results_and_audit() -> None:
     """issue #51:子图产出的引用条目随答案同份下发(切片结果与审计 run_output 同源)。"""
     citation = {
@@ -66,7 +85,7 @@ async def test_citations_ride_along_with_answer_into_results_and_audit() -> None
         ],
     }
 
-    async def run(slice_: Slice) -> dict:
+    async def run(slice_: Slice, _task_request: str) -> dict:
         return {"actions": [], "answer": "1-3 个工作日到账[1]。", "incomplete": None, "citations": [citation]}
 
     audit = RecordingAudit()

@@ -64,14 +64,77 @@ class AgentState(TypedDict, total=False):
     """业务子图状态:ReAct 消息史 + 审批动作收集 + 终态(答案/未完成)。"""
 
     slice_description: str
+    task_request: str  # 原始用户请求(#64 B2:切片执行段的全局任务,随 Send 下发)
     messages: Annotated[list[dict], merge_lists]
     step_count: int
+    blank_retried: bool  # 作答轮空正文已重试过一次(#64 B1:只重试一次即止)
     tool_calls: list[dict]
     collected: Annotated[list[dict], merge_lists]  # 审批动作参数快照(效果后置,切片边界打包)
     retrieval: Annotated[list[dict], merge_lists]  # 检索命中切块(#52:引用只建在命中的 id 上)
     answer: str | None
     incomplete: str | None
     citations: list[dict]  # issue #51:检索类答案的引用条目(无检索依据即空)
+
+
+# 作答轮正文为空的两句文案(#64 B1):重试提示进消息史,未完成文案进切片终态(incomplete)。
+# 「正文为空」四字是护栏的对外口径(B30③),不要在别处另造说法。
+BLANK_ANSWER_RETRY = "你上一轮没有输出任何正文。请直接输出最终答复的正文内容。"
+BLANK_ANSWER_INCOMPLETE = "正文为空:作答轮未产出正文(重试后仍为空),任务未完成"
+
+
+def slice_prompt(task_request: str, description: str) -> str:
+    """切片执行段的用户消息:全局任务 + 本切片职责 两段(#64 B2)。
+
+    **两段都要**:原请求缺席时,切片描述一旦没点名对象(规划器写「基于切片1数据做需求趋势与价格带
+    分析…(漏水、续航、清洗难等)」),执行段只能从字面猜——2026-09-16 实录里它猜成了「宠物饮水机」,
+    整片跑偏。全局任务缺省(直接驱动子图的测试与旧调用)时退化为纯描述,不摆一个空的「全局任务」段。
+    """
+    if not task_request.strip():
+        return description
+    return f"【全局任务】{task_request}\n\n【本切片职责】{description}"
+
+
+def answer_is_blank(result: ToolCallResult) -> bool:
+    """作答轮(无工具调用轮)是否为空正文(#64 B1)。
+
+    判据取**内容去空白后为空**,不附加「reasoning 非空」的前提:思考模式下正文整体落进
+    ``reasoning_content``(outdoor-trend 实录)只是成因之一,任何空正文都不是答案——而旧口径把
+    空串当作答,``answer=""`` 在 ``results`` 里被 falsy 判掉(``graph.py`` 的 ``if run.get("answer")``),
+    任务却照报 ``completed``,快照落一个 ``answer: null`` 直到 judge 才暴露。
+    """
+    return not (result.content or "").strip()
+
+
+def answer_turn(state: AgentState, result: ToolCallResult, step: dict) -> dict:
+    """作答轮收尾的**单一出口**(ReAct 线 agent 节点 + 客服线 draft 节点共用)。
+
+    空正文 → 本切片内**同预算再问一次**(重试轮照常计步,不额外放宽 step_limit);已有一次仍空
+    → 判未完成。非空 → 归一化引用后出答案。
+    """
+    if answer_is_blank(result):
+        if state.get("blank_retried"):
+            return {
+                **step,
+                "messages": [assistant_message(result)],
+                "tool_calls": [],
+                "incomplete": BLANK_ANSWER_INCOMPLETE,
+            }
+        return {
+            **step,
+            "blank_retried": True,
+            "messages": [assistant_message(result), {"role": "user", "content": BLANK_ANSWER_RETRY}],
+            "tool_calls": [],
+        }
+    # issue #52:作答轮把命中标识归一化为上标编号(与客服线同一解析点);无检索命中则文本原样、引用为空
+    answer, citations = build_citations(result.content or "", state.get("retrieval", []))
+    # 作答轮须清空 tool_calls:该键无 reducer,上一轮的陈旧值会误导条件边
+    return {
+        **step,
+        "messages": [assistant_message(result)],
+        "tool_calls": [],
+        "answer": answer,
+        "citations": citations,
+    }
 
 
 @dataclass(frozen=True)
@@ -183,24 +246,14 @@ def build_react_agent(
             return {"incomplete": f"步数超限({step_limit}):任务未完成,如实终止"}
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": state["slice_description"]},
+            {"role": "user", "content": slice_prompt(state.get("task_request", ""), state["slice_description"])},
             *state.get("messages", []),
         ]
         result = await llm.complete_with_tools(messages, _tools_for_llm())
         step = {"step_count": state.get("step_count", 0) + 1}
         if result.tool_calls:
             return {**step, "messages": [assistant_message(result)], "tool_calls": result.tool_calls}
-        # issue #52:作答轮把命中标识归一化为上标编号(与客服线同一解析点);
-        # 无检索命中则文本原样、引用为空(不硬标)
-        answer, citations = build_citations(result.content or "", state.get("retrieval", []))
-        # 作答轮须清空 tool_calls:该键无 reducer,上一轮的陈旧值会误导条件边
-        return {
-            **step,
-            "messages": [assistant_message(result)],
-            "tool_calls": [],
-            "answer": answer,
-            "citations": citations,
-        }
+        return answer_turn(state, result, step)
 
     async def tool_node(state: AgentState) -> dict:
         observations, collected, executed = await resolve_tool_calls(
@@ -213,22 +266,29 @@ def build_react_agent(
     def after_agent(state: AgentState) -> str:
         if state.get("incomplete") is not None or state.get("answer") is not None:
             return "end"
-        return "tools"
+        if state.get("tool_calls"):
+            return "tools"
+        # 到此只剩一种情形:空正文的**重试轮**(#64 B1,agent 节点已把提示词追加进消息史)——
+        # 显式回 agent 再问一次。不借道 tools 空跑一趟:重试是图上的一个落点,读这里就该看得见。
+        return "retry"
 
     builder = StateGraph(AgentState)  # ty: ignore
     builder.add_node("agent", agent_node)
     builder.add_node("tools", tool_node)
     builder.add_edge(START, "agent")
-    builder.add_conditional_edges("agent", after_agent, {"tools": "tools", "end": END})
+    builder.add_conditional_edges("agent", after_agent, {"tools": "tools", "retry": "agent", "end": END})
     builder.add_edge("tools", "agent")
     return builder.compile(name=name)
 
 
-AgentRunner = Callable[[Slice], Awaitable[dict]]
+AgentRunner = Callable[[Slice, str], Awaitable[dict]]
 
 
 def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
     """把编译好的业务子图包装为监督图的 AgentRunner(spec #7 挂接点)。
+
+    第二参数 = **原始用户请求**(#64 B2):切片 Send 是完整替换状态,执行段看不到主 state,故由
+    监督图显式传入;子图把它当「全局任务」摆在本切片职责之前(``slice_prompt``)。
 
     返回 {"actions": 收集的审批动作参数快照, "answer": 最终答复, "incomplete": 未完成原因|None,
     "citations": 引用条目(#51,随答案一起下发;无检索依据即空)}。
@@ -238,16 +298,18 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
     已收集的审批动作快照随之丢弃(切片判未完成,重新发起即可);编程错误继续上抛。
     """
 
-    async def run(slice_: Slice) -> dict:
+    async def run(slice_: Slice, task_request: str) -> dict:
         try:
-            final = await graph.ainvoke(AgentState(slice_description=slice_.description))
+            final = await graph.ainvoke(AgentState(slice_description=slice_.description, task_request=task_request))
         except LlmFailure as error:
-            return {"actions": [], "answer": None, "incomplete": str(error), "citations": []}
+            # 子图**跑过**了(它失败了):executed 如实为真,未完成原因单独给(#64 A3 三态可辨)
+            return {"actions": [], "answer": None, "incomplete": str(error), "citations": [], "executed": True}
         return {
             "actions": final.get("collected", []),
             "answer": final.get("answer"),
             "incomplete": final.get("incomplete"),
             "citations": final.get("citations") or [],
+            "executed": True,
         }
 
     return run

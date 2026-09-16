@@ -48,8 +48,13 @@ def round_text(content: str) -> ToolCallResult:
     return ToolCallResult(content=content, tool_calls=[])
 
 
-async def run(graph, description: str = "测试切片") -> dict:
-    return await graph.ainvoke(AgentState(slice_description=description))
+def round_thinking(content: str, reasoning: str) -> ToolCallResult:
+    """思考轮:正文与 reasoning 分开给(#64 B1 的实测形状:正文整体落在 reasoning 里)。"""
+    return ToolCallResult(content=content, tool_calls=[], reasoning_content=reasoning)
+
+
+async def run(graph, description: str = "测试切片", task_request: str = "") -> dict:
+    return await graph.ainvoke(AgentState(slice_description=description, task_request=task_request))
 
 
 # —— B6:工具暴露(agent 节点只看见授权清单)——
@@ -181,6 +186,162 @@ async def test_react_step_limit_produces_incomplete() -> None:
     assert result["incomplete"] is not None
     assert "超限" in result["incomplete"]
     assert result.get("answer") is None
+
+
+# —— B30③:作答轮正文为空(空正文不算作答,#64 B1)——
+
+
+async def test_react_blank_answer_retries_once_then_incomplete() -> None:
+    """作答轮空正文 → 同预算重试一次;仍空即判「未完成(正文为空)」,不落一个空的 answer。"""
+    llm = FakeLlm(tool_rounds=[round_thinking("", reasoning="我把整份正文写进思考里了")])
+    graph = build_react_agent(
+        name="product_research",
+        system_prompt="你是选品助手",
+        registry=registry("trend_query"),
+        executor=FakeExecutor(),
+        llm=llm,
+        step_limit=10,
+    )
+    result = await run(graph)
+
+    assert result.get("answer") is None, "空正文不得当作答(它会在 results 里被 falsy 判掉)"
+    assert result["incomplete"] is not None
+    assert "正文为空" in result["incomplete"]
+    assert len([c for c in llm.calls if c["method"] == "complete_with_tools"]) == 2, "重试一次即止(同预算)"
+
+
+async def test_react_blank_answer_recovers_on_retry() -> None:
+    """重试轮给出正文即正常收尾——护栏不该把「思考吃空一次」判成整片失败。"""
+    llm = FakeLlm(
+        tool_rounds=[
+            round_thinking("", reasoning="先想一遍"),
+            round_text("便携咖啡机在美国市场属细分品类,竞争适中。"),
+        ]
+    )
+    graph = build_react_agent(
+        name="product_research",
+        system_prompt="你是选品助手",
+        registry=registry("trend_query"),
+        executor=FakeExecutor(),
+        llm=llm,
+        step_limit=10,
+    )
+    result = await run(graph)
+
+    assert result["answer"] == "便携咖啡机在美国市场属细分品类,竞争适中。"
+    assert result.get("incomplete") is None
+
+
+async def test_react_blank_answer_retry_prompt_reaches_model() -> None:
+    """重试是**再问一次**(提示词里点明正文为空),不是原地重放同一个请求。"""
+    llm = FakeLlm(tool_rounds=[round_thinking("", reasoning="想"), round_text("答案")])
+    graph = build_react_agent(
+        name="product_research",
+        system_prompt="你是选品助手",
+        registry=registry("trend_query"),
+        executor=FakeExecutor(),
+        llm=llm,
+        step_limit=10,
+    )
+    await run(graph)
+
+    second_call = [c for c in llm.calls if c["method"] == "complete_with_tools"][1]
+    assert any("正文" in str(message.get("content", "")) for message in second_call["messages"])
+
+
+# —— B30⑥:切片上下文补齐(原始请求随切片下发,#64 B2)——
+
+
+async def test_react_slice_message_carries_global_task_and_slice_duty() -> None:
+    """切片执行段的用户消息 = 全局任务 + 本切片职责两段。
+
+    反例(2026-09-16 实录):规划器把切片 2 写成分「基于切片1数据做需求趋势与价格带分析…(漏水、
+    续航、清洗难等)」——没点名品类;切片 Agent 拿不到原始请求,只能从痛点猜,猜成了「宠物饮水机」,
+    整片跑偏。原请求在场即无此歧义。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph = build_react_agent(
+        name="product_research",
+        system_prompt="你是选品助手",
+        registry=registry("trend_query"),
+        executor=FakeExecutor(),
+        llm=llm,
+    )
+    await run(
+        graph,
+        description="基于切片1数据做需求趋势与价格带分析",
+        task_request="分析一下便携咖啡机在美国市场的选品机会",
+    )
+
+    user_message = llm.calls[0]["messages"][1]
+    assert user_message["role"] == "user"
+    assert "分析一下便携咖啡机在美国市场的选品机会" in user_message["content"]
+    assert "基于切片1数据做需求趋势与价格带分析" in user_message["content"]
+    assert user_message["content"].index("便携咖啡机") < user_message["content"].index("基于切片1")  # 全局任务在前
+
+
+async def test_slice_message_without_global_task_is_description_only() -> None:
+    """无全局任务(直接驱动子图的旧调用)时退化为纯描述——不摆一个空的「全局任务」段。"""
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph = build_react_agent(
+        name="product_research",
+        system_prompt="你是选品助手",
+        registry=registry("trend_query"),
+        executor=FakeExecutor(),
+        llm=llm,
+    )
+    await run(graph, description="只给切片职责")
+
+    assert llm.calls[0]["messages"][1]["content"] == "只给切片职责"
+
+
+async def test_customer_slice_message_carries_global_task() -> None:
+    """客服线同一条口径(结构化图有自己的消息组装处,不许各写一份)。"""
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_customer_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph, description="处理买家消息", task_request="买家反馈商品破损要求退货")
+
+    user_message = llm.calls[0]["messages"][1]
+    assert "买家反馈商品破损要求退货" in user_message["content"]
+    assert "处理买家消息" in user_message["content"]
+
+
+# —— B30⑤:零命中契约(选品线不得无据出分级/报告,#64 B3)——
+
+
+async def test_product_prompt_states_zero_hit_contract() -> None:
+    """#64 B3:检索零命中时不得执行 scoring / generate_report / draft_create。
+
+    依据:``coffee-maker-us#3#2`` 在有效命中 0 条时仍给出价格带与竞争度评级(还跑了 scoring),
+    判「结论性论断有检索依据」失败——提示词原先只说「情报不足时如实说明」,没有正面禁止
+    「无情报仍出分级与报告」这条路径。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "零命中" in system_prompt
+    for tool_name in ("scoring", "generate_report", "draft_create"):
+        assert tool_name in system_prompt
+    assert "不得执行" in system_prompt
+
+
+async def test_customer_blank_draft_retries_then_incomplete() -> None:
+    """B30③ 客服线终稿同护栏(draft 就是客服的作答轮):空 → 回 draft 重问一次;仍空判未完成。"""
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("faq_search", {"query": "退货"})),
+            round_thinking("", reasoning="答案写在思考里"),
+        ]
+    )
+    executor = FakeExecutor(results={"faq_search": {"hits": []}})
+    graph, _ = build_customer_agent(executor=executor, llm=llm, step_limit=10)
+    result = await run(graph)
+
+    assert result.get("answer") is None
+    assert result["incomplete"] is not None
+    assert "正文为空" in result["incomplete"]
 
 
 # —— B12:客服查证优先(图级边约束)——

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -24,7 +25,7 @@ from python_backend.core.graph import SupervisorState, build_supervisor
 from python_backend.core.planning import Slice, SlicePlan
 from python_backend.db.models import User
 from python_backend.db.session import SessionFactory
-from python_backend.infrastructure.llm import LlmFailure
+from python_backend.infrastructure.llm import LlmFailure, ToolCallResult
 from tests.conftest import (
     FakeApply,
     FakeExecutor,
@@ -128,11 +129,42 @@ async def test_agent_runner_converts_llm_failure_to_incomplete() -> None:
     """子图内 LLM 失败 → runner 如实返回「未完成+原因」,不穿透为异常。"""
     runner = make_agent_runner(_failing_customer_graph())
 
-    result = await runner(Slice(no=1, agent="customer_service", description="回复买家"))
+    result = await runner(Slice(no=1, agent="customer_service", description="回复买家"), "回复买家")
 
     assert result["answer"] is None
     assert result["actions"] == [], "失败切片已收集的审批动作快照丢弃(切片判未完成,重新发起即可)"
     assert "HTTP 400" in result["incomplete"]
+    # #64 A3:子图**跑过**(它失败了)——executed 须如实为真,否则快照里「跑了但空产出」与
+    # 「没跑」同形(ReAct 子图返回的 dict 原先根本没这个键,任务线因此恒 false)
+    assert result["executed"] is True
+
+
+async def test_agent_runner_reports_executed_for_successful_slice() -> None:
+    """#64 A3:正常产出的切片同样如实报 executed(三态里「空产出」那一态才靠 executed=True 辨认)。"""
+    graph, _ = build_customer_agent(
+        executor=FakeExecutor(results={"faq_search": {"hits": []}}),
+        llm=FakeLlm(
+            tool_rounds=[
+                ToolCallResult(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "faq_search", "arguments": json.dumps({"query": "退货"})},
+                        }
+                    ],
+                ),
+                ToolCallResult(content="已查证。", tool_calls=[]),
+            ]
+        ),
+    )
+
+    result = await make_agent_runner(graph)(Slice(no=1, agent="customer_service", description="回复买家"), "退货")
+
+    assert result["answer"] == "已查证。"
+    assert result["executed"] is True
+    assert result["incomplete"] is None
 
 
 async def test_agent_runner_propagates_programming_error() -> None:
@@ -141,7 +173,7 @@ async def test_agent_runner_propagates_programming_error() -> None:
     runner = make_agent_runner(graph)
 
     with pytest.raises(KeyError):
-        await runner(Slice(no=1, agent="customer_service", description="回复买家"))
+        await runner(Slice(no=1, agent="customer_service", description="回复买家"), "回复买家")
 
 
 # —— 接缝 2:监督图聚合、审计、不进 apply ——
@@ -194,7 +226,7 @@ def test_create_task_llm_failure_returns_failed_and_broadcasts() -> None:
 def test_create_task_unexpected_error_converges_then_raises() -> None:
     """编程错误:行收敛 failed + 广播 task.failed,端点仍 500(异常原样上抛)。"""
 
-    async def boom(slice_) -> dict:
+    async def boom(slice_, _task_request: str) -> dict:
         raise KeyError("编程错误")
 
     client, _store, emitter = _make_client({"order_management": boom}, raise_app_exceptions=False)
@@ -230,7 +262,7 @@ def test_resume_llm_failure_converges_and_broadcasts() -> None:
 def test_resume_unexpected_error_converges_then_raises() -> None:
     """恢复入口:编程错误 → 行收敛 failed + 广播 task.failed,端点仍 500。"""
 
-    async def scripted(slice_) -> dict:
+    async def scripted(slice_, _task_request: str) -> dict:
         if slice_.no == 2:
             raise KeyError("编程错误")
         return {"agent": slice_.agent, "description": slice_.description, "executed": True, "actions": [PUBLISH]}
@@ -435,7 +467,7 @@ async def test_task_row_failed_on_unexpected_error() -> None:
     """编程错误:行收敛 failed(端点 500,观测保留)。"""
     require_postgres()
 
-    async def boom(slice_) -> dict:
+    async def boom(slice_, _task_request: str) -> dict:
         raise KeyError("编程错误")
 
     user_id, username = await _seed_user()

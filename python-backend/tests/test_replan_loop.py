@@ -24,7 +24,7 @@ def scripted_runner(executed: list[int], actions_by_no: dict[int, list[dict]] | 
     """按切片号返回收集动作的 runner:未列出的切片无审批动作(直行)。"""
     actions_by_no = actions_by_no or {}
 
-    async def run(slice_: Slice) -> dict:
+    async def run(slice_: Slice, _task_request: str) -> dict:
         executed.append(slice_.no)
         result: dict = {"agent": slice_.agent, "description": slice_.description, "executed": True}
         if slice_.no in actions_by_no:
