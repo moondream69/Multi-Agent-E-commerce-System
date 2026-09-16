@@ -55,6 +55,7 @@ def _is_blank(text: object) -> bool:
     """
     return not str(text or "").strip()
 
+
 # 合成数据播种步骤(顺序硬约束,照 OPERATIONS「试运行数据 provisioning」:商品 → 买家 → 订单)
 SEED_STEPS: tuple[tuple[str, str], ...] = (
     ("/api/import/products", "synth-products.csv"),
