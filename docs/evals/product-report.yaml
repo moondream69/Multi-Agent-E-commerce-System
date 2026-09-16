@@ -1,13 +1,20 @@
 version: 1
 scenarios:
-- id: coffee-maker-us
+- id: smart-home-us
   surface: 选品报告
   input: |-
-    分析一下便携咖啡机在美国市场的选品机会
+    分析一下智能家居在美国市场的选品机会
   rubric:
   - 给出明确的评分等级(或等价的分级结论),并说明该等级的判断依据
   - 结论性论断有检索依据:引用标记与检索命中对应,无凭空论断
-  note: 首条金标场景(选品 tracer 先行):固定指令取模拟器运营指令同风格文案,不随任何生成漂移
+  note: >-
+    首条金标场景(选品 tracer 先行):固定指令取模拟器运营指令同风格文案,不随任何生成漂移。
+    品类覆盖依据(#64 B4 重铸):情报语料 usitc-global-digital-trade-1 的智能家居段有可用市场数据
+    (2016 年美国市场 $10.4B、2017 年预计 $14.6B 约占全球 70%,见该文档 p259),与 smart-band-us
+    同属消费电子/智能硬件的检索面。**原 id = coffee-maker-us、原品类 = 便携咖啡机**——该品类在
+    情报语料零覆盖(全库无咖啡机市场数据),切片只能如实拒答而判据要的分级本就不可能产出;
+    这是**场景与语料错配**,不是 Agent 缺陷(#64 分诊表)。改名后 Langfuse dataset 里会留下
+    一条无 run 的旧 item(coffee-maker-us),投影按 id 幂等、不做删除。
 - id: smart-band-us
   surface: 选品报告
   input: |-
