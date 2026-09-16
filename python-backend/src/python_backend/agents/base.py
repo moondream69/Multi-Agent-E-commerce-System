@@ -81,6 +81,13 @@ class AgentState(TypedDict, total=False):
 BLANK_ANSWER_RETRY = "你上一轮没有输出任何正文。请直接输出最终答复的正文内容。"
 BLANK_ANSWER_INCOMPLETE = "正文为空:作答轮未产出正文(重试后仍为空),任务未完成"
 
+# 业务子图 LLM 调用的输出预算(#64 裁决补):**思考计入该预算**,默认档 2000 会被吃穿——实测
+# (新批 trace)空正文轮的 reasoning 都在 7374-7817 字,而作答轮原先吃 `complete_with_tools` 的
+# 默认 2000。同 #61 的 judge 预算(1024 → 16384)一类问题,处置同为放宽:max_tokens 是**上限不是
+# 预留**,实际消耗与延迟不因此变大。三个调用点(ReAct agent / 客服 verify / 客服 draft)共用本常量,
+# 不许各写一份。
+AGENT_MAX_TOKENS = 16384
+
 
 def slice_prompt(task_request: str, description: str) -> str:
     """切片执行段的用户消息:全局任务 + 本切片职责 两段(#64 B2)。
@@ -249,7 +256,7 @@ def build_react_agent(
             {"role": "user", "content": slice_prompt(state.get("task_request", ""), state["slice_description"])},
             *state.get("messages", []),
         ]
-        result = await llm.complete_with_tools(messages, _tools_for_llm())
+        result = await llm.complete_with_tools(messages, _tools_for_llm(), max_tokens=AGENT_MAX_TOKENS)
         step = {"step_count": state.get("step_count", 0) + 1}
         if result.tool_calls:
             return {**step, "messages": [assistant_message(result)], "tool_calls": result.tool_calls}

@@ -848,7 +848,9 @@ class FakeLlm:
         max_tokens: int = 2000,
     ) -> ToolCallResult:
         index = len([c for c in self.calls if c["method"] == "complete_with_tools"])
-        self.calls.append({"method": "complete_with_tools", "messages": messages, "tools": tools})
+        self.calls.append(
+            {"method": "complete_with_tools", "messages": messages, "tools": tools, "max_tokens": max_tokens}
+        )
         if not self._tool_rounds:
             return ToolCallResult(content="", tool_calls=[])
         response = self._tool_rounds[min(index, len(self._tool_rounds) - 1)]

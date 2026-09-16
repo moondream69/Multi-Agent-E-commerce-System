@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from python_backend.agents.base import (
+    AGENT_MAX_TOKENS,
     ToolCallingLlmClient,
     answer_turn,
     assistant_message,
@@ -86,7 +87,9 @@ def build_customer_agent(
         if _over_limit(state):
             return {"incomplete": f"步数超限({step_limit}):任务未完成,如实终止"}
         result = await llm.complete_with_tools(
-            _messages(state, VERIFY_SYSTEM), [t.to_openai() for t in registry.visible_for("verify")]
+            _messages(state, VERIFY_SYSTEM),
+            [t.to_openai() for t in registry.visible_for("verify")],
+            max_tokens=AGENT_MAX_TOKENS,
         )
         step = {"step_count": state.get("step_count", 0) + 1}
         if result.tool_calls:
@@ -129,7 +132,9 @@ def build_customer_agent(
         if _over_limit(state):
             return {"incomplete": f"步数超限({step_limit}):任务未完成,如实终止"}
         result = await llm.complete_with_tools(
-            _messages(state, DRAFT_SYSTEM), [t.to_openai() for t in registry.visible_for("draft")]
+            _messages(state, DRAFT_SYSTEM),
+            [t.to_openai() for t in registry.visible_for("draft")],
+            max_tokens=AGENT_MAX_TOKENS,
         )
         step = {"step_count": state.get("step_count", 0) + 1}
         if result.tool_calls:

@@ -249,6 +249,35 @@ async def test_react_blank_answer_retry_prompt_reaches_model() -> None:
     assert any("正文" in str(message.get("content", "")) for message in second_call["messages"])
 
 
+async def test_react_agent_output_budget_covers_thinking() -> None:
+    """#64 裁决补:作答轮的输出预算须罩得住思考——默认 2000 被 reasoning 吃穿是空正文的根因。
+
+    实测(新批 trace):空正文轮的 reasoning 都在 7374-7817 字,有正文的轮 ≤4008 字;而作答轮走
+    `complete_with_tools` 的默认 `max_tokens=2000`(未显式传参)。同 #61 的 judge 预算一类问题,
+    处置同为「放宽」——max_tokens 是上限不是预留,实际消耗不因此变大。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("答案")])
+    graph = build_react_agent(
+        name="order_management",
+        system_prompt="你是订单助手",
+        registry=registry("list_orders"),
+        executor=FakeExecutor(),
+        llm=llm,
+    )
+    await run(graph)
+
+    assert llm.calls[0]["max_tokens"] >= 8192, "预算须罩得住思考(实测思考可达 7000+ 字)"
+
+
+async def test_customer_agent_output_budget_covers_thinking() -> None:
+    """客服线同一口径(verify 与 draft 两个节点都走 LLM,预算不许各写一份)。"""
+    llm = FakeLlm(tool_rounds=[round_text("答案")])
+    graph, _ = build_customer_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    assert llm.calls[0]["max_tokens"] >= 8192
+
+
 # —— B30⑥:切片上下文补齐(原始请求随切片下发,#64 B2)——
 
 
