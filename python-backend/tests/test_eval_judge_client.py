@@ -37,7 +37,7 @@ def _request(criteria: tuple[str, ...] = ("判据甲", "判据乙")) -> JudgeReq
                 "doc_id": "usitc-digital-trade",
                 "title": "全球数字贸易",
                 "source": "USITC",
-                "chunks": [{"id": "usitc-digital-trade#3"}],
+                "chunks": [{"id": "usitc-digital-trade#3", "content": "2016 年全球可穿戴市场增长 20%,达 $16.2B。"}],
             },
         ),
         criteria=criteria,
@@ -89,14 +89,118 @@ def test_parse_judgment_rejects_bad_output(text: str, expected: int, reason: str
 
 
 def test_render_prompt_carries_question_answer_citations_and_criteria() -> None:
-    """判据请求 → 提示词:任务指令 / 产出 / 引用条目(编号 → 出处)/ 评分标准 / 输出格式。"""
+    """判据请求 → 提示词:任务指令 / 产出 / 引用条目(编号 → 出处 + **切块正文**)/ 评分标准 / 输出格式。"""
     prompt = render_prompt(_request())
 
     assert "分析一下便携咖啡机在美国市场的选品机会" in prompt
     assert "美国市场咖啡机需求上行 [1]" in prompt
-    assert "[1] 全球数字贸易 — USITC;切块:usitc-digital-trade#3" in prompt
+    assert "[1] 全球数字贸易 — USITC" in prompt
+    assert "usitc-digital-trade#3:2016 年全球可穿戴市场增长 20%,达 $16.2B。" in prompt
     assert "1. 判据甲" in prompt and "2. 判据乙" in prompt
     assert "<标准序号>|<0 或 1>|<一句话理由>" in prompt  # 输出格式约束写进提示词(不靠参数)
+
+
+def test_render_prompt_carries_chunk_text_so_citations_are_verifiable() -> None:
+    """#64 A1:判「引用是否支撑答案」要能**核验**,故切块正文须进提示词。
+
+    只给 doc 级标题 + 切块编号时,judge 无从知道该编号里写了什么;配合「宁可判失败」的硬指令,
+    面对无法核验的论断只能记 0——2026-09-16 批次批 5 条失败即由此误判(载荷里本就有原文)。
+    """
+    request = JudgeRequest(
+        scenario_id="cs-workbench-stock-zh",
+        slice_no=1,
+        input="桌面收纳架 深空黑款现在还有货吗?大概什么时候能发货?",
+        answer="加急专线东南亚 3-5 个工作日、欧美 5-7 个工作日,运费加收 $45-$90 [1]",
+        citations=(
+            {
+                "number": 1,
+                "doc_id": "faq-logistics",
+                "title": "下单后多久发货?",  # doc 级标题只取首块:加急那条的标题根本不出现
+                "source": "自造 FAQ 语料库",
+                "chunks": [
+                    {"id": "faq-logistics#1", "content": "Q: 下单后多久发货?\nA: 现货商品在付款后 48 小时内发出。"},
+                    {
+                        "id": "faq-logistics#13",
+                        "content": (
+                            "Q: 可以加急配送吗?\nA: 支持加急:东南亚 3-5 个工作日、欧美 5-7 个工作日,运费 $45-$90。"
+                        ),
+                    },
+                ],
+            },
+        ),
+        criteria=("结论性陈述有查证证据支撑",),
+    )
+
+    prompt = render_prompt(request)
+
+    assert "faq-logistics#13:Q: 可以加急配送吗?" in prompt  # 判定所依据的正文在场
+    assert "$45-$90" in prompt
+
+
+def test_render_prompt_truncates_long_chunk_with_explicit_mark() -> None:
+    """超长切块截断——但**显式标注**(不静默截):judge 须知道看到的不全。"""
+    body = "正文" * 500  # 远超单块上限
+    request = JudgeRequest(
+        scenario_id="s",
+        slice_no=1,
+        input="问",
+        answer="答 [1]",
+        citations=(
+            {"number": 1, "doc_id": "d", "title": "t", "source": "s", "chunks": [{"id": "d#0", "content": body}]},
+        ),
+        criteria=("判据甲",),
+    )
+
+    prompt = render_prompt(request)
+
+    assert "d#0:正文正文" in prompt
+    assert f"…(截断,全文 {len(body)} 字)" in prompt
+    assert body not in prompt  # 确实截了
+
+
+def test_render_prompt_caps_total_citation_budget_explicitly() -> None:
+    """引用块总预算:命中多时后段切块只给标识 + 从略标注(不静默丢,也不无界膨胀提示词)。"""
+    chunks = [{"id": f"d#{index}", "content": "填" * 600} for index in range(30)]
+    request = JudgeRequest(
+        scenario_id="s",
+        slice_no=1,
+        input="问",
+        answer="答 [1]",
+        citations=({"number": 1, "doc_id": "d", "title": "t", "source": "s", "chunks": chunks},),
+        criteria=("判据甲",),
+    )
+
+    prompt = render_prompt(request)
+
+    assert "(正文从略——引用块已达总预算)" in prompt
+    assert "d#29:(正文从略——引用块已达总预算)" in prompt  # 末块如实标从略,不是消失
+    assert len(prompt) < 12000  # 预算罩得住:30 块 x 600 字不会被整段塞进来
+
+
+def test_render_prompt_marks_chunk_without_content() -> None:
+    """载荷没带正文(旧快照 / 非检索条目)如实标注——不假装有证据,也不当作有正文。"""
+    request = JudgeRequest(
+        scenario_id="s",
+        slice_no=1,
+        input="问",
+        answer="答 [1]",
+        citations=({"number": 1, "doc_id": "d", "title": "t", "source": "s", "chunks": [{"id": "d#0"}]},),
+        criteria=("判据甲",),
+    )
+
+    assert "d#0:(无正文)" in render_prompt(request)
+
+
+def test_render_prompt_states_action_results_are_not_evidence() -> None:
+    """#64 A1:动作类陈述(工单/草稿/审批)非「查证证据」——边界写进判定要求。
+
+    依据:``cs-task-returns-zh#3#3`` 判词把「已登记升级工单(工单号 2)」当作无据论断;那是
+    **真实工具产出**而非编造。工具结果不进本载荷(收口取措辞收窄,不取载荷扩容)。
+    """
+    prompt = render_prompt(_request())
+
+    assert "动作执行结果" in prompt
+    assert "不是「查证证据」" in prompt
 
 
 def test_render_prompt_marks_absent_citations() -> None:
@@ -125,7 +229,7 @@ def test_render_prompt_swaps_production_block_for_plan_request() -> None:
     assert "【切片计划(Manager 的规划产出:切片划分 + 依赖声明)】" in prompt
     assert "切片 1:业务域 product_research | 说明:检索美国市场情报 | 依赖:无 | 审批点:无" in prompt
     assert "【产出(切片 0)】" not in prompt  # 计划面不摆一个空产出段
-    assert "【该产出的引用条目(编号 → 出处)】" not in prompt
+    assert "【该产出的引用条目(编号 → 出处 + 切块正文)】" not in prompt
     assert "1. 依赖声明与执行先序一致" in prompt and "3. 领域路由正确" in prompt
 
 

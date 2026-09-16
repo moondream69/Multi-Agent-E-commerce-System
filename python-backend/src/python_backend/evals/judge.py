@@ -31,6 +31,11 @@ from python_backend.settings import Settings, get_settings
 MAX_TOKENS = 16384
 # 坏输出报错时随带模型原文的截断长度(证据够定位即可,不把整篇塞进报错)
 _RAW_EXCERPT = 300
+# 单切块正文进提示词的字符上限 / 引用块总预算(#64 A1):两级上限让提示词有界,
+# 二者超限都**显式标注**(见 _citation_lines)——判分材料的截断必须是可见事实。
+# 上限管的是**被引正文**的长度;标识前缀与截断标注另计(整行计费,见 _chunk_line)。
+_CHUNK_EXCERPT = 600
+_CITATIONS_BUDGET = 6000
 
 
 @dataclass(frozen=True)
@@ -118,8 +123,10 @@ class Judge(Protocol):
 def render_prompt(request: JudgeRequest) -> str:
     """判据请求 → 提示词(风格与输出约束全在此;请求本身仍是朴素 messages)。
 
-    引用条目**只给溯源与切块标识,不给原文**:判「结论是否有检索依据」看的是引用的出处是否
-    对得上题目,而答案文本已含锚定的 ``[n]``;塞进全文只会放大 token 且让 judge 转去评文风。
+    引用条目**给溯源 + 切块标识 + 切块正文**(#64 A1 推翻本函数原先「不给原文」的口径):
+    原口径假设「看编号与出处就能判引用是否对得上题目」,但引用按**文档**合并编号、doc 级标题只取
+    首块——同编号下其余切块的内容无从得知,judge 面对无法核验的论断只能记 0。给正文才可判;
+    token 由两级上限罩住(见 ``_citation_lines``),超限显式标注。
 
     判分对象二选一:``plan`` 非空 = 规划切片面(评的是整份切片计划,产出段换成【切片计划】);
     否则 = 既有「文本产出 + 引用条目」形状(票 #59/#60 的线原样不动)。
@@ -139,7 +146,7 @@ def render_prompt(request: JudgeRequest) -> str:
                 f"【产出(切片 {request.slice_no})】",
                 request.answer,
                 "",
-                "【该产出的引用条目(编号 → 出处)】",
+                "【该产出的引用条目(编号 → 出处 + 切块正文)】",
             ]
         )
         lines.extend(_citation_lines(request.citations))
@@ -152,6 +159,8 @@ def render_prompt(request: JudgeRequest) -> str:
             "【判定要求】",
             "- 每条标准独立判定,不受其他标准结果影响;宁可判失败,不要放过没把握的。",
             "- 只依据上面给的材料,不引入你自己的外部知识。",
+            "- 动作执行结果(工单登记 / 草稿创建 / 审批提交)**不是「查证证据」**,"
+            "不得因产出未给出其溯源而判失败(#64:那是真实动作不是编造,工具结果不进本材料)。",
             "",
             "【输出格式】每条标准输出一行,形如:",
             "<标准序号>|<0 或 1>|<一句话理由>",
@@ -163,16 +172,49 @@ def render_prompt(request: JudgeRequest) -> str:
 
 
 def _citation_lines(citations: tuple[dict, ...]) -> list[str]:
-    """引用载荷 → 提示词里的「编号 → 出处」行(空载荷如实标注,不假装有依据)。"""
+    """引用载荷 → 提示词里的「编号 → 出处 + 切块正文」行(空载荷如实标注,不假装有依据)。
+
+    **正文必须给**(#64 A1,推翻本函数原先「只给溯源与切块标识」的口径):引用按**文档**合并编号,
+    doc 级 ``title`` 只取首个被引切块的标题——同编号下其余切块写了什么,judge 从标题与编号上
+    根本看不出来。2026-09-16 批次批的实录是:5 条判失败(客服线 4 + 选品 1)在载荷里**都有原文**
+    逐字对应,judge 却因无从核验而记 0(它被要求「只依据给出的材料」+「宁可判失败」,没有第三条路)。
+    给全文才让判据「结论性陈述有查证证据支撑」**可判**。
+
+    token 有界靠两级上限,截断一律**显式标注**(不静默截、不静默丢):单块超 ``_CHUNK_EXCERPT`` 截到该
+    上限并标全文长度;引用块累计超 ``_CITATIONS_BUDGET`` 后,其余切块只给标识 + 从略标注——
+    judge 读到「从略」才知道自己看到的不是全部。
+    """
     if not citations:
         return ["(无——该产出没有引用条目)"]
     lines: list[str] = []
+    budget = _CITATIONS_BUDGET
     for entry in citations:
-        chunk_ids = "、".join(str(chunk.get("id", "")) for chunk in entry.get("chunks") or [])
         title = entry.get("title") or "(无标题)"
         source = entry.get("source") or "(无来源)"
-        lines.append(f"[{entry.get('number')}] {title} — {source};切块:{chunk_ids or '(无)'}")
+        lines.append(f"[{entry.get('number')}] {title} — {source}")
+        for chunk in entry.get("chunks") or []:
+            line, cost = _chunk_line(chunk, budget)
+            lines.append(line)
+            budget -= cost
     return lines
+
+
+def _chunk_line(chunk: dict, budget: int) -> tuple[str, int]:
+    """一条切块 → (提示词行, 占用的预算长度);正文缺席与预算耗尽都如实标注。
+
+    计费按**整行**收(标识前缀、正文、截断标注全算),不比正文长度——费与所见必须一致,
+    少算前缀就会让实际提示词超出预算(评审指出的一处)。
+    """
+    chunk_id = str(chunk.get("id", ""))
+    text = str(chunk.get("content") or "").strip()
+    if not text:
+        return f"    {chunk_id}:(无正文)", 0
+    if budget <= 0:
+        return f"    {chunk_id}:(正文从略——引用块已达总预算)", 0
+    if len(text) > _CHUNK_EXCERPT:
+        text = f"{text[:_CHUNK_EXCERPT]}…(截断,全文 {len(text)} 字)"
+    line = f"    {chunk_id}:{text}"
+    return line, len(line)
 
 
 def parse_judgment(text: str, expected: int) -> list[RubricScore]:
