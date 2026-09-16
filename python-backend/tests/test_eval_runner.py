@@ -400,6 +400,32 @@ async def test_scenario_without_slices_fails_explicitly(tmp_path: Path) -> None:
         await runner.run_scenarios([_scenario()])
 
 
+async def test_scenario_with_blank_slice_fails_explicitly(tmp_path: Path) -> None:
+    """#64 A4:切片无产出且**未标未完成** → 显式报错,不落一份「看着正常」的 null 快照。
+
+    依据:``outdoor-trend`` 的切片 ``answer: null、executed: false``,任务却报 ``completed``——
+    快照照落,直到 judge 才判出「产出为空」。跑批器是能最早发现它的地方,就该在这里中止。
+    """
+    blank = {**SLICE_RESULT, "answer": None}
+    runner, _ = _runner(tmp_path, _handler(detail={"status": "completed", "results": {"1": blank}}))
+    await runner.login("admin", "pw")
+
+    with pytest.raises(RuntimeError, match="空产出"):
+        await runner.run_scenarios([_scenario()])
+
+
+async def test_scenario_with_incomplete_slice_records_reason(tmp_path: Path) -> None:
+    """未完成(带原因)是**如实产出**而非异常:照落快照,原因随切片进快照(judge 据此判「产出为空」)。"""
+    marked = {**SLICE_RESULT, "answer": None, "incomplete": "步数超限(10):任务未完成,如实终止"}
+    runner, _ = _runner(tmp_path, _handler(detail={"status": "completed", "results": {"1": marked}}))
+    await runner.login("admin", "pw")
+
+    [snapshot] = await runner.run_scenarios([_scenario()])
+
+    assert snapshot.slices[0].incomplete == "步数超限(10):任务未完成,如实终止"
+    assert snapshot.slices[0].answer is None
+
+
 async def test_check_clean_db_requires_sentinel(tmp_path: Path) -> None:
     """哨兵缺席 → 报错点名(防「忘了把 app 切到净库」把播种与跑批写进演示库)。"""
     runner, _ = _runner(tmp_path, _handler(products=[{"sku": "SYN-HM-001"}]))

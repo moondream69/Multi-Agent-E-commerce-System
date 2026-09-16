@@ -46,6 +46,15 @@ CLIENT_TIMEOUT = 900.0
 # 工作台线快照的单切片落点(该线一次 = 一条草稿;切片号是标识不是下标,恒 1)
 WORKBENCH_SLICE_NO = 1
 
+
+def _is_blank(text: object) -> bool:
+    """产出为空(去空白后为空)——跑批侧的**空产出口径**,两处检查共用。
+
+    与 ``agents/base.answer_is_blank`` 是同一条口径(那条管作答轮护栏、这条管跑批闸):跑批器是
+    黑盒 REST 客户端,不 import 业务包内件,故各自持有——**两处改一处必改另一处**。
+    """
+    return not str(text or "").strip()
+
 # 合成数据播种步骤(顺序硬约束,照 OPERATIONS「试运行数据 provisioning」:商品 → 买家 → 订单)
 SEED_STEPS: tuple[tuple[str, str], ...] = (
     ("/api/import/products", "synth-products.csv"),
@@ -162,6 +171,15 @@ class EvalRunner:
         slices = slices_from_results(detail.get("results"))
         if not slices:
             raise RuntimeError(f"场景 {scenario.id} 无切片产出(任务详情的 results 为空)——无可评对象")
+        # #64 A4:空产出要在**跑批这里**就暴露。任务行报 completed 却给出无答案的切片,正是
+        # outdoor-trend 的实录(answer: null 静默通过,直到 judge 判「产出为空」才发现);未完成
+        # 是如实产出(带原因),不算空产出——两者靠 incomplete 分开。
+        blank = [item.no for item in slices if _is_blank(item.answer) and not item.incomplete]
+        if blank:
+            raise RuntimeError(
+                f"场景 {scenario.id} 切片 {blank} 无产出且未标未完成——空产出与未完成须可辨,"
+                "跑批中止(不落一份看着正常的空快照)"
+            )
         snapshot = Snapshot(
             scenario_id=scenario.id,
             surface=scenario.surface,
@@ -191,7 +209,7 @@ class EvalRunner:
             raise RuntimeError(f"场景 {scenario.id} 起草失败({response.status_code}):{response.text[:200]}")
         payload = response.json()
         draft = str(payload.get("draft") or "")
-        if not draft.strip():
+        if _is_blank(draft):
             raise RuntimeError(f"场景 {scenario.id} 草稿产出为空——无可评对象(端点返回了空草稿)")
         trace_id = eval_root_trace_id(scenario.id)
         snapshot = Snapshot(

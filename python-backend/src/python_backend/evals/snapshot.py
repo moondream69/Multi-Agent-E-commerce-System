@@ -26,15 +26,24 @@ from pathlib import Path
 from typing import Any
 
 # 快照 schema 版本:字段增删即升版(读旧快照时报错清晰,不静默按新形状解释)。
+# **3**(#64 A3):切片增 ``incomplete``(未完成原因)——三态可辨(B30④)。
 # **2**(票 #61):随带 ``plan`` 规划段——规划切片场景的判分对象。
 # **1** → 2 的断代是**有意**的:版本闸拒读旧快照,而旧 run 的快照重跑一次即可(产出快照是
 # 一次性产物,不承担历史可比性——历史分数归 Langfuse,不归本地 JSON)。
-SNAPSHOT_VERSION = 2
+# ⚠️ **2 → 3 的次序有讲究**(#64 spec):判分材料修正后的「现批重评」必须**先于**本升版跑完——
+# 版本闸一旦抬起,``run-20260916T065030Z`` 的 v2 快照就读不动了,而那次重评正是 B30① 的证据。
+SNAPSHOT_VERSION = 3
 
 
 @dataclass(frozen=True)
 class SliceOutput:
-    """一个切片的产品面产出(``results`` 里的一条,字段与 graph.py 的 run_output 对齐)。"""
+    """一个切片的产品面产出(``results`` 里的一条,字段与 graph.py 的 run_output 对齐)。
+
+    ``incomplete``(#64 A3):该切片**未完成**的原因(步数超限 / 子图 LLM 失败 / 作答轮正文为空),
+    ``None`` 即「跑完了」。它与 ``answer is None`` 联用才有意义——三态靠这两个字段分开:
+    没执行(``executed=False``)/ 空产出(``executed=True`` 且两者皆空)/ 未完成(``incomplete`` 有值)。
+    没有它时,「没执行」与「跑了但空产出」在快照里同形,读快照的人会误判。
+    """
 
     no: int
     agent: str
@@ -42,6 +51,7 @@ class SliceOutput:
     answer: str | None
     citations: tuple[dict, ...]
     executed: bool
+    incomplete: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +119,7 @@ def slices_from_results(results: object) -> tuple[SliceOutput, ...]:
                 answer=entry.get("answer"),
                 citations=tuple(entry.get("citations") or ()),
                 executed=bool(entry.get("executed")),
+                incomplete=_optional_str(entry.get("incomplete")),
             )
         )
     return tuple(sorted(slices, key=lambda item: item.no))
@@ -253,6 +264,7 @@ def _slice_from_json(entry: Any, path: Path) -> SliceOutput:
         answer=entry.get("answer"),
         citations=tuple(citations),
         executed=bool(entry.get("executed")),
+        incomplete=_optional_str(entry.get("incomplete")),
     )
 
 
@@ -278,6 +290,7 @@ def _payload(snapshot: Snapshot) -> dict:
                 "answer": item.answer,
                 "citations": list(item.citations),
                 "executed": item.executed,
+                "incomplete": item.incomplete,
             }
             for item in snapshot.slices
         ],

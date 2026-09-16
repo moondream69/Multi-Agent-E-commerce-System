@@ -68,7 +68,15 @@ def _snapshot() -> Snapshot:
                 citations=tuple(CITATIONS),
                 executed=True,
             ),
-            SliceOutput(no=2, agent="product_research", description="评分", answer=None, citations=(), executed=False),
+            SliceOutput(
+                no=2,
+                agent="product_research",
+                description="评分",
+                answer=None,
+                citations=(),
+                executed=True,
+                incomplete="正文为空:作答轮未产出正文(重试后仍为空),任务未完成",
+            ),
         ),
         plan=slices_from_plan(PLAN),
         corpus_fingerprint="f" * 64,
@@ -102,6 +110,55 @@ def test_payload_is_readable_json(tmp_path: Path) -> None:
     assert raw["version"] == SNAPSHOT_VERSION
     assert raw["corpus_batch_id"] is None
     assert "选品报告" in path.read_text(encoding="utf-8")
+
+
+def test_snapshot_distinguishes_not_executed_blank_and_incomplete() -> None:
+    """#64 A3:三态可辨——「没执行 / 空产出 / 未完成」不得在快照里同形(B30④)。
+
+    依据:任务线的 ``executed`` 恒 false(ReAct 子图返回的 dict 根本没这个键,``graph.py`` 的
+    ``if run.get("executed")`` 永不成立),于是「切片没跑」与「跑了但空产出」长得一模一样——
+    2026-09-16 读快照时被它误导过。修法:``executed`` 如实 + ``incomplete``(未完成原因)落盘。
+    """
+    snapshot = Snapshot(
+        scenario_id="s",
+        surface="选品报告",
+        run_name="r",
+        thread_id="t",
+        trace_id="x",
+        status="completed",
+        slices=(
+            SliceOutput(no=1, agent="a", description="d", answer="结论", citations=(), executed=True),
+            SliceOutput(
+                no=2, agent="a", description="d", answer=None, citations=(), executed=True, incomplete="步数超限"
+            ),
+            SliceOutput(no=3, agent="a", description="d", answer=None, citations=(), executed=False, incomplete=None),
+        ),
+        plan=(),
+        corpus_fingerprint="f" * 64,
+        corpus_batch_id=None,
+        dataset_run_id=None,
+        recorded_at=RECORDED_AT,
+    )
+
+    states = {(item.executed, item.answer is None, item.incomplete is not None) for item in snapshot.slices}
+    assert len(states) == 3, "三态必须在快照字段上互不相同"
+
+
+def test_incomplete_reason_roundtrips(tmp_path: Path) -> None:
+    """未完成原因随快照落盘并可读回(排查时不只知道「没答案」,还知道为什么)。"""
+    restored = read_snapshot(write_snapshot(tmp_path, _snapshot()))
+
+    assert restored.slices[1].incomplete is not None
+    assert "正文为空" in restored.slices[1].incomplete
+    assert restored.slices[0].incomplete is None  # 正常产出不凭空多一个未完成标记
+
+
+def test_slices_from_results_reads_incomplete_marker() -> None:
+    """API 载荷里的 incomplete 原样读入(results 是它的唯一来源)。"""
+    slices = slices_from_results({"1": {"agent": "a", "description": "d", "incomplete": "步数超限(10)"}})
+
+    assert slices[0].answer is None
+    assert slices[0].incomplete == "步数超限(10)"
 
 
 def test_slices_from_results_parses_api_payload() -> None:
