@@ -230,6 +230,9 @@ uv run python scripts/evals.py score [--run <run 名>]  # 4. 回评(不重跑任
 ```
 
 - **前置**:Langfuse 已启用(见「生产切换清单」第 6 步,含两条栈内前置);缺 Langfuse / judge 密钥时跑批器**显式报错**。
+- **成本与耗时**:两条命令都烧真 token,且都**串行**——`run` 单条选品场景 ≈2–3 分钟(视检索轮数);
+  `score` 只烧 judge token(实测 11 场景 43 条 ≈6 分钟,2026-09-16),且**不重跑任务**——
+  故 **rubric / judge 迭代只重跑 `score`**(run/score 解耦的用意即在此)。
 - **防呆**:净库插有哨兵商品 `EVAL-SENTINEL`;app 没切到净库时 `run` 直接报错、不写任何数据。
 - **回评解耦(run/score)**:`score` 只读快照(`docs/evals/runs/<run 名>/*.json`),rubric 从 `docs/evals/*.yaml` **现读**
   ——改 rubric / 换 judge(`.env` 的 `JUDGE_MODEL`)只重跑 score,任务不被重跑,新口径**另落一条**分数
