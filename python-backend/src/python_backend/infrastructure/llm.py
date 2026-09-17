@@ -42,6 +42,15 @@ class LlmFailure(Exception):
     """
 
 
+class LlmEmptyContent(LlmFailure):
+    """调用成功但**正文为空**(思考吃穿预算,finish_reason=length)。
+
+    单列一个类型是为了让调用方能**只对这一类**做补救重试(#65 起草线):别的 LlmFailure
+    (429/5xx/网络)已由传输层重试过,再重试是重复;空正文是 200 响应,传输层不管。
+    它是 LlmFailure 的子类——按原口径兜底的上层(如监督图的失败收敛)照常接得住。
+    """
+
+
 @dataclass
 class ToolCallResult:
     """工具调用轮次的结果:content 在纯作答时存在,tool_calls 为 OpenAI 原始格式。
@@ -129,7 +138,7 @@ class LlmService:
     ) -> str:
         """纯文本补全。json_mode=True 时请求 JSON 输出(规划用)。
 
-        思考模型推理与正文共享 max_tokens:预算被推理耗尽时正文为空,此处上抛 LlmFailure
+        思考模型推理与正文共享 max_tokens:预算被推理耗尽时正文为空,此处上抛 LlmEmptyContent
         (不静默返回空串——空串会把故障推给下游 json.loads("") 之类)。调用方预算须覆盖推理。
         """
         payload: dict[str, Any] = {
@@ -143,7 +152,7 @@ class LlmService:
         choice = await self._with_gate(lambda: self._request(payload))
         content = choice["message"].get("content")
         if content is None or not content.strip():
-            raise LlmFailure(f"LLM 返回空内容(finish_reason={choice.get('finish_reason')})")
+            raise LlmEmptyContent(f"LLM 返回空内容(finish_reason={choice.get('finish_reason')})")
         return content
 
     async def complete_with_tools(

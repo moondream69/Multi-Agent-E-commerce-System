@@ -85,7 +85,7 @@ BLANK_ANSWER_INCOMPLETE = "正文为空:作答轮未产出正文(重试后仍为
 # (新批 trace)空正文轮的 reasoning 都在 7374-7817 字,而作答轮原先吃 `complete_with_tools` 的
 # 默认 2000。同 #61 的 judge 预算(1024 → 16384)一类问题,处置同为放宽:max_tokens 是**上限不是
 # 预留**,实际消耗与延迟不因此变大。三个调用点(ReAct agent / 客服 verify / 客服 draft)共用本常量,
-# 不许各写一份。
+# 不许各写一份。起草线(#65,core/drafting.py)也共用它——同一个「会产出用户可见正文」的预算口径。
 AGENT_MAX_TOKENS = 16384
 
 

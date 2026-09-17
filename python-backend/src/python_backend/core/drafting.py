@@ -6,6 +6,9 @@
 - 多语(B19):zh/en/ja/de/fr;草稿由 LLM 按目标语言生成,提示词携带证据、禁编造
 - 引用小点(issue #51):提示词给证据编 ref,草稿按 ref 标注;返回前归一化为上标编号
   (同一文档合并),citations 随回答一起下发
+- 空正文(issue #65):思考吃穿预算时**同预算原样再问一次**(与 #64 B1 作答轮护栏同口径),
+  仍空才上抛 LlmEmptyContent → 端点 500——「宁可不给也不给空草稿」的姿态不变,但可恢复的
+  预算问题不再直接变成用户可见的 500
 - 不落库(起草助手定位:人工编辑后复制即走,无发件箱语义)
 """
 
@@ -14,6 +17,7 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
+from python_backend.agents.base import AGENT_MAX_TOKENS
 from python_backend.core.citations import build_citations
 from python_backend.db.models import Order, Product
 from python_backend.db.product_lookup import (
@@ -23,7 +27,7 @@ from python_backend.db.product_lookup import (
 )
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.embedding import EmbeddingClient, EmbeddingService
-from python_backend.infrastructure.llm import LlmClient, LlmService
+from python_backend.infrastructure.llm import LlmClient, LlmEmptyContent, LlmService
 
 SUPPORTED_LOCALES = ("zh", "en", "ja", "de", "fr")
 
@@ -75,6 +79,21 @@ async def _order_evidence(order_id: int) -> dict | None:
         }
 
 
+async def _draft_completion(llm: LlmClient, messages: list[dict]) -> str:
+    """草稿补全:空正文**同预算原样再问一次**(#65),仍空则照上抛(端点 500)。
+
+    空正文(`LlmEmptyContent`)= 思考吃穿预算,是可恢复的采样/长度问题;它是 200 响应,
+    传输层的重试管不到,故在这一层补一次——与 #64 B1 的作答轮护栏同口径(同预算、只一次)。
+    原样重问、不追加提示:空正文不是历史里的错误轮次,无轮可修,重试兜的是采样抖动;
+    预算口径与 agent 线同源(``AGENT_MAX_TOKENS``:思考与正文共享上限,上限不是预留,
+    实际消耗与延迟不因此变大)。别的 LlmFailure(429/5xx/网络)不在此重试——传输层已重试过。
+    """
+    try:
+        return await llm.complete(messages, max_tokens=AGENT_MAX_TOKENS)
+    except LlmEmptyContent:
+        return await llm.complete(messages, max_tokens=AGENT_MAX_TOKENS)
+
+
 class DraftingService:
     """起草服务:依赖注入与 ToolExecutor 同风格(llm/vector/embedding/product_mentions,测试假实现)。"""
 
@@ -123,7 +142,8 @@ class DraftingService:
 
         # 3) LLM 草稿(目标语言;证据不足须如实说明)
         locale_name = _LOCALE_NAMES[locale]
-        draft = await self._llm.complete(
+        draft = await _draft_completion(
+            self._llm,
             [
                 {
                     "role": "system",
@@ -141,7 +161,6 @@ class DraftingService:
                     ),
                 },
             ],
-            max_tokens=2000,  # 思考模式推理与正文共享预算:低预算(原 800)有饿空正文风险,对齐默认档
         )
         # 4) 引用小点(#51):标记归一化为上标编号(同文档合并);无命中即无引用。
         # 起草线在提示词里给证据编了 ref,故放开序号式(客服线只认切块标识,见 citations 模块说明)
