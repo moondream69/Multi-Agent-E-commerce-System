@@ -232,6 +232,24 @@ def test_render_prompt_states_action_results_are_not_evidence() -> None:
     assert "不是「查证证据」" in prompt
 
 
+def test_render_prompt_requires_substantive_output_over_meta_talk() -> None:
+    """#73:产出形态先于内容——元对话(只说明已完成 / 询问后续动作)无可评内容 ⇒ 判据一律判 0。
+
+    依据:``cs-task-customs-zh`` 在复核批 ``run-20260917T184044Z`` 落成 149 字元对话
+    (「【草稿已完成】…需要我补充两点可选动作吗」),三条禁止式 / 条件式判据的前提全落空 ⇒
+    逐条空过判 1(全绿)。条件式判据的「前提落空」在此**不等于**不适用;动作结果的如实交代
+    (#64 A1 的边界)不属此列——但**须面向对象**:旧批判词正是把元对话读成「属动作执行结果」
+    而放行,故「只声明自己完成了动作」被显式判回元对话。
+    """
+    prompt = render_prompt(_request())
+
+    assert "产出形态先于内容" in prompt
+    assert "元对话" in prompt
+    assert "每一条判据一律判 0" in prompt
+    assert "不属此列" in prompt
+    assert "仍属元对话" in prompt
+
+
 def test_render_prompt_states_same_document_may_hold_two_figures() -> None:
     """#71 发现二:同一文档可正文 / 附表并存两口径——与任一处记载相符即算有据。
 
