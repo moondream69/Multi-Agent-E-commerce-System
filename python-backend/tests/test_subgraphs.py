@@ -339,11 +339,13 @@ async def test_customer_slice_message_carries_global_task() -> None:
 
 
 async def test_product_prompt_states_zero_hit_contract() -> None:
-    """#64 B3:检索零命中时不得执行 scoring / generate_report / draft_create。
+    """#64 B3 + #66 收窄:零命中禁执行,**整类**才禁——维度缺口照答并如实标注。
 
-    依据:``coffee-maker-us#3#2`` 在有效命中 0 条时仍给出价格带与竞争度评级(还跑了 scoring),
-    判「结论性论断有检索依据」失败——提示词原先只说「情报不足时如实说明」,没有正面禁止
+    依据一(#64 B3):``coffee-maker-us#3#2`` 在有效命中 0 条时仍给出价格带与竞争度评级(还跑了
+    scoring),判「结论性论断有检索依据」失败——提示词原先只说「情报不足时如实说明」,没有正面禁止
     「无情报仍出分级与报告」这条路径。
+    依据二(#66-2):触发条件本是**整类**级,模型却在「6 维中 3 维零命中」时自行放大为整体拒评
+    (新批 ``smart-band-us``/``smart-home-us`` 判据①两败)——边界须写死在提示词里。
     """
     llm = FakeLlm(tool_rounds=[round_text("完成")])
     graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
@@ -354,6 +356,26 @@ async def test_product_prompt_states_zero_hit_contract() -> None:
     for tool_name in ("scoring", "generate_report", "draft_create"):
         assert tool_name in system_prompt
     assert "不得执行" in system_prompt
+    # #66-2 边界:维度缺口 ≠ 情报不足(否则模型把部分覆盖读成整体拒评)
+    assert "维度缺口" in system_prompt
+    assert "不得放大" in system_prompt
+
+
+async def test_product_prompt_reserves_brackets_for_citation_markers() -> None:
+    """#66-3:推断与情报事实分开标注的**写法**约定为「推断:」前缀——方括号留给引用标记。
+
+    依据:新批 ``smart-band-us#1#机械`` 判败于残留标记 ``[推断,非情报事实]``(另见速记 ``[#905]``)
+    ——提示词要求「分开标注」却未约定写法,模型自选方括号,撞上 citations 的标记语法被判疑似伪造
+    编号。机械判定维持宽规则不动(一切未解析方括号 token 皆疑似伪造),故约定必须写进提示词。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "推断:" in system_prompt
+    assert "不要用方括号" in system_prompt
+    assert "完整标识" in system_prompt  # 别写速记(规范写法 = <文档标识>#<序号>)
 
 
 async def test_customer_blank_draft_retries_then_incomplete() -> None:
