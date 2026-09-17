@@ -51,8 +51,11 @@ ORDER_TOOLS = [
     ),
     ToolDefinition(
         name="detect_anomalies",
-        description="检测订单描述文本中的异常关键词(退货/退款/投诉/破损/延迟/丢失)",
-        parameters=_object(description={"type": "string", "description": "订单描述文本"}),
+        description=(
+            "检测**给定文本**(由调用方提供,如买家消息原文、订单问题描述)中的异常关键词"
+            "(退货/退款/投诉/破损/延迟/丢失);纯文本关键词扫描,不检索订单库、不定位订单"
+        ),
+        parameters=_object(description={"type": "string", "description": "待检测的文本(如买家消息原文)"}),
     ),
     ToolDefinition(
         name="list_approvals",

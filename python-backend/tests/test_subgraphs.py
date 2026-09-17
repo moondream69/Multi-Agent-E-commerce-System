@@ -9,6 +9,7 @@ from python_backend.agents.base import AgentState, build_react_agent
 from python_backend.agents.customer_service.agent import build_customer_agent
 from python_backend.agents.executor import ToolExecutor, action_of
 from python_backend.agents.order_management.agent import build_order_agent
+from python_backend.agents.order_management.tools import ORDER_TOOLS
 from python_backend.agents.product_research.agent import build_product_agent
 from python_backend.core.approvals import classify_action
 from python_backend.domain.tools import ToolDefinition, ToolRegistry
@@ -496,6 +497,31 @@ async def test_product_prompt_requires_verbatim_attribution() -> None:
     assert "字面口径" in system_prompt
     assert "HQ country" in system_prompt  # 例子点到总部国口径(模型读错的那种表头)
     assert "美国市场" in system_prompt  # 错误改写的例子点到
+
+
+async def test_order_prompt_grounds_tool_results_in_tool_semantics() -> None:
+    """#74:工具结果的转述须与工具真实语义一致,且不得作系统级负向断言。
+
+    依据:``cs-task-returns-zh#3#3`` 判败于把 ``detect_anomalies({"description": "我买的商品有点问题想退"})``
+    的 ``{"anomaly": false}`` 写成「系统里没有任何一条订单的描述文本命中…关键词」——该工具是给定文本的
+    关键词扫描(不触库),订单记录也没有描述文本字段,判 0 正确(#73 全量批分诊)。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_order_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "不是订单库检索" in system_prompt
+    assert "系统级负向断言" in system_prompt
+    assert "你传入的文本" in system_prompt
+
+
+def test_detect_anomalies_description_scopes_to_given_text() -> None:
+    """#74:描述与参数名会被读成「订单的描述文本」全库检索——写明是给定文本扫描、不检索订单库。"""
+    tool_def = next(t for t in ORDER_TOOLS if t.name == "detect_anomalies")
+    assert "给定文本" in tool_def.description
+    assert "不检索订单库" in tool_def.description
+    assert "待检测的文本" in tool_def.parameters["properties"]["description"]["description"]
 
 
 async def test_customer_blank_draft_retries_then_incomplete() -> None:
