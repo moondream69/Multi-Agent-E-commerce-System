@@ -411,6 +411,93 @@ async def test_customer_draft_prompt_bans_non_citation_brackets() -> None:
     assert "方括号只用于引用标记" in llm.calls[-1]["messages"][0]["content"]
 
 
+async def test_customer_verify_prompt_confines_to_evidence_digest() -> None:
+    """#72:verify 只输出查证整理——复核批里 verify 按 manager 切片描述点名(如「海关官网/承运商」)
+    把整份答复写完,draft 看到成品只回「【草稿已完成】」→ answer 落成元对话、判据全部空过。
+
+    收口要点两条:①不写答复正文/话术(回复归起草环节);②不替库内空缺补渠道/流程类说明
+    ——切片描述里的渠道清单是 manager 的常识,不是证据(旧批同类判 0 的根因面)。
+    """
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("faq_search", {"query": "关税"})),
+            round_text(""),
+            round_text("经查证,应缴税额以海关核定为准。"),
+        ]
+    )
+    executor = FakeExecutor(results={"faq_search": {"hits": []}})
+    graph, _ = build_customer_agent(executor=executor, llm=llm)
+    await run(graph)
+
+    verify_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "查证整理" in verify_prompt
+    assert "不要写给买家的答复正文" in verify_prompt
+    assert "不要替库内空缺补渠道/流程类说明" in verify_prompt
+
+
+async def test_customer_draft_prompt_demands_full_draft_body() -> None:
+    """#72:草案轮必须产出完整正文——复核批 answer 落成「【草稿已完成】…需要我补充两点可选动作吗」
+    类元对话(消息史里已有 verify 写的成品,draft 据此偷懒),149 字、零引用、判据全空过。
+    """
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("faq_search", {"query": "退货"})),
+            round_text(""),
+            round_text("经查证,您的订单已发货。"),
+        ]
+    )
+    executor = FakeExecutor(results={"faq_search": {"hits": []}})
+    graph, _ = build_customer_agent(executor=executor, llm=llm)
+    await run(graph)
+
+    draft_prompt = llm.calls[-1]["messages"][0]["content"]
+    assert "完整的最终草稿正文" in draft_prompt
+    assert "不要只回复「已完成」" in draft_prompt
+
+
+async def test_customer_draft_prompt_bans_unverified_procedure_claims() -> None:
+    """#72:「证据不足时如实说明」的适用范围讲明——无据的流程/渠道/政策类说明不得写成确定口吻。
+
+    依据:``cs-task-customs-zh#1#3`` 判败于草稿「一、查询渠道」四条零引用 bullet(海关官网凭
+    运单号查、承运商会发清关通知等,语料真源 grep 无对应)——模型遵守了「未依据命中的句子不标」,
+    却把「不标」当成免责,用通用客服常识把库内空缺补满。同场景同模式在 #64 批已判 0 过一次
+    (``cs-task-customs-zh#2#3``:标了引用但切块不支持),故在提示词侧把边界写成模型能自查的一句。
+    """
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("faq_search", {"query": "关税"})),
+            round_text(""),
+            round_text("经查证,应缴税额以海关核定为准。"),
+        ]
+    )
+    executor = FakeExecutor(results={"faq_search": {"hits": []}})
+    graph, _ = build_customer_agent(executor=executor, llm=llm)
+    result = await run(graph)
+
+    assert result["answer"] == "经查证,应缴税额以海关核定为准。"
+    system_prompt = llm.calls[-1]["messages"][0]["content"]
+    assert "不得写成确定口吻" in system_prompt
+    assert "未查到相关说明" in system_prompt  # 无据时的出路点到(如实说或直接不提)
+
+
+async def test_product_prompt_requires_verbatim_attribution() -> None:
+    """#72:归属类结论须与材料字面口径一致——「U.S. brands / 总部所在国(HQ country)」不是「美国市场」。
+
+    依据:``remote-health-us#2#2`` 判败于「可穿戴侧美国市场以 Apple、Fitbit 为主…[1]」——材料
+    ``#851`` 说的是美国**品牌**在**新兴市场**占优、``#855`` 是全球口径、Table 7.1 的 ``HQ country``
+    是总部国,三块不同地域语境的名单被拼成了一个「美国市场」名单。同模式在 #66 批已栽过一次
+    (``smart-band-us#1#2``:印度语境的 ``U.S.-based Fitbit`` 被读成美国市场份额),故补通用一条。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "字面口径" in system_prompt
+    assert "HQ country" in system_prompt  # 例子点到总部国口径(模型读错的那种表头)
+    assert "美国市场" in system_prompt  # 错误改写的例子点到
+
+
 async def test_customer_blank_draft_retries_then_incomplete() -> None:
     """B30③ 客服线终稿同护栏(draft 就是客服的作答轮):空 → 回 draft 重问一次;仍空判未完成。"""
     llm = FakeLlm(

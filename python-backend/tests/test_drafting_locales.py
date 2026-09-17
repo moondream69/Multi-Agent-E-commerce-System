@@ -142,6 +142,7 @@ async def test_draft_carries_citations_normalized_to_superscript_numbers() -> No
     user = llm.calls[0]["messages"][1]["content"]
     assert "方括号" in system and "ref" in system, "标记要求进系统提示词"
     assert "方括号只用于引用标记" in system, "非引用用途的方括号被禁(#71:机械线判疑似伪造)"
+    assert "不得写成确定口吻" in system, "无据流程/渠道说明被禁(#72:「证据不足如实说明」的适用范围讲明)"
     assert '"ref": 1' in user and '"ref": 2' in user, "提示词证据带编号(草稿据此标注)"
 
 
