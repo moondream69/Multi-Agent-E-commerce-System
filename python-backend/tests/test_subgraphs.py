@@ -378,6 +378,39 @@ async def test_product_prompt_reserves_brackets_for_citation_markers() -> None:
     assert "完整标识" in system_prompt  # 别写速记(规范写法 = <文档标识>#<序号>)
 
 
+async def test_product_prompt_bans_brackets_for_non_citation_uses() -> None:
+    """#71:方括号约束由「推断句」升为**通用一条**——`[done]` 类状态标记第二次被判疑似伪造。
+
+    依据:``smart-home-us#3#机械`` 判败于残留标记 ``[done]``(答案末句「…照常执行评分与报告[done]。」)
+    ——#66 立的写法约定只管推断句(同批该约定已生效:快照里模型在用「推断:」前缀),模型另找了
+    状态标记的用法。机械判定维持宽规则不动(一切未解析方括号 token 皆疑似伪造,#57),故约束一次写全。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "方括号只用于引用标记" in system_prompt
+    assert "[done]" in system_prompt  # 例子点到(模型自造的就是这一类)
+
+
+async def test_customer_draft_prompt_bans_non_citation_brackets() -> None:
+    """#71:客服起草线的提示词同样写死方括号约束(机械线对未解析方括号 token 一律判疑似伪造)。"""
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("faq_search", {"query": "退货"})),
+            round_text(""),
+            round_text("经查证,您的订单已发货。"),
+        ]
+    )
+    executor = FakeExecutor(results={"faq_search": {"hits": []}})
+    graph, _ = build_customer_agent(executor=executor, llm=llm)
+    result = await run(graph)
+
+    assert result["answer"] == "经查证,您的订单已发货。"
+    assert "方括号只用于引用标记" in llm.calls[-1]["messages"][0]["content"]
+
+
 async def test_customer_blank_draft_retries_then_incomplete() -> None:
     """B30③ 客服线终稿同护栏(draft 就是客服的作答轮):空 → 回 draft 重问一次;仍空判未完成。"""
     llm = FakeLlm(

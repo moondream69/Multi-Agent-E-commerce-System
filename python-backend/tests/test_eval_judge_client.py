@@ -140,7 +140,7 @@ def test_render_prompt_carries_chunk_text_so_citations_are_verifiable() -> None:
 
 def test_render_prompt_truncates_long_chunk_with_explicit_mark() -> None:
     """超长切块截断——但**显式标注**(不静默截):judge 须知道看到的不全。"""
-    body = "正文" * 500  # 远超单块上限
+    body = "正文" * 800  # 远超单块上限(#71 抬到 1400)
     request = JudgeRequest(
         scenario_id="s",
         slice_no=1,
@@ -159,6 +159,34 @@ def test_render_prompt_truncates_long_chunk_with_explicit_mark() -> None:
     assert body not in prompt  # 确实截了
 
 
+def test_render_prompt_gives_full_chunk_including_tail_sentence() -> None:
+    """#71 发现二回归:单块上限曾把**支撑句**截在材料外,judge 只能判「与命中不符」。
+
+    实录:``smart-band-us#1#2`` 判 0 的机制不是 judge 误读两口径,而是答案依据的
+    「$8.4 billion」在切块 ``#860`` 的第 678 字(全文 941 字),旧上限 600 只给了前 600 字,
+    材料里只剩同文档附表行的 8,000。上限抬到 1400 覆盖语料切块 max(``corpus/chunking.py``
+    目标 500~800 + 12% 重叠 + 分页打包 ⇒ 实测 max 1302):被引切块全文进材料。
+    """
+    head = "背景" * 340  # 680 字:支撑句落在旧上限(600)之外
+    supporting = "In 2016, the market for remote healthcare monitoring systems totaled about $8.4 billion."
+    body = head + supporting
+    request = JudgeRequest(
+        scenario_id="s",
+        slice_no=1,
+        input="问",
+        answer="远程健康监测 2016 年全球约 84 亿美元 [1]",
+        citations=(
+            {"number": 1, "doc_id": "d", "title": "t", "source": "s", "chunks": [{"id": "d#0", "content": body}]},
+        ),
+        criteria=("判据甲",),
+    )
+
+    prompt = render_prompt(request)
+
+    assert supporting in prompt, "支撑句必须进材料(否则判据「引用是否支撑答案」不可判)"
+    assert "截断" not in prompt, "语料量级的切块不该被截"
+
+
 def test_render_prompt_caps_total_citation_budget_explicitly() -> None:
     """引用块总预算:命中多时后段切块只给标识 + 从略标注(不静默丢,也不无界膨胀提示词)。"""
     chunks = [{"id": f"d#{index}", "content": "填" * 600} for index in range(30)]
@@ -175,7 +203,7 @@ def test_render_prompt_caps_total_citation_budget_explicitly() -> None:
 
     assert "(正文从略——引用块已达总预算)" in prompt
     assert "d#29:(正文从略——引用块已达总预算)" in prompt  # 末块如实标从略,不是消失
-    assert len(prompt) < 12000  # 预算罩得住:30 块 x 600 字不会被整段塞进来
+    assert len(prompt) < 15000  # 预算罩得住:30 块 x 600 字(共 18000)不会被整段塞进来
 
 
 def test_render_prompt_marks_chunk_without_content() -> None:
@@ -202,6 +230,20 @@ def test_render_prompt_states_action_results_are_not_evidence() -> None:
 
     assert "动作执行结果" in prompt
     assert "不是「查证证据」" in prompt
+
+
+def test_render_prompt_states_same_document_may_hold_two_figures() -> None:
+    """#71 发现二:同一文档可正文 / 附表并存两口径——与任一处记载相符即算有据。
+
+    依据:``smart-band-us#1#2`` 的「远程健康监测 84 亿」有正文依据($8.4 billion),而材料里
+    同时有表 ES.3 的 8,000(百万美元)。上限修复让两块都全文在场后,口径句防 judge 仍据另一口径
+    判「与命中不符」;材料里一处都对不上的数字照判(边界不许被这句放掉)。
+    """
+    prompt = render_prompt(_request())
+
+    assert "同一文档可能并存不同口径" in prompt
+    assert "任一处" in prompt
+    assert "一处都对不上" in prompt
 
 
 def test_render_prompt_marks_absent_citations() -> None:
