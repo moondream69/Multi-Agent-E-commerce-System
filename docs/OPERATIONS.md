@@ -252,6 +252,10 @@ uv run python scripts/evals.py score [--run <run 名>]  # 4. 回评(不重跑任
 
 ## 生产切换清单(试运行前)
 
+> **2026-09-18:切换已执行**——剖面切 `prod`(持久化于 `.env`,六项验证全绿:剖面生效/影子隐藏/补执行 403/静态入口/审批锁死/效果未落地;证据 `docs/handoffs/evidence-2026-09-18-cutover/`)。
+> 未做项:真实数据 CSV 导入(数据到手后走「试运行数据 provisioning」)、第二设备局域网实访 + Windows 防火墙入站(2026-09-18 用户裁决暂缓)。
+> 回退演练剖面:`.env` 的 `ENVIRONMENT` 改回 `dev` 后 `docker compose up -d app`。
+
 > 2026-09-13 本机**同库**实切演练已跑通(库未清、dev 遗留在场,正好覆盖「同库跨剖面」最难场景;
 > 证据 `docs/handoffs/evidence-2026-09-13-b15-profile/`)。
 > **同日第二轮**:清库重 seed + 合成数据集在库 + 强凭据轮换 + 局域网 origin,**六项验证二度全绿**;
