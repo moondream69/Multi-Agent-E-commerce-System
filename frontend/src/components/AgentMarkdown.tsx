@@ -2,7 +2,7 @@ import { Children, ReactNode, useMemo, useState } from 'react';
 import Markdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import type { Citation } from '../types/events';
+import type { Citation, RecordCitation } from '../types/events';
 
 // —— Agent 消息的 Markdown 渲染缝(A16 / ADR-0007 C0):全仓唯一 react-markdown 配置点 ——
 // 不透传原始 HTML(HTML 串以字面文本出现,DOM 不生成对应元素,无 XSS 面),不引 rehype-raw;
@@ -10,7 +10,9 @@ import type { Citation } from '../types/events';
 // 样式覆盖全走令牌类名字面量(index.css @theme inline),双主题自动适配。
 // 用户消息刻意保持纯文本(旧系统基线取舍)——由调用点分流,不进本模块;
 // 引用小点(issue #51 / B28)落在这套 components 覆盖上:答案文本里的 [n] 渲染为可点上标,
-// 编号由后端归一化(同一文档合并),前端只按 [n] ↔ citations 查表;查不到编号即普通文本(不硬标)。
+// 编号由后端归一化(同一文档/同一记录合并),前端只按 [n] ↔ citations 查表;查不到编号即普通文本(不硬标)。
+// 条目两类(#67):语料切块(切块原文 + 文献溯源)/ 系统记录(商品/订单:记录标识 + 查询结果正文),
+// 弹层按 kind 分流——商品不是语料切块,不假装有章节与切块序号。
 //
 // whitespace-pre-wrap 只挂行内文本面(p / td / th),不挂容器:mdast 输出在块之间夹换行文本节点,
 // 容器级 pre-wrap 会把它们放大成空行(清单每项多出一行);而 Agent 正文常以单换行分行
@@ -35,7 +37,13 @@ export function answerOf(value: unknown): string | null {
   return typeof answer === 'string' && answer.trim() !== '' ? answer : null;
 }
 
-/** 引用小点:上标编号;点开显示被引切块原文与完整溯源(文档标识/标题/来源/日期/章节/切块序号)。 */
+/** 系统记录引用(#67:商品/订单查库结果)与语料切块引用的判别:kind 即判别键。 */
+function isRecordCitation(citation: Citation): citation is RecordCitation {
+  return citation.kind === 'product' || citation.kind === 'order';
+}
+
+/** 引用小点:上标编号;点开显示被引内容与完整溯源——语料给切块原文(文档标识/标题/来源/日期/
+    章节/切块序号),系统记录(#67)给记录标识与查询结果正文。 */
 function CitationMark({ citation }: { citation: Citation }) {
   const [open, setOpen] = useState(false);
   return (
@@ -57,25 +65,40 @@ function CitationMark({ citation }: { citation: Citation }) {
           <span className="mb-0.5 block font-medium">{citation.title}</span>
           <span className="mb-1 block text-ink-3">
             {citation.source}
-            {citation.published_at ? ` · ${citation.published_at}` : ''}
+            {isRecordCitation(citation) || !citation.published_at
+              ? ''
+              : ` · ${citation.published_at}`}
           </span>
-          {citation.chunks.map((chunk) => (
-            <span
-              key={chunk.id}
-              className="mt-1.5 block border-t border-line pt-1.5"
-            >
+          {isRecordCitation(citation) ? (
+            <span className="mt-1.5 block border-t border-line pt-1.5">
               <span className="mb-0.5 block font-mono text-[11px] text-ink-3">
-                {chunk.id}
+                {citation.record.id}
               </span>
-              <span className="mb-0.5 block text-ink-3">
-                {chunk.section}
-                {chunk.chunk_index === null
-                  ? ''
-                  : ` · 切块 ${chunk.chunk_index}`}
+              <span className="block whitespace-pre-wrap">
+                {citation.record.content}
               </span>
-              <span className="block whitespace-pre-wrap">{chunk.content}</span>
             </span>
-          ))}
+          ) : (
+            citation.chunks.map((chunk) => (
+              <span
+                key={chunk.id}
+                className="mt-1.5 block border-t border-line pt-1.5"
+              >
+                <span className="mb-0.5 block font-mono text-[11px] text-ink-3">
+                  {chunk.id}
+                </span>
+                <span className="mb-0.5 block text-ink-3">
+                  {chunk.section}
+                  {chunk.chunk_index === null
+                    ? ''
+                    : ` · 切块 ${chunk.chunk_index}`}
+                </span>
+                <span className="block whitespace-pre-wrap">
+                  {chunk.content}
+                </span>
+              </span>
+            ))
+          )}
         </span>
       )}
     </span>

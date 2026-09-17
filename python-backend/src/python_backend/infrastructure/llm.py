@@ -45,10 +45,21 @@ class LlmFailure(Exception):
 class LlmEmptyContent(LlmFailure):
     """调用成功但**正文为空**(思考吃穿预算,finish_reason=length)。
 
-    单列一个类型是为了让调用方能**只对这一类**做补救重试(#65 起草线):别的 LlmFailure
-    (429/5xx/网络)已由传输层重试过,再重试是重复;空正文是 200 响应,传输层不管。
+    单列一个类型是为了让调用方能**只对这一类**做补救重试(#65 起草线,现为
+    ``complete_with_blank_retry``):别的 LlmFailure(429/5xx/网络)已由传输层重试过,
+    再重试是重复;空正文是 200 响应,传输层不管。
     它是 LlmFailure 的子类——按原口径兜底的上层(如监督图的失败收敛)照常接得住。
     """
+
+
+# 全仓「会产出用户可见正文」的 LLM 调用预算(#64 立,原在 agents/base.py;#68 收编五处兄弟调用点
+# 后移到这里——executor 与 agents/base 互相 import,常量放中间层才不成环,**不许各写一份**)。
+# **思考计入该预算**,默认档 2000 会被吃穿:实测(新批 trace)空正文轮的 reasoning 都在 7374-7817
+# 字。同 #61 的 judge 预算(1024 → 16384)一类问题,处置同为放宽:**上限不是预留**,实际消耗与
+# 延迟不因此变大。**不按产出长度分档**(#68 裁决):思考长度不是正文长度的函数,分档 = 把「猜
+# 思考长度」重新引入。现覆盖:ReAct agent / 客服 verify / 客服 draft / 起草线 / 翻译 / 评分 /
+# 情绪 / 回复草稿 / 会话摘要。
+AGENT_MAX_TOKENS = 16384
 
 
 @dataclass
@@ -81,6 +92,30 @@ class LlmClient(Protocol):
         max_tokens: int = 2000,
         json_mode: bool = False,
     ) -> str: ...
+
+
+async def complete_with_blank_retry(
+    llm: LlmClient,
+    messages: list[dict],
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 2000,
+    json_mode: bool = False,
+) -> str:
+    """空正文**同预算原样再试一次**(#65 立在起草线,#68 升为全仓调用点共用的那一份)。
+
+    空正文(``LlmEmptyContent``)= 思考吃穿预算,是可恢复的采样/长度问题;它是 200 响应,
+    传输层的重试管不到,故在**调用方这一层**补一次——同预算、只一次、原样重问(空正文不是
+    历史里的错误轮次,无轮可修,重试兜的是采样抖动;追加提示词无从下手)。
+    **别的 LlmFailure(429/5xx/网络)不在此重试**——传输层已按 1s/2s 退避重试过,再重试是重复。
+
+    预算由调用方给:全仓「会产出用户可见正文」的调用点统一 ``AGENT_MAX_TOKENS``
+    (agents/base.py 立的口径)——上限不是预留,抬高它不增消耗。
+    """
+    try:
+        return await llm.complete(messages, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode)
+    except LlmEmptyContent:
+        return await llm.complete(messages, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode)
 
 
 class NullTracer:

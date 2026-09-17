@@ -55,12 +55,33 @@ DRAFT = "Delivery usually takes 5-10 business days [1]"
 DRAFT_CITATIONS = [
     {
         "number": 1,
+        "kind": "corpus",
         "doc_id": "faq-logistics",
         "title": "物流配送 FAQ",
         "source": "自造 FAQ",
         "chunks": [{"id": "faq-logistics#6"}],
     }
 ]
+
+# 起草端点随草稿一起返回的查证证据块(#67:落快照 → 进判分材料)
+DRAFT_EVIDENCE = {
+    "faq_hits": [{"id": "faq-logistics#6", "score": 0.7, "payload": {"content": "5-10 个工作日。"}}],
+    "order": None,
+    "order_id": None,
+    "products": [
+        {
+            "id": 82,
+            "sku": "SYN-HM-081",
+            "title": "桌面收纳架 深空黑款",
+            "price": "129.00",
+            "currency": "CNY",
+            "category": "家居",
+            "status": "draft",
+            "stock": 2,
+        }
+    ],
+    "products_truncated": False,
+}
 
 
 class FakeProjection:
@@ -134,7 +155,9 @@ def _handler(
             if drafting_status != 200:
                 return httpx.Response(drafting_status, json={"detail": "不支持的语言"})
             payload = (
-                drafting if drafting is not None else {"draft": DRAFT, "evidence": {}, "citations": DRAFT_CITATIONS}
+                drafting
+                if drafting is not None
+                else {"draft": DRAFT, "evidence": DRAFT_EVIDENCE, "citations": DRAFT_CITATIONS}
             )
             return httpx.Response(200, json=payload)
         if path == "/api/tasks":
@@ -168,8 +191,9 @@ def _runner(
 async def test_workbench_scenario_writes_snapshot_with_its_own_root_trace(tmp_path: Path) -> None:
     """工作台线(票 #60):POST /api/drafting(带 locale)→ 单切片快照 → 自建评测根 trace → 投影 run item。
 
-    快照与任务线**同一份 schema**:answer = 草稿、citations = 引用载荷、trace_id = 根 trace 派生
-    (与建出的 trace 同一 id)、thread_id 留空(该线无任务线程——如实标注,不编一个)。
+    快照与任务线**同一份 schema**:answer = 草稿、citations = 引用载荷、**evidence = 查证证据块**
+    (#67:判分材料的核验面)、trace_id = 根 trace 派生(与建出的 trace 同一 id)、thread_id 留空
+    (该线无任务线程——如实标注,不编一个)。
     """
     calls: dict[str, list] = {}
     runner, projection = _runner(tmp_path, _handler(calls=calls))
@@ -192,6 +216,7 @@ async def test_workbench_scenario_writes_snapshot_with_its_own_root_trace(tmp_pa
     assert [item.no for item in saved.slices] == [1]
     assert saved.slices[0].answer == DRAFT
     assert saved.slices[0].citations == tuple(DRAFT_CITATIONS)
+    assert saved.slices[0].evidence == DRAFT_EVIDENCE  # #67:证据块随产出落盘(判分材料据此可核商品事实)
     assert saved.dataset_run_id == "ds-run-1"  # 投影回填(#59 的分数据此互链)
 
     # 评测根 trace:名字可读(eval:<场景id>),input/output 取买家消息与草稿
@@ -337,6 +362,7 @@ async def test_run_scenario_writes_snapshot_and_projects(tmp_path: Path) -> None
     assert [item.no for item in snapshot.slices] == [1]
     assert snapshot.slices[0].answer == "美国市场咖啡机需求上行 [1]"
     assert snapshot.slices[0].citations[0]["doc_id"] == "usitc-digital-trade"
+    assert snapshot.slices[0].evidence is None  # 任务线没有查证证据载荷 ⇒ 如实缺席(判分材料不渲染该段)
     # 规划段随任务线快照一起落盘(票 #61):切片号升序、依赖声明原样
     assert [(item.no, item.agent, item.depends_on) for item in snapshot.plan] == [
         (1, "product_research", ()),

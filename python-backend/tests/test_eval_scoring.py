@@ -112,6 +112,7 @@ def _slice(
     citations: tuple[dict, ...] = CITATIONS,
     no: int = 1,
     agent: str = "product_research",
+    evidence: dict | None = None,
 ) -> SliceOutput:
     return SliceOutput(
         no=no,
@@ -120,6 +121,7 @@ def _slice(
         answer=answer,
         citations=citations,
         executed=True,
+        evidence=evidence,
     )
 
 
@@ -197,6 +199,28 @@ def test_judge_receives_slice_level_context(tmp_path: Path) -> None:
     assert first.answer == ANSWER_WITH_CITATIONS
     assert first.citations == CITATIONS
     assert judge.requests[1].answer == "第二片 [1]"
+
+
+def test_judge_receives_workbench_evidence_block(tmp_path: Path) -> None:
+    """#67:查证证据块随请求交给 judge(商品/订单类结论的核验面);缺它的切片如实为 None。
+
+    缺席与空块是两回事:None(任务线没有这份载荷)⇒ 判分材料不渲染该段;空块(查过、没查到)
+    ⇒ 渲染并如实写「无命中」。
+    """
+    evidence = {
+        "faq_hits": [],
+        "order": None,
+        "order_id": None,
+        "products": [{"id": 82, "sku": "SYN-HM-081", "title": "桌面收纳架 深空黑款", "stock": 2}],
+        "products_truncated": False,
+    }
+    write_snapshot(tmp_path / "run-1", _snapshot(_slice(evidence=evidence), _slice(no=2, answer="第二片 [1]")))
+    judge = FakeJudge()
+
+    score_run(load_run_snapshots(tmp_path / "run-1"), [_scenario()], judge=judge, sink=RecordingSink())
+
+    assert judge.requests[0].evidence == evidence
+    assert judge.requests[1].evidence is None
 
 
 def test_full_score_records_link_trace_dataset_run_and_corpus_anchor(tmp_path: Path) -> None:

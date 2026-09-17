@@ -94,6 +94,10 @@ class JudgeRequest:
     ``plan``:规划切片场景的判分对象(票 #61)——渲染好的切片计划文本(``snapshot.plan_lines``)。
     **整段给**,不逐片拆:三条判据(依赖声明 / 划分 / 领域路由)评的就是整份计划,拆片看会把
     「依赖跨片」这一半信息切掉。非规划面如实留 ``""``。
+
+    ``evidence``:该切片的**查证证据块**(#67;起草工作台线的商品/订单/FAQ 查询结果,原样载荷)。
+    任务线没有这份载荷 ⇒ ``None``(材料随之不渲染该段,与「有证据块但全空」是两回事)。
+    它跟着 ``citations`` 走**原始载荷**而非渲染文本:渲染是判分面自己的事(同引用条目的口径)。
     """
 
     scenario_id: str
@@ -103,6 +107,7 @@ class JudgeRequest:
     citations: tuple[dict, ...]
     criteria: tuple[str, ...]
     plan: str = ""
+    evidence: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,10 @@ def render_prompt(request: JudgeRequest) -> str:
 
     判分对象二选一:``plan`` 非空 = 规划切片面(评的是整份切片计划,产出段换成【切片计划】);
     否则 = 既有「文本产出 + 引用条目」形状(票 #59/#60 的线原样不动)。
+
+    ``evidence`` 非 None 时追加【查证证据】段(#67):商品/订单等**系统查询结果**原先不在材料里,
+    判据②③对商品类结论**结构性不可核验**(judge 被要求「只依据给定材料」+「宁可判失败」,
+    对真有据的库存/价格结论也只能记 0——2026-09-17 实评两条 0 的成因)。
     """
     lines = [
         "你是资深电商选品与客服质量评审。请对下面**一条** Agent 产出逐条判定评分标准是否通过。",
@@ -146,11 +155,15 @@ def render_prompt(request: JudgeRequest) -> str:
                 f"【产出(切片 {request.slice_no})】",
                 request.answer,
                 "",
-                "【该产出的引用条目(编号 → 出处 + 切块正文)】",
+                "【该产出的引用条目(编号 → 出处 + 切块正文 / 系统查询记录)】",
             ]
         )
         lines.extend(_citation_lines(request.citations))
         lines.append("")
+        if request.evidence is not None:
+            lines.extend(["【查证证据(系统查询结果:商品/订单;FAQ 命中含未被引用的)】"])
+            lines.extend(_evidence_lines(request.evidence))
+            lines.append("")
     lines.extend(["【评分标准】"])
     lines.extend(f"{index}. {criterion}" for index, criterion in enumerate(request.criteria, start=1))
     lines.extend(
@@ -161,6 +174,9 @@ def render_prompt(request: JudgeRequest) -> str:
             "- 只依据上面给的材料,不引入你自己的外部知识。",
             "- 动作执行结果(工单登记 / 草稿创建 / 审批提交)**不是「查证证据」**,"
             "不得因产出未给出其溯源而判失败(#64:那是真实动作不是编造,工具结果不进本材料)。",
+            "- **商品/订单是系统查询结果**(【查证证据】段),不是语料切块:该类结论只要该段材料支持,"
+            "即算有据,**不因其未标引用编号而判失败**;若已标编号,用【引用条目】里的记录条目核对"
+            "(标记与证据须对得上)。反过来,该段里没有的商品/订单事实即凭空论断,照判不通过(#67)。",
             "",
             "【输出格式】每条标准输出一行,形如:",
             "<标准序号>|<0 或 1>|<一句话理由>",
@@ -192,11 +208,80 @@ def _citation_lines(citations: tuple[dict, ...]) -> list[str]:
         title = entry.get("title") or "(无标题)"
         source = entry.get("source") or "(无来源)"
         lines.append(f"[{entry.get('number')}] {title} — {source}")
+        record = entry.get("record")
+        if record is not None:
+            # 系统记录条目(#67;商品/订单):与切块行同形,但标识前缀即「这不是语料切块」
+            lines.append(_record_line(record))
+            continue
         for chunk in entry.get("chunks") or []:
             line, cost = _chunk_line(chunk, budget)
             lines.append(line)
             budget -= cost
     return lines
+
+
+def _record_line(record: dict) -> str:
+    """系统记录条目(商品/订单)→ 材料行:标识 + 查询结果正文(截断显式标注,同切块口径)。"""
+    return f"    {record.get('id', '')}:{_excerpt(str(record.get('content') or ''))}"
+
+
+def _evidence_lines(evidence: dict) -> list[str]:
+    """查证证据块 → 判分材料行(#67):三类证据**全量**如实呈现,缺席与截断都标注。
+
+    给全量而非只给被引的那部分:判据要判的是「结论有没有材料支撑」——只给被引证据,
+    未被引的真凭实据就核不着,judge 只能对没把握的记 0(这正是 #67 两条 0 的成因)。
+
+    正文逐条按 ``_CHUNK_EXCERPT`` 截断;不再设总预算——证据块按构造有界(FAQ top-3、
+    商品 MENTION_MATCH_LIMIT 截断),与引用块的开放长度不是一回事。
+    商品行的字段与用户面弹层(``core/drafting._product_source``)同源同义,分处两层的理由是
+    受众不同:弹层要一行紧凑话术,这里要判据②要核的全部在售事实(价格/状态/库存)。
+    """
+    lines: list[str] = []
+    faq_hits = evidence.get("faq_hits") or []
+    if faq_hits:
+        lines.append(f"FAQ 命中 {len(faq_hits)} 条:")
+        lines.extend(
+            f"    {hit.get('id', '')}:{_excerpt(str((hit.get('payload') or {}).get('content') or ''))}"
+            for hit in faq_hits
+        )
+    else:
+        lines.append("FAQ 命中:无")
+    order = evidence.get("order")
+    if order:
+        product = order.get("product") or {}
+        detail = (
+            f"订单 #{order.get('id')} · 状态 {order.get('status')}"
+            f" · 金额 {order.get('total_amount')} {order.get('currency')}"
+        )
+        if product:
+            detail += f" · 商品 {product.get('sku')} {product.get('title')}"
+        lines.append(f"订单查证:{detail}")
+    elif evidence.get("order_id") is not None:
+        lines.append(f"订单查证:订单 #{evidence['order_id']} 未查到(如实标注,未编造)")
+    else:
+        lines.append("订单查证:买家消息未提供订单号")
+    products = evidence.get("products") or []
+    if products:
+        lines.append(f"商品查证(按买家消息文本查库)命中 {len(products)} 款:")
+        lines.extend(
+            f"    id={product.get('id')} SKU={product.get('sku')} {product.get('title')}"
+            f" · 价格 {product.get('price')} {product.get('currency')}"
+            f" · 状态 {product.get('status')} · 库存 {product.get('stock')}"
+            for product in products
+        )
+        if evidence.get("products_truncated"):
+            lines.append("    (命中已截断:以上不是全部——更多商品未进入本材料)")
+    else:
+        lines.append("商品查证:无命中")
+    return lines
+
+
+def _excerpt(text: str) -> str:
+    """证据正文的单条截断(显式标注,同切块行口径)。"""
+    text = text.strip()
+    if len(text) > _CHUNK_EXCERPT:
+        return f"{text[:_CHUNK_EXCERPT]}…(截断,全文 {len(text)} 字)"
+    return text
 
 
 def _chunk_line(chunk: dict, budget: int) -> tuple[str, int]:
@@ -211,9 +296,7 @@ def _chunk_line(chunk: dict, budget: int) -> tuple[str, int]:
         return f"    {chunk_id}:(无正文)", 0
     if budget <= 0:
         return f"    {chunk_id}:(正文从略——引用块已达总预算)", 0
-    if len(text) > _CHUNK_EXCERPT:
-        text = f"{text[:_CHUNK_EXCERPT]}…(截断,全文 {len(text)} 字)"
-    line = f"    {chunk_id}:{text}"
+    line = f"    {chunk_id}:{_excerpt(text)}"
     return line, len(line)
 
 

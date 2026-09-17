@@ -1,8 +1,8 @@
 """产出快照(spec #55 B / 票 #58):跑批的**本地真源**——``score`` 只读快照回评,不重跑任务。
 
 一条场景一次运行 = 一个 JSON 文件(``<快照目录>/<run 名>/<场景 id>.json``):场景 id / thread_id /
-trace_id / **切片级产出**(answer / citations / executed)/ **规划段**(plan,票 #61)/ 语料版本锚 / 时间。
-目录由调用方给定(CLI 默认 ``docs/evals/runs/``,gitignore)。
+trace_id / **切片级产出**(answer / citations / executed / evidence)/ **规划段**(plan,票 #61)/
+语料版本锚 / 时间。目录由调用方给定(CLI 默认 ``docs/evals/runs/``,gitignore)。
 
 **切片级保真,不拼顶层长文**:citations 编号是**切片内**编号(``build_citations`` 每片各自从 1 排),
 把多片答案拼成长文会让机械防伪引(#57)的编号集跨片串味——A 片幻觉的 ``[2]`` 撞上 B 片合法的 ``[2]``
@@ -26,13 +26,16 @@ from pathlib import Path
 from typing import Any
 
 # 快照 schema 版本:字段增删即升版(读旧快照时报错清晰,不静默按新形状解释)。
+# **4**(#67):切片增 ``evidence``(工作台线的查证证据块)——判据②③要核的商品/订单事实
+# 原先不在判分材料里,商品类结论**结构性不可核验**(实评实录见 issue #67)。
 # **3**(#64 A3):切片增 ``incomplete``(未完成原因)——三态可辨(B30④)。
 # **2**(票 #61):随带 ``plan`` 规划段——规划切片场景的判分对象。
 # **1** → 2 的断代是**有意**的:版本闸拒读旧快照,而旧 run 的快照重跑一次即可(产出快照是
 # 一次性产物,不承担历史可比性——历史分数归 Langfuse,不归本地 JSON)。
-# ⚠️ **2 → 3 的次序有讲究**(#64 spec):判分材料修正后的「现批重评」必须**先于**本升版跑完——
-# 版本闸一旦抬起,``run-20260916T065030Z`` 的 v2 快照就读不动了,而那次重评正是 B30① 的证据。
-SNAPSHOT_VERSION = 3
+# ⚠️ 升版前先想清**次序**(#64 spec 的教训):判分材料修正后的「现批重评」必须**先于**升版跑完,
+# 版本闸一旦抬起,旧版快照就读不动了。3 → 4 无此顾虑:material 修正本身要求重跑(旧快照里
+# 没有 evidence 这份数据,重评也核不出商品事实)。
+SNAPSHOT_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,10 @@ class SliceOutput:
     ``None`` 即「跑完了」。它与 ``answer is None`` 联用才有意义——三态靠这两个字段分开:
     没执行(``executed=False``)/ 空产出(``executed=True`` 且两者皆空)/ 未完成(``incomplete`` 有值)。
     没有它时,「没执行」与「跑了但空产出」在快照里同形,读快照的人会误判。
+
+    ``evidence``(#67):该切片的**查证证据块**(起草线端点随草稿返回的那份原样落盘:FAQ 命中 /
+    订单 / 商品 + 截断标志)。任务线没有这份载荷 ⇒ ``None``(如实缺席,判分材料随之不渲染该段);
+    工作台线恒有(可能是空命中,那也是如实事实)。判据②③核「不编造 / 无凭空论断」要的正是它。
     """
 
     no: int
@@ -52,6 +59,7 @@ class SliceOutput:
     citations: tuple[dict, ...]
     executed: bool
     incomplete: str | None = None
+    evidence: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -265,11 +273,21 @@ def _slice_from_json(entry: Any, path: Path) -> SliceOutput:
         citations=tuple(citations),
         executed=bool(entry.get("executed")),
         incomplete=_optional_str(entry.get("incomplete")),
+        evidence=_optional_dict(entry.get("evidence")),
     )
 
 
 def _optional_str(value: Any) -> str | None:
     return None if value is None else str(value)
+
+
+def _optional_dict(value: Any) -> dict | None:
+    """可缺席的映射字段(evidence,#67):缺席即 None(任务线如实没有);形状坏掉即报错,不当空处理。"""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"evidence 须是映射(证据块载荷),不是 {type(value).__name__}")
+    return value
 
 
 def _payload(snapshot: Snapshot) -> dict:
@@ -291,6 +309,7 @@ def _payload(snapshot: Snapshot) -> dict:
                 "citations": list(item.citations),
                 "executed": item.executed,
                 "incomplete": item.incomplete,
+                "evidence": item.evidence,
             }
             for item in snapshot.slices
         ],

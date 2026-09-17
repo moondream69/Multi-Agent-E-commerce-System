@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from python_backend.agents.base import AGENT_MAX_TOKENS
 from python_backend.core.drafting import DraftingService
-from python_backend.infrastructure.llm import LlmEmptyContent, LlmFailure
+from python_backend.infrastructure.llm import AGENT_MAX_TOKENS, LlmEmptyContent, LlmFailure
 from tests.conftest import FakeLlm
 
 

@@ -100,19 +100,24 @@ async def test_execute_scoring_parses_json() -> None:
 @pytest.mark.parametrize(
     ("action", "params", "response", "floor"),
     [
-        ("scoring", {"product_title": "宠物饮水机"}, '{"score": 88, "grade": "A", "rationale": "需求旺盛"}', 1000),
-        ("translate", {"text": "你好", "target_locale": "英语"}, "hello", 1000),
-        ("sentiment_analysis", {"text": "物流太慢了"}, "negative", 1000),
+        ("scoring", {"product_title": "宠物饮水机"}, '{"score": 88, "grade": "A", "rationale": "需求旺盛"}', 16384),
+        ("translate", {"text": "你好", "target_locale": "英语"}, "hello", 16384),
+        ("sentiment_analysis", {"text": "物流太慢了"}, "negative", 16384),
+        ("generate_draft", {"buyer_message": "还有货吗?", "evidence": "库存 2"}, "亲,还有货。", 16384),
         ("generate_report", {"context": "情报与评分汇总"}, "# 选品报告", 8000),
     ],
-    ids=["scoring", "translate", "sentiment", "report"],
+    ids=["scoring", "translate", "sentiment", "draft", "report"],
 )
 async def test_llm_completion_budget_leaves_reasoning_headroom(
     action: str, params: dict, response: str, floor: int
 ) -> None:
     """走查缺陷:思考模式(v4 flash)推理与正文共享 max_tokens——实测短任务推理 700~1200 字符、
     报告类推理 3200~5700 字符且正文 2500~3500 字符;预算被推理耗尽即空正文(finish_reason=length),
-    各调用点须留足推理余量(下限见 floor,禁止回退到饿死档)。"""
+    各调用点须留足推理余量(下限见 floor,禁止回退到饿死档)。
+
+    下限档位分两种(#68 裁决):会产出用户可见正文的调用点统一 ``AGENT_MAX_TOKENS``(含
+    generate_draft——原 800 是全仓最低档);报告类已在 8000 档且有自身实测依据,本轮未动。
+    """
     llm = FakeLlm(responses=[response])
     await make_executor(llm).execute(action, params)
     assert llm.calls[0]["max_tokens"] >= floor
@@ -125,6 +130,22 @@ async def test_execute_generate_report_and_draft() -> None:
     assert report["report"].startswith("# 选品报告")
     draft = await executor.execute("generate_draft", {"buyer_message": "我的订单到哪了?", "evidence": "已发货"})
     assert draft["draft"] == "买家您好,已为您查询。"
+
+
+async def test_tool_llm_call_retries_once_on_blank_content() -> None:
+    """#68:工具内的 LLM 调用同吃「空正文同预算重试一次」——第一次饿空、第二次拿到正文即成功。
+
+    依据:空正文是可恢复的采样抖动(#65 立的护栏,`llm.complete_with_blank_retry`);工具侧原先
+    只有「失败转诚实观察」,代价是烧 ReAct 步数且依赖模型自发再调一次工具。
+    """
+    from python_backend.infrastructure.llm import AGENT_MAX_TOKENS, LlmEmptyContent
+
+    llm = FakeLlm(responses=[LlmEmptyContent("LLM 返回空内容(finish_reason=length)"), "hello"])
+
+    result = await make_executor(llm).execute("translate", {"text": "你好", "target_locale": "英语"})
+
+    assert result["translated"] == "hello"
+    assert [call["max_tokens"] for call in llm.calls] == [AGENT_MAX_TOKENS, AGENT_MAX_TOKENS]
 
 
 async def test_execute_sentiment_analysis() -> None:

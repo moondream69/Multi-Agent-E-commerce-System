@@ -7,6 +7,7 @@ judge 是**跨厂**模型(中转站),输出不合约即 ``JudgeError``(带原文
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import httpx2
 import pytest
@@ -212,6 +213,104 @@ def test_render_prompt_marks_absent_citations() -> None:
     assert "(无——该产出没有引用条目)" in render_prompt(request)
 
 
+def _workbench_request(*, products_truncated: bool = False) -> JudgeRequest:
+    """工作台线一条判据请求(带查证证据块与记录条目引用;#67 的判分材料形状)。"""
+    return JudgeRequest(
+        scenario_id="cs-workbench-stock-zh",
+        slice_no=1,
+        input="桌面收纳架 深空黑款现在还有货吗?大概什么时候能发货?",
+        answer="该款当前库存仅剩 2 件 [2];发货时效见另一条 [1]。",
+        citations=(
+            {
+                "number": 1,
+                "kind": "corpus",
+                "doc_id": "faq-logistics",
+                "title": "下单后多久发货?",
+                "source": "自造 FAQ 语料库",
+                "published_at": None,
+                "chunks": [{"id": "faq-logistics#1", "content": "现货商品在付款后 48 小时内发出。"}],
+            },
+            {
+                "number": 2,
+                "kind": "product",
+                "title": "桌面收纳架 深空黑款",
+                "source": "商品库(系统查询结果)",
+                "record": {"id": "product:82", "content": "SKU SYN-HM-081 · 状态 draft · 库存 2"},
+            },
+        ),
+        criteria=("涉及具体商品(库存/价格/在售状态)时逐款给出查证结论,不编造;未查到如实说明",),
+        evidence={
+            "faq_hits": [{"id": "faq-logistics#1", "payload": {"content": "Q: 下单后多久发货?"}}],
+            "order": None,
+            "order_id": None,
+            "products": [
+                {
+                    "id": 82,
+                    "sku": "SYN-HM-081",
+                    "title": "桌面收纳架 深空黑款",
+                    "price": "129.00",
+                    "currency": "CNY",
+                    "status": "draft",
+                    "stock": 2,
+                }
+            ],
+            "products_truncated": products_truncated,
+        },
+    )
+
+
+def test_render_prompt_carries_evidence_block_and_record_citation() -> None:
+    """#67:查证证据块进判分材料(商品/订单事实可核),记录条目在引用条目段可对。
+
+    依据(2026-09-17 实评):``cs-workbench-stock-zh#1#2/#1#3`` 判 0,判词「库存结论缺失引用标记 /
+    无对应商品查证证据」——而净库里该款库存确有 2 件,缺的是**判分材料这一半**(快照不带证据块)。
+    """
+    prompt = render_prompt(_workbench_request())
+
+    assert "【查证证据(系统查询结果:商品/订单;FAQ 命中含未被引用的)】" in prompt
+    assert "商品查证(按买家消息文本查库)命中 1 款:" in prompt
+    assert "SYN-HM-081" in prompt and "库存 2" in prompt  # 判据②要核的在售事实在场
+    assert "订单查证:买家消息未提供订单号" in prompt
+    assert "FAQ 命中 1 条:" in prompt and "faq-logistics#1:Q: 下单后多久发货?" in prompt  # 未被引的命中也给
+    assert "product:82:SKU SYN-HM-081 · 状态 draft · 库存 2" in prompt  # 记录条目(引用条目段)
+    assert "(命中已截断" not in prompt
+
+
+def test_render_prompt_marks_truncated_product_evidence() -> None:
+    """证据截断**显式标注**(不静默截):judge 须知道自己看到的不是全部(#67)。"""
+    prompt = render_prompt(_workbench_request(products_truncated=True))
+
+    assert "(命中已截断:以上不是全部——更多商品未进入本材料)" in prompt
+
+
+def test_render_prompt_keeps_evidence_absence_and_emptiness_apart() -> None:
+    """缺席(None,任务线)不渲染该段;**有块但三类皆空**(查过、没查到)如实呈现。"""
+    assert "【查证证据(系统查询结果" not in render_prompt(_request())
+
+    empty = replace(
+        _request(),
+        evidence={"faq_hits": [], "order": None, "order_id": 1042, "products": [], "products_truncated": False},
+    )
+    prompt = render_prompt(empty)
+
+    assert "【查证证据(系统查询结果:商品/订单;FAQ 命中含未被引用的)】" in prompt
+    assert "FAQ 命中:无" in prompt
+    assert "商品查证:无命中" in prompt
+    assert "订单查证:订单 #1042 未查到(如实标注,未编造)" in prompt
+
+
+def test_render_prompt_scopes_product_claims_out_of_citation_marker_rule() -> None:
+    """#67 口径句:商品/订单系系统查询结果——有材料支撑即算有据,不因缺编号判失败;
+
+    反过来,证据段里没有的该类事实照判凭空(「无凭空论断」这一半不许被这句话放掉)。
+    """
+    prompt = render_prompt(_request())
+
+    assert "商品/订单是系统查询结果" in prompt
+    assert "不因其未标引用编号而判失败" in prompt
+    assert "凭空论断" in prompt
+
+
 def test_render_prompt_swaps_production_block_for_plan_request() -> None:
     """规划切片面(票 #61):判分对象是整份切片计划 → 产出段换成【切片计划】,不带答案与引用条目区。"""
     request = JudgeRequest(
@@ -229,7 +328,7 @@ def test_render_prompt_swaps_production_block_for_plan_request() -> None:
     assert "【切片计划(Manager 的规划产出:切片划分 + 依赖声明)】" in prompt
     assert "切片 1:业务域 product_research | 说明:检索美国市场情报 | 依赖:无 | 审批点:无" in prompt
     assert "【产出(切片 0)】" not in prompt  # 计划面不摆一个空产出段
-    assert "【该产出的引用条目(编号 → 出处 + 切块正文)】" not in prompt
+    assert "【该产出的引用条目(编号 → 出处 + 切块正文 / 系统查询记录)】" not in prompt
     assert "1. 依赖声明与执行先序一致" in prompt and "3. 领域路由正确" in prompt
 
 

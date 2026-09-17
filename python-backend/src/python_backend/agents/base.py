@@ -23,7 +23,7 @@ from python_backend.core.approvals import classify_action
 from python_backend.core.citations import build_citations, retrieval_hits
 from python_backend.core.planning import Slice
 from python_backend.domain.tools import ToolRegistry
-from python_backend.infrastructure.llm import LlmClient, LlmFailure, ToolCallResult
+from python_backend.infrastructure.llm import AGENT_MAX_TOKENS, LlmClient, LlmFailure, ToolCallResult
 
 
 class ToolCallingLlmClient(LlmClient, Protocol):
@@ -81,12 +81,8 @@ class AgentState(TypedDict, total=False):
 BLANK_ANSWER_RETRY = "你上一轮没有输出任何正文。请直接输出最终答复的正文内容。"
 BLANK_ANSWER_INCOMPLETE = "正文为空:作答轮未产出正文(重试后仍为空),任务未完成"
 
-# 业务子图 LLM 调用的输出预算(#64 裁决补):**思考计入该预算**,默认档 2000 会被吃穿——实测
-# (新批 trace)空正文轮的 reasoning 都在 7374-7817 字,而作答轮原先吃 `complete_with_tools` 的
-# 默认 2000。同 #61 的 judge 预算(1024 → 16384)一类问题,处置同为放宽:max_tokens 是**上限不是
-# 预留**,实际消耗与延迟不因此变大。三个调用点(ReAct agent / 客服 verify / 客服 draft)共用本常量,
-# 不许各写一份。起草线(#65,core/drafting.py)也共用它——同一个「会产出用户可见正文」的预算口径。
-AGENT_MAX_TOKENS = 16384
+# 业务子图 LLM 调用的输出预算:口径与实测依据在常量定义处(infrastructure/llm.py,#68 收编
+# 之后全仓「会产出用户可见正文」的调用点共用同一份,不许各写一份)。
 
 
 def slice_prompt(task_request: str, description: str) -> str:

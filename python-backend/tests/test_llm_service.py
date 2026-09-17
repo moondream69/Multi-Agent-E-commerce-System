@@ -220,3 +220,49 @@ async def test_noop_when_langfuse_unconfigured() -> None:
     """settings.langfuse_host 留空 → 默认 NullTracer,不初始化 SDK、不抛错。"""
     svc = LlmService(transport=json_ok("ok"))
     assert await svc.complete([{"role": "user", "content": "hi"}]) == "ok"
+
+
+# —— 空正文同预算重试(#68:自 #65 起草线的护栏提炼为全仓调用点共用的一份) ——
+
+
+async def test_blank_retry_returns_second_completion() -> None:
+    """空正文(思考吃穿预算)→ 同预算原样再问一次:第二次拿到正文即返回。
+
+    空正文是 200 响应,传输层的重试管不到,故由调用方这一层补一次;预算与消息原样
+    (空正文不是历史里的错误轮次,无轮可修——重试兜的是采样抖动)。
+    """
+    from python_backend.infrastructure.llm import LlmEmptyContent, complete_with_blank_retry
+    from tests.conftest import FakeLlm
+
+    llm = FakeLlm(responses=[LlmEmptyContent("LLM 返回空内容(finish_reason=length)"), "亲,包裹已发出。"])
+    result = await complete_with_blank_retry(llm, [{"role": "user", "content": "hi"}], max_tokens=16384)
+
+    assert result == "亲,包裹已发出。"
+    assert [call["max_tokens"] for call in llm.calls] == [16384, 16384]
+    assert llm.calls[0]["messages"] == llm.calls[1]["messages"]  # 原样重问
+
+
+async def test_blank_retry_holds_at_one_attempt() -> None:
+    """两次都空:**如实上抛** LlmEmptyContent(调用方接得住,如端点 500)——重试只一次,不循环。"""
+    from python_backend.infrastructure.llm import LlmEmptyContent, complete_with_blank_retry
+    from tests.conftest import FakeLlm
+
+    llm = FakeLlm(responses=[LlmEmptyContent("空"), LlmEmptyContent("空")])
+
+    with pytest.raises(LlmEmptyContent):
+        await complete_with_blank_retry(llm, [{"role": "user", "content": "hi"}])
+
+    assert len(llm.calls) == 2
+
+
+async def test_blank_retry_does_not_retry_other_failures() -> None:
+    """别的 LlmFailure(429/5xx/网络)不在此重试——传输层已按 1s/2s 退避重试过,再重试是重复。"""
+    from python_backend.infrastructure.llm import complete_with_blank_retry
+    from tests.conftest import FakeLlm
+
+    llm = FakeLlm(responses=[LlmFailure("LLM 调用失败:HTTP 503")])
+
+    with pytest.raises(LlmFailure):
+        await complete_with_blank_retry(llm, [{"role": "user", "content": "hi"}])
+
+    assert len(llm.calls) == 1

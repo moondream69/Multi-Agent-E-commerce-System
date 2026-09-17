@@ -236,8 +236,10 @@ export interface DraftingResponse {
   citations: Citation[];
 }
 
-// —— 引用小点(issue #51 / ADR-0007 C 段:答案带切块级引用,数据随回答一起下发)——
-// 编号即答案文本里的上标编号(同一文档合并为一号);点开显示各被引切块的原文与完整溯源。
+// —— 引用小点(issue #51 / ADR-0007 C 段:答案带切块级引用,数据随回答一起下发;
+//    #67 扩系统记录条目)——
+// 编号即答案文本里的上标编号(同一文档 / 同一记录合并为一号);点开显示被引内容与完整溯源:
+// 语料给各切块原文,系统记录(商品/订单)给记录标识与查询结果正文。
 
 export interface CitationChunk {
   id: string; // 切块标识(如 faq-returns#6)
@@ -247,14 +249,33 @@ export interface CitationChunk {
   content: string; // 被引切块原文
 }
 
-export interface Citation {
+/** 系统记录条目(#67:商品/订单的查库结果;不是语料切块,故没有 chunks)。 */
+export interface CitationRecord {
+  id: string; // 记录标识(如 product:82 / order:1042)
+  content: string; // 查询结果正文(后端按证据字段拼好的可读行)
+}
+
+/** 语料切块引用(#51;后端自 #67 起显式落 kind,引入前落库的老载荷可缺——缺即本类)。 */
+export interface CorpusCitation {
   number: number; // 上标编号(1 起,按文本内首次出现排)
+  kind?: 'corpus';
   doc_id: string; // 文档标识(切块标识的「#」前缀)
   title: string;
   source: string; // 来源渠道
   published_at: string | null; // 发布日期
   chunks: CitationChunk[];
 }
+
+/** 系统记录引用(#67):商品/订单证据的标注(非语料切块,故无 chunks/文档溯源),正文在 record 里。 */
+export interface RecordCitation {
+  number: number; // 上标编号(1 起,按文本内首次出现排)
+  kind: 'product' | 'order';
+  title: string;
+  source: string; // 系统查询结果
+  record: CitationRecord;
+}
+
+export type Citation = CorpusCitation | RecordCitation;
 
 // —— CSV 导入(spec #8 B8:POST /api/import/products|orders)——
 

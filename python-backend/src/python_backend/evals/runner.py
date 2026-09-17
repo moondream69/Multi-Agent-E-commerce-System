@@ -228,6 +228,9 @@ class EvalRunner:
                     answer=draft,
                     citations=tuple(payload.get("citations") or ()),
                     executed=True,
+                    # #67:查证证据块随产出落快照——判据②③核「不编造 / 无凭空论断」要的就是它
+                    # (草稿的库存数等商品类结论只在证据块里可核;缺了它判分材料结构性不可核验)
+                    evidence=payload.get("evidence"),
                 ),
             ),
             plan=(),  # 该线无任务轨迹 ⇒ 无规划段(如实留空,不编一个)

@@ -41,7 +41,7 @@ from uuid import NAMESPACE_OID, uuid5
 from python_backend.core.citations import check_citations
 from python_backend.evals.judge import Judge, JudgeRequest, RubricScore
 from python_backend.evals.schema import PLANNING_SURFACE, Scenario
-from python_backend.evals.snapshot import Snapshot, plan_lines, read_snapshot
+from python_backend.evals.snapshot import SliceOutput, Snapshot, plan_lines, read_snapshot
 from python_backend.infrastructure.tracing import eval_root_trace_id
 
 # 机械防伪引在分数稳定键里的段名(判据序号段的并列物):零 LLM、全量跑、不设开关(ADR-0008)
@@ -166,7 +166,7 @@ def score_snapshot(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) 
         answer = item.answer or ""
         records.extend(_mechanical_records(snapshot, str(item.no), answer, item.citations))
         criteria, indexes = criteria_for[position]
-        records.extend(_judge_records(snapshot, item.no, scenario, answer, item.citations, criteria, indexes, judge))
+        records.extend(_judge_records(snapshot, item, scenario, criteria, indexes, judge))
     return tuple(records)
 
 
@@ -266,29 +266,29 @@ def _mechanical_records(
 
 def _judge_records(
     snapshot: Snapshot,
-    slice_no: int,
+    item: SliceOutput,
     scenario: Scenario,
-    answer: str,
-    citations: tuple[dict, ...],
     criteria: tuple[str, ...],
     indexes: tuple[int, ...],
     judge: JudgeSession,
 ) -> tuple[ScoreRecord, ...]:
     """judge 判据:一次请求发全部判据,逐条收 0/1 + comment(坏输出在 judge 层即报错)。
 
-    ``slice_no`` 在本层是 ``int``(切片号,进 ``JudgeRequest`` 的定位文案);落分时转成键里的段名
-    (``_record`` 收 ``str``)。``indexes`` 是**1 起的判据序号**(见 ``_criteria_pairing``):该号既是
-    键里的段名、也是**真源 rubric 里的位置**——本条判据的文案取自真源(本片只带一条时,请求里的
-    ``criteria`` 是子集,拿它取文案会错位)。
+    ``item`` 是快照里的切片产出(答案 / 引用载荷 / **查证证据块**):证据块随请求进判分材料
+    (#67)——商品/订单类结论的核验面;任务线切片没有它,判分材料随之不渲染该段。
+    ``item.no`` 在本层是切片号(进 ``JudgeRequest`` 的定位文案与落分键段名)。``indexes`` 是
+    **1 起的判据序号**(见 ``_criteria_pairing``):该号既是键里的段名、也是**真源 rubric 里的位置**
+    ——本条判据的文案取自真源(本片只带一条时,请求里的 ``criteria`` 是子集,拿它取文案会错位)。
     """
     scores = judge(
         JudgeRequest(
             scenario_id=snapshot.scenario_id,
-            slice_no=slice_no,
+            slice_no=item.no,
             input=scenario.input,
-            answer=answer,
-            citations=citations,
+            answer=item.answer or "",
+            citations=item.citations,
             criteria=criteria,
+            evidence=item.evidence,
         )
     )
 
@@ -297,7 +297,7 @@ def _judge_records(
 
     return _record_scores(
         snapshot,
-        str(slice_no),
+        str(item.no),
         scores=scores,
         suffix_of=lambda score: str(indexes[score.index - 1]),  # 键里是**判据序号**(真源位置),非请求内位置
         criterion=criterion_of,

@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { AgentMarkdown } from './AgentMarkdown';
-import { Citation } from '../types/events';
+import { CorpusCitation, RecordCitation } from '../types/events';
 
 // —— 引用小点(issue #51 / B28):答案里的 [n] 渲染为可点上标,点开显示被引切块原文与完整溯源 ——
+// #67 起条目分两类:语料切块(本文件的默认夹具)与系统记录(商品/订单,recordCitation)。
 
-function citation(overrides: Partial<Citation> = {}): Citation {
+function citation(overrides: Partial<CorpusCitation> = {}): CorpusCitation {
   return {
     number: 1,
     doc_id: 'faq-returns',
@@ -21,6 +22,23 @@ function citation(overrides: Partial<Citation> = {}): Citation {
         content: 'Q: 退款多久到账?\nA: 仓库验收后 1-3 个工作日发起退款。',
       },
     ],
+    ...overrides,
+  };
+}
+
+/** 系统记录条目(#67):商品/订单查库结果——无切块、无发布日期。 */
+function recordCitation(
+  overrides: Partial<RecordCitation> = {},
+): RecordCitation {
+  return {
+    kind: 'product',
+    number: 2,
+    title: '桌面收纳架 深空黑款',
+    source: '商品库(系统查询结果)',
+    record: {
+      id: 'product:82',
+      content: 'SKU SYN-HM-081 · 价格 129.00 CNY · 状态 draft · 库存 2',
+    },
     ...overrides,
   };
 }
@@ -127,5 +145,21 @@ describe('AgentMarkdown 引用小点', () => {
     expect(panel.className).toContain('max-h-');
     expect(panel.className).toContain('overflow-y-auto');
     expect(within(panel).getAllByText(/被引片段 \d+/)).toHaveLength(20);
+  });
+
+  it('系统记录引用(#67):点开显示记录标识与查询结果正文,不摆章节/切块序号', () => {
+    render(
+      <AgentMarkdown citations={[citation(), recordCitation()]}>
+        {'该款当前库存仅剩 2 件[2];发货时效见另一条[1]。'}
+      </AgentMarkdown>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '引用 2' }));
+    const panel = within(screen.getByRole('note'));
+    expect(panel.getByText('桌面收纳架 深空黑款')).toBeTruthy(); // 商品标题
+    expect(panel.getByText('商品库(系统查询结果)')).toBeTruthy(); // 来源渠道
+    expect(panel.getByText('product:82')).toBeTruthy(); // 记录标识
+    expect(panel.getByText(/SKU SYN-HM-081 .* 库存 2/)).toBeTruthy(); // 查询结果正文
+    expect(panel.queryByText(/切块/)).toBeNull(); // 商品不是语料切块:不摆章节与切块序号
   });
 });

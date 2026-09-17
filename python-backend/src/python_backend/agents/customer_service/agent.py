@@ -14,7 +14,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from python_backend.agents.base import (
-    AGENT_MAX_TOKENS,
     ToolCallingLlmClient,
     answer_turn,
     assistant_message,
@@ -26,6 +25,7 @@ from python_backend.agents.base import (
 from python_backend.agents.customer_service.tools import DRAFT_TOOLS, VERIFY_TOOLS
 from python_backend.agents.executor import Executor
 from python_backend.domain.tools import ToolRegistry
+from python_backend.infrastructure.llm import AGENT_MAX_TOKENS
 
 VERIFY_SYSTEM = """你是跨境电商客服的查证助手。买家消息需要先查证再作答:
 - 涉及订单问题:调用 order_lookup 查订单真实状态

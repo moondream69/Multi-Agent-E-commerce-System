@@ -45,7 +45,7 @@ from python_backend.db.product_lookup import LOOKUP_MATCH_LIMIT, PostgresProduct
 from python_backend.db.session import SessionFactory
 from python_backend.infrastructure.embedding import EmbeddingClient, EmbeddingService
 from python_backend.infrastructure.fx import CNY, FxService, FxUnavailableError
-from python_backend.infrastructure.llm import LlmClient, LlmService
+from python_backend.infrastructure.llm import AGENT_MAX_TOKENS, LlmClient, LlmService, complete_with_blank_retry
 from python_backend.settings import get_settings
 from python_backend.vector_repo.base import SearchHit, VectorRepository
 
@@ -271,18 +271,20 @@ class ToolExecutor:
 
     async def _execute_translate(self, params: dict) -> dict:
         text, locale = params["text"], params["target_locale"]
-        translated = await self._llm.complete(
+        translated = await complete_with_blank_retry(
+            self._llm,
             [
                 {"role": "system", "content": f"你是专业翻译。请把用户文本翻译为 {locale},保持语气自然。"},
                 {"role": "user", "content": text},
             ],
             temperature=0.3,
-            max_tokens=2000,  # 思考模式推理与正文共享预算:低预算(原 500)会把正文饿成空,对齐默认档
+            max_tokens=AGENT_MAX_TOKENS,  # 预算与空正文重试口径见 infrastructure/llm.py(#68)
         )
         return {"translated": translated}
 
     async def _execute_scoring(self, params: dict) -> dict:
-        raw = await self._llm.complete(
+        raw = await complete_with_blank_retry(
+            self._llm,
             [
                 {
                     "role": "system",
@@ -294,7 +296,7 @@ class ToolExecutor:
                 {"role": "user", "content": json.dumps(params, ensure_ascii=False)},
             ],
             json_mode=True,
-            max_tokens=2000,  # 思考模式推理与正文共享预算:300 实测 ~1/3 概率正文为空(走查缺陷),对齐默认档
+            max_tokens=AGENT_MAX_TOKENS,  # 原档 300 实测 ~1/3 正文为空;产出短但思考照样吃穿,故同档(#68)
         )
         return json.loads(raw)
 
@@ -309,7 +311,8 @@ class ToolExecutor:
         return {"report": report}
 
     async def _execute_sentiment_analysis(self, params: dict) -> dict:
-        sentiment = await self._llm.complete(
+        sentiment = await complete_with_blank_retry(
+            self._llm,
             [
                 {
                     "role": "system",
@@ -318,12 +321,13 @@ class ToolExecutor:
                 {"role": "user", "content": params["text"]},
             ],
             temperature=0.1,
-            max_tokens=2000,  # 思考模式推理与正文共享预算:10 必然被推理耗尽(空正文),对齐默认档
+            max_tokens=AGENT_MAX_TOKENS,  # 产出一个词,但思考照样吃穿预算(原 10 必然空正文)——不分档(#68)
         )
         return {"sentiment": sentiment.strip()}
 
     async def _execute_generate_draft(self, params: dict) -> dict:
-        draft = await self._llm.complete(
+        draft = await complete_with_blank_retry(
+            self._llm,
             [
                 {
                     "role": "system",
@@ -337,7 +341,7 @@ class ToolExecutor:
                     "content": f"买家消息:{params['buyer_message']}\n\n查证证据:{params.get('evidence', '')}",
                 },
             ],
-            max_tokens=800,
+            max_tokens=AGENT_MAX_TOKENS,  # 原 800 是全仓最低档(比 #65 修掉的 2000 还低)——同档收口(#68)
         )
         return {"draft": draft}
 

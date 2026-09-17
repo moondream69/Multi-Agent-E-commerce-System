@@ -28,6 +28,7 @@ RECORDED_AT = datetime(2026, 9, 15, 3, 30, tzinfo=UTC)
 CITATIONS = [
     {
         "number": 1,
+        "kind": "corpus",
         "doc_id": "usitc-digital-trade",
         "title": "Global Digital Trade",
         "source": "USITC(公有领域)",
@@ -35,6 +36,26 @@ CITATIONS = [
         "chunks": [{"id": "usitc-digital-trade#3", "score": 0.71, "section": "3", "chunk_index": 3, "content": "…"}],
     }
 ]
+
+# 查证证据块(#67;起草工作台线端点随草稿返回的那份,原样落快照——判据②③的核验面)
+EVIDENCE = {
+    "faq_hits": [{"id": "faq-logistics#1", "score": 0.56, "payload": {"content": "Q: 下单后多久发货?"}}],
+    "order": {"id": 1042, "status": "shipped", "total_amount": "299.00", "currency": "CNY", "product": None},
+    "order_id": 1042,
+    "products": [
+        {
+            "id": 82,
+            "sku": "SYN-HM-081",
+            "title": "桌面收纳架 深空黑款",
+            "price": "129.00",
+            "currency": "CNY",
+            "category": "家居",
+            "status": "draft",
+            "stock": 2,
+        }
+    ],
+    "products_truncated": False,
+}
 
 # GET /api/tasks/{thread_id} 的 plan 段(切片计划载荷,票 #61)
 PLAN = {
@@ -67,6 +88,7 @@ def _snapshot() -> Snapshot:
                 answer="美国市场咖啡机需求上行 [1]",
                 citations=tuple(CITATIONS),
                 executed=True,
+                evidence=EVIDENCE,  # #67:工作台线切片的查证证据块(任务线为 None)
             ),
             SliceOutput(
                 no=2,
@@ -151,6 +173,25 @@ def test_incomplete_reason_roundtrips(tmp_path: Path) -> None:
     assert restored.slices[1].incomplete is not None
     assert "正文为空" in restored.slices[1].incomplete
     assert restored.slices[0].incomplete is None  # 正常产出不凭空多一个未完成标记
+
+
+def test_evidence_roundtrips_and_bad_shape_is_explicit(tmp_path: Path) -> None:
+    """查证证据块随快照落盘并可读回(#67);形状坏掉即报错点名,不当空处理。
+
+    任务线没有这份载荷 ⇒ None(如实缺席:判分材料据此不渲染该段——与「有证据块但三类皆空」
+    是两回事,后者是「查过,没查到」)。
+    """
+    restored = read_snapshot(write_snapshot(tmp_path, _snapshot()))
+
+    assert restored.slices[0].evidence == EVIDENCE
+    assert restored.slices[1].evidence is None
+
+    payload = json.loads(snapshot_path(tmp_path, "coffee-maker-us").read_text(encoding="utf-8"))
+    payload["slices"][0]["evidence"] = "不是映射"
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="evidence 须是映射"):
+        read_snapshot(bad)
 
 
 def test_slices_from_results_reads_incomplete_marker() -> None:

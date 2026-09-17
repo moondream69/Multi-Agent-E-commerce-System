@@ -321,7 +321,10 @@ async def test_drafting_response_matches_contract() -> None:
 
 
 def test_citation_shape_matches_contract() -> None:
-    """引用条目键 == ts Citation / CitationChunk 字段(issue #51:两条答案线共用同一形状)。"""
+    """引用条目键 == ts Citation / CitationChunk / CitationRecord 字段(issue #51;记录条目 #67)。
+
+    条目两类共用同一载荷(语料切块 / 系统记录):这里两种都造一条,键各自对齐 ts 接口。
+    """
     from python_backend.core.citations import build_citations
 
     hits = [
@@ -341,8 +344,19 @@ def test_citation_shape_matches_contract() -> None:
     ]
     _text, citations = build_citations("仓库验收后发起退款[faq-returns#6]。", hits)
 
-    assert set(citations[0]) == _ts_interface_fields("Citation")
+    assert set(citations[0]) == _ts_interface_fields("CorpusCitation")
     assert set(citations[0]["chunks"][0]) == _ts_interface_fields("CitationChunk")
+
+    record_source = {
+        "kind": "product",
+        "title": "桌面收纳架 深空黑款",
+        "source": "商品库(系统查询结果)",
+        "record": {"id": "product:82", "content": "SKU SYN-HM-081 · 库存 2"},
+    }
+    _text, records = build_citations("该款库存仅剩 2 件[1]。", [record_source], allow_ordinals=True)
+
+    assert set(records[0]) == _ts_interface_fields("RecordCitation")
+    assert set(records[0]["record"]) == _ts_interface_fields("CitationRecord")
 
 
 async def test_login_response_matches_contract() -> None:

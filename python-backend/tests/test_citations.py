@@ -253,3 +253,77 @@ def test_check_is_not_applicable_without_any_citation_signal(citations: list[dic
 
     assert not report.applicable
     assert report.violations == ()
+
+
+# —— 系统记录引用(#67:商品/订单证据的标注) ——
+
+
+def record(
+    record_id: str, *, kind: str = "product", title: str = "桌面收纳架 深空黑款", content: str = "库存 2"
+) -> dict:
+    """一条系统记录引用源(形状 = ``core/drafting._product_source`` / ``_order_source``)。"""
+    return {
+        "kind": kind,
+        "title": title,
+        "source": "商品库(系统查询结果)",
+        "record": {"id": record_id, "content": content},
+    }
+
+
+def test_ordinal_resolves_across_corpus_and_record_sources() -> None:
+    """序号贯穿两类引用源(#67):既可按 draft 的 ref 锚到语料命中,也可锚到商品/订单记录。"""
+    sources = [hit("faq-logistics#1"), record("product:82")]
+
+    normalized, citations = build_citations("发货时效见 [1];该款库存仅剩 2 件 [2]。", sources, allow_ordinals=True)
+
+    assert normalized == "发货时效见 [1];该款库存仅剩 2 件 [2]。"  # 序号本就落在清单序上,编号不动
+    assert [entry["number"] for entry in citations] == [1, 2]
+    assert [entry["kind"] for entry in citations] == ["corpus", "product"]
+    assert citations[1]["record"] == {"id": "product:82", "content": "库存 2"}
+    assert "chunks" not in citations[1]  # 记录条目不留 chunks(不假装是语料切块)
+
+
+def test_record_entries_merge_by_record_id_and_keep_first_number() -> None:
+    """同一记录多次引用合并为一号(与同文档合并同口径);另一记录另起一号。"""
+    sources = [
+        record("product:82"),
+        record("order:1042", kind="order", title="订单 #1042", content="状态 shipped"),
+    ]
+
+    normalized, citations = build_citations(
+        "库存见 [1];订单状态见 [2];再提一次库存 [1]。", sources, allow_ordinals=True
+    )
+
+    assert normalized == "库存见 [1];订单状态见 [2];再提一次库存 [1]。"
+    assert len(citations) == 2
+    assert [entry["number"] for entry in citations] == [1, 2]
+    assert citations[0]["record"]["id"] == "product:82"
+
+
+def test_record_markers_are_flagged_when_out_of_range() -> None:
+    """越界序号照旧原样保留(机械防伪引看得见):记录源不是「什么号都能标」的挡箭牌。"""
+    normalized, citations = build_citations("该款库存仅剩 2 件 [3]。", [record("product:82")], allow_ordinals=True)
+
+    assert normalized == "该款库存仅剩 2 件 [3]。"  # 清单只有 1 条,3 越界
+    assert citations == []
+
+
+def test_check_treats_record_entries_as_cited_evidence() -> None:
+    """机械防伪引:标了记录条目的 `[n]` 能对上报载荷 ⇒ 不算残留;载荷非空 ⇒ 判适用。"""
+    text, citations = build_citations("该款库存仅剩 2 件 [1]。", [record("product:82")], allow_ordinals=True)
+
+    report = check_citations(text, citations, hits=[])
+
+    assert report.applicable
+    assert report.violations == ()
+
+
+def test_check_skips_record_entries_in_hits_intersection() -> None:
+    """记录条目**不参与**「与命中集相交」判定:商品/订单本就不是语料切块,拿它去比是假违规(#67)。"""
+    text, citations = build_citations(
+        "库存见 [2];退款到账见 [1]。", [hit("faq-returns#6"), record("product:82")], allow_ordinals=True
+    )
+
+    report = check_citations(text, citations, hits=[hit("faq-returns#6")])
+
+    assert report.violations == ()  # 若误把记录条目拿去与命中集比,这里会冒出一条假「不相交」
