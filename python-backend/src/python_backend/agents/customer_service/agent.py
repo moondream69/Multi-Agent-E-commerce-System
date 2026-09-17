@@ -4,6 +4,8 @@ verify 节点只暴露 faq_search/knowledge_search/order_lookup/product_lookup;�
 (图级边约束,非提示词):无证据 → nudge 节点明确提示后拉回 verify。
 draft 节点暴露翻译/草稿/模板/情感/工单工具,产出最终草稿。
 issue #51:终稿据查证命中的切块标识标注引用,归一化为上标编号随答案下发(无命中即无引用)。
+issue #69:verify 的**查回结果**(订单/商品)随状态出块,经 make_agent_runner 落进切片证据块
+——任务线的商品/订单类结论同样要在判分材料里可核(与工作台线 #67 同一缺口)。
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from python_backend.agents.base import (
     ToolCallingLlmClient,
     answer_turn,
     assistant_message,
+    evidence_calls_from,
     merge_lists,
     resolve_tool_calls,
     retrieval_hits_from,
@@ -52,7 +55,8 @@ class CustomerState(TypedDict, total=False):
     blank_retried: bool  # 终稿空正文已重试过一次(#64 B1:只重试一次即止)
     tool_calls: list[dict]
     collected: Annotated[list[dict], merge_lists]
-    evidence: Annotated[list[dict], merge_lists]  # 已执行的查证调用 {tool, params}
+    verify_calls: Annotated[list[dict], merge_lists]  # 已执行的查证调用 {tool, params}(B12 的判定面)
+    evidence_calls: Annotated[list[dict], merge_lists]  # #69:系统记录类查证结果(出块/裁剪在 runner)
     retrieval: Annotated[list[dict], merge_lists]  # 查证命中的切块(#51:引用只建在命中的 id 上)
     evidence_count: int
     answer: str | None
@@ -105,14 +109,16 @@ def build_customer_agent(
         observations, collected, executed = await resolve_tool_calls(
             state.get("tool_calls", []), visible=verify_visible, executor=executor
         )
-        evidence = [{"tool": call.action, "params": call.params} for call in executed]
+        verify_calls = [{"tool": call.action, "params": call.params} for call in executed]
         retrieval = retrieval_hits_from(executed)
         return {
             "messages": observations,
             "collected": collected,
-            "evidence": evidence,
+            "verify_calls": verify_calls,
+            # #69:查回的商品/订单结果另收一份(判分材料据此核商品类结论)
+            "evidence_calls": evidence_calls_from(executed),
             "retrieval": retrieval,
-            "evidence_count": state.get("evidence_count", 0) + len(evidence),
+            "evidence_count": state.get("evidence_count", 0) + len(verify_calls),
         }
 
     async def nudge(state: CustomerState) -> dict:

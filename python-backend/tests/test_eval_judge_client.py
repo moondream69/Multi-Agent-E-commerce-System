@@ -284,7 +284,7 @@ def test_render_prompt_marks_truncated_product_evidence() -> None:
 
 
 def test_render_prompt_keeps_evidence_absence_and_emptiness_apart() -> None:
-    """缺席(None,任务线)不渲染该段;**有块但三类皆空**(查过、没查到)如实呈现。"""
+    """缺席(None,该切片没有这份载荷)不渲染该段;**有块但三类皆空**(查过、没查到)如实呈现。"""
     assert "【查证证据(系统查询结果" not in render_prompt(_request())
 
     empty = replace(
@@ -297,6 +297,45 @@ def test_render_prompt_keeps_evidence_absence_and_emptiness_apart() -> None:
     assert "FAQ 命中:无" in prompt
     assert "商品查证:无命中" in prompt
     assert "订单查证:订单 #1042 未查到(如实标注,未编造)" in prompt
+
+
+def _taskline_request(*, pruned: bool = False) -> JudgeRequest:
+    """任务线一条判据请求(带系统记录查证块;#69 的形状——订单线 list_orders 读回的事实)。"""
+    entry: dict = {
+        "tool": "list_orders",
+        "params": {"status": None},
+        "result": [{"reference": "SYN-ORD-00001", "status": "delivered", "product": {"sku": "SYN-PL-001"}}],
+    }
+    if pruned:
+        entry["truncated"] = True
+        entry["rows_total"] = 2000
+    return JudgeRequest(
+        scenario_id="cs-task-returns-zh",
+        slice_no=3,
+        input="你们的退货政策是什么?我买的商品有点问题想退。",
+        answer="比如 SYN-ORD-00001(智能插座 深空黑款)目前是 delivered,可以登记退货流转。",
+        citations=(),  # 该片没有引用条目(判 0 的那条实录正是「零引用」)
+        criteria=("结论性陈述有查证证据(FAQ/订单/商品)支撑:引用标记与查证证据对应,无凭空论断",),
+        evidence={"lookups": [entry]},
+    )
+
+
+def test_render_prompt_carries_taskline_record_lookup() -> None:
+    """#69:任务线的系统记录查证(**查回的值**,不是「调用记录」)进材料;标题按形状分派、不混用。"""
+    prompt = render_prompt(_taskline_request())
+
+    assert "【查证证据(系统记录查询结果:订单/商品)】" in prompt
+    assert '工具 list_orders 查证(参数 {"status": null}):' in prompt
+    assert '"reference": "SYN-ORD-00001"' in prompt and '"status": "delivered"' in prompt
+    assert "【查证证据(系统查询结果:商品/订单;FAQ 命中含未被引用的)】" not in prompt
+    assert "该查询共" not in prompt  # 未裁剪即不摆裁剪标注
+
+
+def test_render_prompt_marks_pruned_lookup_rows() -> None:
+    """裁剪行数**显式标注**(不静默截):judge 须知道自己看到的不是全部(#69,同 #64 A1 的口径)。"""
+    prompt = render_prompt(_taskline_request(pruned=True))
+
+    assert "(该查询共 2000 行,本材料给出其中 1 行:产出提及的记录优先,其余取头部)" in prompt
 
 
 def test_render_prompt_scopes_product_claims_out_of_citation_marker_rule() -> None:

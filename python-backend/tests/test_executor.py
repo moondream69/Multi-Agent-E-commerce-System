@@ -97,6 +97,40 @@ async def test_execute_scoring_parses_json() -> None:
     assert result["grade"] == "A"
 
 
+async def test_scoring_prompt_bars_boilerplate_for_gap_dimensions() -> None:
+    """#70:缺口维度的理由如实写「无数据」、不许拿行业套话填——评分表与报告的「无数据」原先相抵。
+
+    依据(2026-09-17 实评 ``smart-home-us#1#2`` 由 1 转 0):报告自述「价格带分布、竞品数量与集中度
+    均无数据」,同一份报告的评分表理由却断言「基础款同质化」「竞争白热化」——被 judge 判凭空论断。
+    """
+    llm = FakeLlm(responses=[json.dumps({"score": 62, "grade": "C", "rationale": "该维度无数据,按中性计分"})])
+
+    await make_executor(llm).execute("scoring", {"product_title": "智能摄像头"})
+
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "rationale 只能陈述给定材料支持的事实" in system
+    assert "该维度无数据" in system
+    # 定性材料也算材料(2026-09-17 窄跑实录:一律中性计分 ⇒ 候选同分 ⇒ 报告自认「无区分度」⇒ 判据①全败)
+    assert "**定性**事实的维度" in system
+
+
+async def test_report_prompt_bars_boilerplate_for_gap_dimensions() -> None:
+    """#70:报告层同一口径(#70 裁决取「两处都加」)——套话在报告里同样被判「凭空论断」。
+
+    末句是**收口补丁**(2026-09-17 窄跑实录):`run-20260917T153600Z` 里 8 条判据①失败,判词同型
+    「虽列出 50/C,但自认『无区分度 / 不构成判断』」——中性计分被报告自己否掉,分级结论即不成立。
+    """
+    llm = FakeLlm(responses=["# 选品报告"])
+
+    await make_executor(llm).execute("generate_report", {"context": "情报与评分汇总"})
+
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "只能来自给定情报" in system
+    assert "无数据" in system
+    assert "不等于对结论的否定" in system
+    assert "明确的分级结论与优先级次序" in system
+
+
 @pytest.mark.parametrize(
     ("action", "params", "response", "floor"),
     [

@@ -362,7 +362,7 @@ async def test_run_scenario_writes_snapshot_and_projects(tmp_path: Path) -> None
     assert [item.no for item in snapshot.slices] == [1]
     assert snapshot.slices[0].answer == "美国市场咖啡机需求上行 [1]"
     assert snapshot.slices[0].citations[0]["doc_id"] == "usitc-digital-trade"
-    assert snapshot.slices[0].evidence is None  # 任务线没有查证证据载荷 ⇒ 如实缺席(判分材料不渲染该段)
+    assert snapshot.slices[0].evidence is None  # 该切片没有查证证据载荷 ⇒ 如实缺席(判分材料不渲染该段)
     # 规划段随任务线快照一起落盘(票 #61):切片号升序、依赖声明原样
     assert [(item.no, item.agent, item.depends_on) for item in snapshot.plan] == [
         (1, "product_research", ()),
@@ -381,6 +381,22 @@ async def test_run_scenario_writes_snapshot_and_projects(tmp_path: Path) -> None
             },
         }
     ]
+
+
+async def test_taskline_slice_evidence_lands_in_snapshot(tmp_path: Path) -> None:
+    """#69:任务线切片的系统记录查证块经 ``GET /api/tasks`` 的 results 落快照(判分材料据此可核)。
+
+    依据(2026-09-17 实评 ``cs-task-returns-zh#3#3``):订单线切片给出订单事实却零引用,
+    材料里没有查回的值 ⇒ 结构性不可核验。
+    """
+    evidence = {"lookups": [{"tool": "list_orders", "params": {}, "result": [{"reference": "SYN-ORD-00001"}]}]}
+    detail = {"status": "completed", "results": {"1": {**SLICE_RESULT, "evidence": evidence}}, "plan": PLAN}
+    runner, _ = _runner(tmp_path, _handler(detail=detail))
+    await runner.login("admin", "pw")
+
+    snapshots = await runner.run_scenarios([_scenario()])
+
+    assert snapshots[0].slices[0].evidence == evidence
 
 
 async def test_run_scenario_keeps_snapshot_when_projection_fails(tmp_path: Path) -> None:

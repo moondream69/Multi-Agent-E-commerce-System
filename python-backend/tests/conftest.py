@@ -8,6 +8,7 @@ import socket
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 from urllib.parse import urlparse
 
 import pytest
@@ -976,11 +977,15 @@ def corpus_faq_doc() -> CorpusDocument:
 
 
 class FakeExecutor:
-    """假执行器:execute 记录并返回脚本结果;capture 记录并返回脚本快照。"""
+    """假执行器:execute 记录并返回脚本结果;capture 记录并返回脚本快照。
+
+    结果的注解是 ``Any``:真执行器按动作返回不同的形状(``list_orders`` 给的是**列表**,
+    其余多为映射),这里不假装只有一种——替身照实收。
+    """
 
     def __init__(
         self,
-        results: dict[str, dict] | None = None,
+        results: dict[str, Any] | None = None,
         snapshots: dict[str, dict] | None = None,
     ) -> None:
         self._results = results or {}

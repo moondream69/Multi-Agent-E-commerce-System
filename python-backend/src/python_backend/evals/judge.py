@@ -14,6 +14,7 @@ judge 是**独立于被评对象**的跨厂模型(中转站 Claude),配置三键
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -95,8 +96,11 @@ class JudgeRequest:
     **整段给**,不逐片拆:三条判据(依赖声明 / 划分 / 领域路由)评的就是整份计划,拆片看会把
     「依赖跨片」这一半信息切掉。非规划面如实留 ``""``。
 
-    ``evidence``:该切片的**查证证据块**(#67;起草工作台线的商品/订单/FAQ 查询结果,原样载荷)。
-    任务线没有这份载荷 ⇒ ``None``(材料随之不渲染该段,与「有证据块但全空」是两回事)。
+    ``evidence``:该切片的**查证证据块**——两条线两种形状(#67 工作台线 / #69 任务线)。
+    工作台线是起草端点原样载荷(FAQ 命中 / 订单 / 商品 + 截断标志);任务线是系统记录类查证
+    (``order_lookup`` / ``product_lookup`` / ``list_orders``)的逐调用结果(``{"lookups": [...]}``
+    形状,列表型已按上限于出块时裁剪并标注行数)。两线都没有这份载荷时如实 ``None``
+    (材料随之不渲染该段,与「有证据块但全空」是两回事)。
     它跟着 ``citations`` 走**原始载荷**而非渲染文本:渲染是判分面自己的事(同引用条目的口径)。
     """
 
@@ -136,9 +140,10 @@ def render_prompt(request: JudgeRequest) -> str:
     判分对象二选一:``plan`` 非空 = 规划切片面(评的是整份切片计划,产出段换成【切片计划】);
     否则 = 既有「文本产出 + 引用条目」形状(票 #59/#60 的线原样不动)。
 
-    ``evidence`` 非 None 时追加【查证证据】段(#67):商品/订单等**系统查询结果**原先不在材料里,
-    判据②③对商品类结论**结构性不可核验**(judge 被要求「只依据给定材料」+「宁可判失败」,
-    对真有据的库存/价格结论也只能记 0——2026-09-17 实评两条 0 的成因)。
+    ``evidence`` 非 None 时追加【查证证据】段(#67 工作台线 / #69 任务线):商品/订单等
+    **系统查询结果**原先不在材料里,判据②③对商品类结论**结构性不可核验**(judge 被要求
+    「只依据给定材料」+「宁可判失败」,对真有据的库存/价格结论也只能记 0——2026-09-17 实评
+    两条 0 的成因)。段落形状按载荷分派,见 ``_evidence_section``。
     """
     lines = [
         "你是资深电商选品与客服质量评审。请对下面**一条** Agent 产出逐条判定评分标准是否通过。",
@@ -161,8 +166,7 @@ def render_prompt(request: JudgeRequest) -> str:
         lines.extend(_citation_lines(request.citations))
         lines.append("")
         if request.evidence is not None:
-            lines.extend(["【查证证据(系统查询结果:商品/订单;FAQ 命中含未被引用的)】"])
-            lines.extend(_evidence_lines(request.evidence))
+            lines.extend(_evidence_section(request.evidence))
             lines.append("")
     lines.extend(["【评分标准】"])
     lines.extend(f"{index}. {criterion}" for index, criterion in enumerate(request.criteria, start=1))
@@ -223,6 +227,45 @@ def _citation_lines(citations: tuple[dict, ...]) -> list[str]:
 def _record_line(record: dict) -> str:
     """系统记录条目(商品/订单)→ 材料行:标识 + 查询结果正文(截断显式标注,同切块口径)。"""
     return f"    {record.get('id', '')}:{_excerpt(str(record.get('content') or ''))}"
+
+
+def _evidence_section(evidence: dict) -> list[str]:
+    """证据块 → 判分材料段(标题 + 正文,#69 起两种线两种形状)。
+
+    标题随形状分派、不共用一句:工作台线(#67)是三桶 + 未被引的 FAQ 命中,任务线(#69)是
+    系统记录类**逐调用**的查回结果——给一句话错了形状,judge 会去找材料里不存在的东西。
+    """
+    if "lookups" in evidence:
+        return ["【查证证据(系统记录查询结果:订单/商品)】", *_lookup_lines(evidence["lookups"] or [])]
+    return [
+        "【查证证据(系统查询结果:商品/订单;FAQ 命中含未被引用的)】",
+        *_evidence_lines(evidence),
+    ]
+
+
+def _lookup_lines(lookups: list) -> list[str]:
+    """任务线证据块 → 材料行(#69):逐调用给「工具 + 参数 + 查回结果」,列表型结果逐行给。
+
+    任务线切片的结论不标记录编号(编号式是工作台线 #67② 的能力),故这里给的是**查回的原值**:
+    judge 照判定要求里那条口径核「该段材料支持即算有据」。行数超限的结果已在出块时裁剪
+    (``agents.base.evidence_block_from``),裁剪事实随条目带 ``truncated`` / ``rows_total``,
+    此处如实标注——不静默截(同 #64 A1 的口径)。
+    """
+    lines: list[str] = []
+    for entry in lookups:
+        params = json.dumps(entry.get("params") or {}, ensure_ascii=False, default=str)
+        lines.append(f"工具 {entry.get('tool', '')} 查证(参数 {_excerpt(params)}):")
+        result = entry.get("result")
+        rows = result if isinstance(result, list) else [result]
+        lines.extend(f"    {_excerpt(json.dumps(row, ensure_ascii=False, default=str))}" for row in rows)
+        if not rows:
+            lines.append("    (无记录)")
+        if entry.get("truncated"):
+            lines.append(
+                f"    (该查询共 {entry.get('rows_total')} 行,本材料给出其中 {len(rows)} 行:"
+                "产出提及的记录优先,其余取头部)"
+            )
+    return lines
 
 
 def _evidence_lines(evidence: dict) -> list[str]:

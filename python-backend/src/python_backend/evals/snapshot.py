@@ -47,9 +47,10 @@ class SliceOutput:
     没执行(``executed=False``)/ 空产出(``executed=True`` 且两者皆空)/ 未完成(``incomplete`` 有值)。
     没有它时,「没执行」与「跑了但空产出」在快照里同形,读快照的人会误判。
 
-    ``evidence``(#67):该切片的**查证证据块**(起草线端点随草稿返回的那份原样落盘:FAQ 命中 /
-    订单 / 商品 + 截断标志)。任务线没有这份载荷 ⇒ ``None``(如实缺席,判分材料随之不渲染该段);
-    工作台线恒有(可能是空命中,那也是如实事实)。判据②③核「不编造 / 无凭空论断」要的正是它。
+    ``evidence``(#67 工作台线 / #69 任务线):该切片的**查证证据块**。工作台线是起草线端点随草稿
+    返回的那份原样载荷(FAQ 命中 / 订单 / 商品 + 截断标志);任务线是系统记录类查证
+    (``order_lookup`` / ``product_lookup`` / ``list_orders``)的逐调用**查回结果**。两线都没有
+    这份载荷时如实 ``None``(判分材料随之不渲染该段)。判据②③核「不编造 / 无凭空论断」要的正是它。
     """
 
     no: int
@@ -128,6 +129,8 @@ def slices_from_results(results: object) -> tuple[SliceOutput, ...]:
                 citations=tuple(entry.get("citations") or ()),
                 executed=bool(entry.get("executed")),
                 incomplete=_optional_str(entry.get("incomplete")),
+                # #69:任务线的系统记录查证块随 results 下发(工作台线由 runner 直接构造,不走这里)
+                evidence=_optional_dict(entry.get("evidence")),
             )
         )
     return tuple(sorted(slices, key=lambda item: item.no))

@@ -6,6 +6,10 @@ tool 节点按「可见性 → 三层分类」裁决:不可见拒绝(边约束�
 
 issue #52:引用增强是横切能力(ADR-0007 C 段)——检索类工具的命中累积进状态,作答轮经
 build_citations 归一化(与客服线同一形状/同一解析点);无命中即文本原样、引用为空。
+
+issue #69:系统记录类查证(order_lookup / product_lookup / list_orders)的**查回结果**另收一份,
+随切片产出落进证据块(两线共用 ``evidence_calls_from`` / ``evidence_block_from``)——任务线的
+商品/订单类结论同样要在判分材料里可核(工作台线的同缺口已在 #67 补齐)。
 """
 
 from __future__ import annotations
@@ -71,6 +75,7 @@ class AgentState(TypedDict, total=False):
     tool_calls: list[dict]
     collected: Annotated[list[dict], merge_lists]  # 审批动作参数快照(效果后置,切片边界打包)
     retrieval: Annotated[list[dict], merge_lists]  # 检索命中切块(#52:引用只建在命中的 id 上)
+    evidence_calls: Annotated[list[dict], merge_lists]  # #69:系统记录类查证结果(出块/裁剪在 runner)
     answer: str | None
     incomplete: str | None
     citations: list[dict]  # issue #51:检索类答案的引用条目(无检索依据即空)
@@ -155,6 +160,81 @@ def retrieval_hits_from(executed: list[ExecutedCall]) -> list[dict]:
     两个子图共用(issue #51 客服线 / #52 ReAct 线):非检索工具的结果没有 hits 形状,自然落空。
     """
     return [hit for call in executed for hit in retrieval_hits(call.result)]
+
+
+# 系统记录类查证动作(#69):这三者的**查回结果**进切片证据块——判据②③核「商品/订单类结论有没有
+# 材料支撑」只能靠它们;检索类命中已由 citations 载荷承载(#64 A1 给切块正文),不重复落块。
+EVIDENCE_ACTIONS = ("order_lookup", "product_lookup", "list_orders")
+
+# 列表型结果的落料上限(#69):`list_orders` 一次可返回全库(实测 2000 行;且播种使 created_at
+# 并列,「按时间倒序」实为并列 ⇒ 截前 N 行不是有意义的样本,实测点名的那单排在第 218 位)。
+# 超限即「产出提及优先 + 头部补齐」,并把总行数如实标注(不静默截,同 #64 A1 的口径)。
+_EVIDENCE_ROW_LIMIT = 20
+
+
+def evidence_calls_from(executed: list[ExecutedCall]) -> list[dict]:
+    """已执行调用里的**系统记录类**查证结果(#69):{tool, params, result} 三件套。
+
+    与 ``retrieval_hits_from`` 同为「收哪些结果」的单一判定点:收口面写死在 ``EVIDENCE_ACTIONS``,
+    选品/规划线(只有检索类工具)自然落空 ⇒ 那些线的判分材料**零变化**。
+    """
+    return [
+        {"tool": call.action, "params": call.params, "result": call.result}
+        for call in executed
+        if call.action in EVIDENCE_ACTIONS
+    ]
+
+
+def _row_needles(row: object) -> list[str]:
+    """一行的「提及口令」:订单号 / SKU / 标题——产出点名这些字符串即算提及。"""
+    if not isinstance(row, dict):
+        return []
+    return [
+        str(row[key]).strip()
+        for key in ("reference", "sku", "title")
+        if isinstance(row.get(key), str) and str(row[key]).strip()
+    ]
+
+
+def _prune_rows(rows: list, answer: str) -> tuple[list, bool]:
+    """列表型结果按上限裁剪(#69):产出提及的行优先,再按原顺序补头部。返回 (行, 是否截过)。"""
+    if len(rows) <= _EVIDENCE_ROW_LIMIT:
+        return rows, False
+    keep = [index for index, row in enumerate(rows) if any(n in answer for n in _row_needles(row))]
+    keep = keep[:_EVIDENCE_ROW_LIMIT]
+    kept = set(keep)
+    for index in range(len(rows)):
+        if len(keep) >= _EVIDENCE_ROW_LIMIT:
+            break
+        if index not in kept:
+            keep.append(index)
+            kept.add(index)
+    keep.sort()
+    return [rows[index] for index in keep], True
+
+
+def evidence_block_from(calls: list[dict], answer: str) -> dict | None:
+    """系统记录类查证结果 → 切片证据块(#69);没有查证即 None(如实缺席,判分材料不渲染该段)。
+
+    裁剪在**出块这一步**做:answer 与结果同处可得——无界读(``list_orders`` 实测 2000 行)只在此处
+    收敛成上限定量的几行,快照 JSON 与 ``GET /api/tasks`` 载荷都不必扛全库。
+    """
+    if not calls:
+        return None
+    lookups: list[dict] = []
+    for call in calls:
+        result = call.get("result")
+        entry: dict = {"tool": call.get("tool"), "params": call.get("params")}
+        if isinstance(result, list):
+            rows, truncated = _prune_rows(result, answer)
+            entry["result"] = rows
+            if truncated:
+                entry["truncated"] = True
+                entry["rows_total"] = len(result)
+        else:
+            entry["result"] = result
+        lookups.append(entry)
+    return {"lookups": lookups}
 
 
 async def resolve_tool_calls(
@@ -264,7 +344,13 @@ def build_react_agent(
         )
         # 检索类工具的命中累积进状态(非检索工具没有 hits 形状,天然落空)
         retrieval = retrieval_hits_from(executed)
-        return {"messages": observations, "collected": collected, "retrieval": retrieval}
+        return {
+            "messages": observations,
+            "collected": collected,
+            "retrieval": retrieval,
+            # #69:系统记录类结果另收一份(判分材料要用「查回的值」,与引用用的命中不是一回事)
+            "evidence_calls": evidence_calls_from(executed),
+        }
 
     def after_agent(state: AgentState) -> str:
         if state.get("incomplete") is not None or state.get("answer") is not None:
@@ -294,7 +380,8 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
     监督图显式传入;子图把它当「全局任务」摆在本切片职责之前(``slice_prompt``)。
 
     返回 {"actions": 收集的审批动作参数快照, "answer": 最终答复, "incomplete": 未完成原因|None,
-    "citations": 引用条目(#51,随答案一起下发;无检索依据即空)}。
+    "citations": 引用条目(#51,随答案一起下发;无检索依据即空),
+    "evidence": 系统记录类查证结果块(#69,无查证即 None——判分材料据此核商品/订单事实)}。
 
     子图内 LLM 失败(issue #10)在此单点收敛(三个业务 Agent 一次覆盖):与工具失败同策略,
     切片如实产出「未完成+原因」,不穿透为 REST 500、不触发重规划(重规划仅由人工拒绝触发);
@@ -306,13 +393,23 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
             final = await graph.ainvoke(AgentState(slice_description=slice_.description, task_request=task_request))
         except LlmFailure as error:
             # 子图**跑过**了(它失败了):executed 如实为真,未完成原因单独给(#64 A3 三态可辨)
-            return {"actions": [], "answer": None, "incomplete": str(error), "citations": [], "executed": True}
+            return {
+                "actions": [],
+                "answer": None,
+                "incomplete": str(error),
+                "citations": [],
+                "executed": True,
+                "evidence": None,
+            }
+        answer = final.get("answer")
         return {
             "actions": final.get("collected", []),
-            "answer": final.get("answer"),
+            "answer": answer,
             "incomplete": final.get("incomplete"),
             "citations": final.get("citations") or [],
             "executed": True,
+            # #69:出块与裁剪同处一步(裁剪要答案点名哪些记录,见 evidence_block_from)
+            "evidence": evidence_block_from(final.get("evidence_calls") or [], answer or ""),
         }
 
     return run
