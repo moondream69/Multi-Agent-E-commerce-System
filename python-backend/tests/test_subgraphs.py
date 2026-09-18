@@ -336,6 +336,30 @@ async def test_customer_slice_message_carries_global_task() -> None:
     assert "处理买家消息" in user_message["content"]
 
 
+async def test_slice_message_marks_duty_as_system_instruction_not_user_words() -> None:
+    """#77 B:切片职责是**系统派给执行段的任务说明**,不是用户原话——转述用户意图以「全局任务」为准。
+
+    依据:``cs-task-customs-zh#1#3`` 判 0——用户只问「怎么查询关税和清关费用」,规划器却在切片描述里
+    凭空写「该买家跨境订单」,执行段把它转述成「**你的描述是**『该买家跨境订单』」,把系统生成的切片
+    职责归因给了用户(judge 判「凭空设定的前提」,判得对:那句话不在任务指令里)。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph = build_react_agent(
+        name="product_research",
+        system_prompt="你是选品助手",
+        registry=registry("trend_query"),
+        executor=FakeExecutor(),
+        llm=llm,
+    )
+    await run(graph, description="调取该买家跨境订单的清关记录", task_request="怎么查询关税和清关费用?")
+
+    user_message = llm.calls[0]["messages"][1]["content"]
+    assert "不是用户原话" in user_message
+    assert "以「全局任务」为准" in user_message
+    # 两段仍在:说明句不挤掉原有的「全局任务 + 本切片职责」结构
+    assert user_message.index("怎么查询关税和清关费用?") < user_message.index("调取该买家跨境订单")
+
+
 # —— B30⑤:零命中契约(选品线不得无据出分级/报告,#64 B3)——
 
 
@@ -497,6 +521,56 @@ async def test_product_prompt_requires_verbatim_attribution() -> None:
     assert "字面口径" in system_prompt
     assert "HQ country" in system_prompt  # 例子点到总部国口径(模型读错的那种表头)
     assert "美国市场" in system_prompt  # 错误改写的例子点到
+
+
+async def test_product_prompt_confines_facts_to_retrieved_hits() -> None:
+    """#75 B:结论里的具体事实与数字以**本片命中材料**为准,不得凭自身记忆补写。
+
+    依据:``smart-band-us#3#2`` 判 0——产出写下的两条事实(Amazfit PACE 129 美元 / 睡眠治疗细分
+    增长 70%)在语料真源确有记载(#913 / 相邻块),但**不在本片被引切块里**;切片之间没有数据流
+    (``graph.py`` 只给执行段「本片 + 原请求」),故那是模型自身记忆补写,judge 按材料口径判
+    「凭空论断」是正确执行。修法是产出侧纪律,不是放宽判据。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "以本片命中材料为准" in system_prompt
+    assert "本片没检索到" in system_prompt
+
+
+async def test_product_prompt_forbids_negating_its_own_grade() -> None:
+    """#76:缺数据的维度如实标注,**但分级结论不许被自我免责句否定**。
+
+    依据:``smart-band-us#3#1`` 判 0——产出自陈「即该 50 分是无证据下的中性默认值,不可解读为
+    『品类中等』」「需求侧无法给出肯定或否定判断」,judge 读成「等同未评分」。#70 的同一条禁令此前
+    只在 scoring 工具的理由面(``executor.py``),切片答案面没有覆盖 ⇒ 补到产出侧提示词。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "把评分本身否定掉" in system_prompt
+    assert "不可解读为" in system_prompt  # 反例文案点到(判 0 的那句话)
+    assert "分级结论与优先级次序照给" in system_prompt
+
+
+async def test_product_prompt_applies_inference_mark_to_matrix_cells() -> None:
+    """#77 A:「推断:」标注对**表格 / 矩阵单元格**同样适用。
+
+    依据:``smart-home-us#3#2`` 判 0——末尾推断段标注合规,但「细分品类机会矩阵」的单元格里塞了
+    同样性质的行业常识(复购强 / 客单价高 / 美标门孔适配)且未标推断。规则原先只说「推断句一律以
+    『推断:』开头」,表格形态没被点名。
+    """
+    llm = FakeLlm(tool_rounds=[round_text("完成")])
+    graph, _ = build_product_agent(executor=FakeExecutor(), llm=llm)
+    await run(graph)
+
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "表格 / 矩阵单元格里的事实性论断同样适用" in system_prompt
+    assert "换进表格不等于豁免" in system_prompt
 
 
 async def test_order_prompt_grounds_tool_results_in_tool_semantics() -> None:

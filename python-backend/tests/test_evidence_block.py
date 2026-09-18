@@ -20,6 +20,7 @@ from python_backend.agents.base import (
     evidence_block_from,
     evidence_calls_from,
     make_agent_runner,
+    retrieval_ids,
 )
 from python_backend.agents.customer_service.agent import CustomerState, build_customer_agent
 from python_backend.agents.order_management.agent import build_order_agent
@@ -257,3 +258,87 @@ def test_state_keys_declared() -> None:
     assert "evidence_calls" in AgentState.__annotations__
     assert "verify_calls" in CustomerState.__annotations__
     assert "evidence_calls" in CustomerState.__annotations__
+
+
+# —— 检索命中池(#75 B):只落 id、去重保序,随切片产出下发 ——
+
+
+def test_retrieval_ids_dedupes_and_keeps_order() -> None:
+    """命中池 → 去重保序的标识清单(多次检索命中同块只记一次;正文不落,快照只收 id)。"""
+    hits = [
+        {"id": "d#1", "score": 0.9, "payload": {"content": "…"}},
+        {"id": "d#2", "score": 0.8},
+        {"id": "d#1", "score": 0.7},  # 第二次检索又命中同一块
+    ]
+
+    assert retrieval_ids(hits) == ["d#1", "d#2"]
+    assert retrieval_ids([]) == []
+
+
+async def test_product_slice_runner_returns_retrieval_hit_ids() -> None:
+    """选品线:一次历实检索到**两块**、答案只引了其中一块 ⇒ 命中池两块都在。
+
+    这正是 #75 B 要分开的那件事:``citations`` 只收被引的块(答案里出现过标记的),
+    「检索到了但没引」原先不落任何地方,与「凭自身记忆补写」在快照上同形
+    (``smart-band-us#3#2`` 分诊时只能逐块核对才敢下结论)。
+    """
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(name="trend_query", description="情报检索", parameters={"type": "object", "properties": {}}),
+        authorized_nodes={"agent"},
+    )
+    chunks = [
+        {
+            "id": "usitc-global-digital-trade-1#583",
+            "score": 0.9,
+            "payload": {"content": "2016 年美国智能家居 104 亿美元。"},
+        },
+        {"id": "usitc-global-digital-trade-1#913", "score": 0.6, "payload": {"content": "书目条目。"}},
+    ]
+    llm = FakeLlm(
+        tool_rounds=[
+            round_tools(call("trend_query", {"query": "智能家居"})),
+            round_text("美国智能家居 2016 年 104 亿美元 [usitc-global-digital-trade-1#583]"),
+        ]
+    )
+    executor = FakeExecutor(results={"trend_query": {"hits": chunks}})
+    graph = build_react_agent(
+        name="product_research", system_prompt="你是选品", registry=registry, executor=executor, llm=llm
+    )
+
+    result = await make_agent_runner(graph)(Slice(no=1, agent="product_research", description="趋势"), "")
+
+    assert result["hits"] == ["usitc-global-digital-trade-1#583", "usitc-global-digital-trade-1#913"]
+    assert [entry["doc_id"] for entry in result["citations"]] == ["usitc-global-digital-trade-1"]  # 被引池只有它
+    assert result["evidence"] is None  # 检索类命中不进证据块(#69 收口面不动)
+
+
+async def test_supervisor_carries_retrieval_hit_ids_into_results_and_batch_row() -> None:
+    """命中池随切片产出下发(get_task 的 results),并进批次行(durable 重放不丢这份数据)。"""
+
+    async def run(slice_: Slice, _task_request: str) -> dict:
+        return {
+            "agent": slice_.agent,
+            "description": slice_.description,
+            "executed": True,
+            "actions": [APPROVE_ACTION],
+            "hits": ["usitc-global-digital-trade-1#913"],
+        }
+
+    store = InMemoryApprovalBatchStore()
+    graph = build_supervisor(
+        _SinglePlan(),
+        agents={"order_management": run},
+        checkpointer=InMemorySaver(),
+        batch_store=store,
+        apply_fn=FakeApply(),
+    )
+    config = {"configurable": {"thread_id": "hit-ids"}}
+
+    await graph.ainvoke(SupervisorState(request="查订单", thread_id=config["configurable"]["thread_id"]), config)
+    await _approve_pending(graph, config)
+
+    final = await graph.aget_state(config)
+    assert final.values["results"][1]["hits"] == ["usitc-global-digital-trade-1#913"]
+    assert store.batches[0].run_output is not None
+    assert store.batches[0].run_output["hits"] == ["usitc-global-digital-trade-1#913"]

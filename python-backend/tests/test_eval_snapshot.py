@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -105,6 +106,18 @@ def _snapshot() -> Snapshot:
         corpus_batch_id=None,
         dataset_run_id="ds-run-1",
         recorded_at=RECORDED_AT,
+    )
+
+
+def _snapshot_with_hits() -> Snapshot:
+    """命中池非空的一份快照(#75 B):切片 1 命中两块(其中 ``#913`` 没被引用),切片 2 无检索轨迹。"""
+    base = _snapshot()
+    return replace(
+        base,
+        slices=(
+            replace(base.slices[0], hits=("usitc-digital-trade#1", "usitc-digital-trade#913")),
+            base.slices[1],
+        ),
     )
 
 
@@ -220,6 +233,38 @@ def test_slices_from_results_parses_api_payload() -> None:
     assert slices[0].citations == tuple(CITATIONS)
     assert slices[1].answer == "B 级"
     assert slices[1].citations == ()  # 无引用载荷 → 空(不编)
+
+
+def test_hits_roundtrip_and_bad_shape_is_explicit(tmp_path: Path) -> None:
+    """检索命中池随快照落盘并可读回(#75 B,只落 id);形状坏掉即报错点名,不当空处理。
+
+    没有检索轨迹的线(工作台线 / 没跑检索的切片)如实为空元组——「没命中」与「没有这份清单」
+    在快照上都读成空,与 citations 的留空同一姿势(如实,不编)。
+    """
+    restored = read_snapshot(write_snapshot(tmp_path, _snapshot_with_hits()))
+
+    assert restored.slices[0].hits == ("usitc-digital-trade#1", "usitc-digital-trade#913")
+    assert restored.slices[1].hits == ()
+
+    payload = json.loads(snapshot_path(tmp_path, "coffee-maker-us").read_text(encoding="utf-8"))
+    payload["slices"][0]["hits"] = [1, 2]
+    bad = tmp_path / "bad-hits.json"
+    bad.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="hits 须是切块标识字符串清单"):
+        read_snapshot(bad)
+
+
+def test_slices_from_results_reads_retrieval_hit_ids() -> None:
+    """API 载荷里的 hits(本片命中池)→ 去重保序的标识清单;缺席如实为空(旧形状载荷不报错)。"""
+    slices = slices_from_results(
+        {
+            "1": {"agent": "a", "description": "d", "hits": ["d#1", "d#2"]},
+            "2": {"agent": "a", "description": "d"},
+        }
+    )
+
+    assert slices[0].hits == ("d#1", "d#2")
+    assert slices[1].hits == ()
 
 
 def test_slices_from_results_rejects_broken_shape() -> None:

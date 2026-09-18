@@ -102,6 +102,10 @@ class JudgeRequest:
     **整段给**,不逐片拆:三条判据(依赖声明 / 划分 / 领域路由)评的就是整份计划,拆片看会把
     「依赖跨片」这一半信息切掉。非规划面如实留 ``""``。
 
+    ``contract``:该切片的【系统契约】段(订单状态机 + 本域工具能力,**由代码派生**,见
+    ``system_contract.system_contract``)——#75 A 起只对订单域切片非空,其余线如实留空
+    (材料随之不渲染该段)。它**不是快照载荷**:渲染在判分面完成,快照与 API 载荷零变化。
+
     ``evidence``:该切片的**查证证据块**——两条线两种形状(#67 工作台线 / #69 任务线)。
     工作台线是起草端点原样载荷(FAQ 命中 / 订单 / 商品 + 截断标志);任务线是系统记录类查证
     (``order_lookup`` / ``product_lookup`` / ``list_orders``)的逐调用结果(``{"lookups": [...]}``
@@ -118,15 +122,23 @@ class JudgeRequest:
     criteria: tuple[str, ...]
     plan: str = ""
     evidence: dict | None = None
+    contract: str = ""
 
 
 @dataclass(frozen=True)
 class RubricScore:
-    """一条判据的判定:0/1(通过/失败)+ 理由(comment)。``index`` = 该判据在本请求里的序号。"""
+    """一条判据的判定:0/1(通过/失败)+ 理由(comment)。``index`` = 该判据在本请求里的序号。
+
+    ``applicable``(#76):该判据对本片**是否适用**。判据的对象在本片结构上不存在时(如本片
+    只是数据收集片,而判据要求「给出评分等级」)judge 判 **2(不适用)**:``applicable=False``,
+    ``passed`` 随之无意义(如实为 False,读的人只看 ``applicable``)。不适用**不落分**——与机械防伪引
+    「零对象判不适用、不作通过计」同一条口径(``evals/schema.py`` 的决策记录),不稀释跨场景指标。
+    """
 
     index: int
     passed: bool
     comment: str
+    applicable: bool = True
 
 
 class Judge(Protocol):
@@ -150,6 +162,9 @@ def render_prompt(request: JudgeRequest) -> str:
     **系统查询结果**原先不在材料里,判据②③对商品类结论**结构性不可核验**(judge 被要求
     「只依据给定材料」+「宁可判失败」,对真有据的库存/价格结论也只能记 0——2026-09-17 实评
     两条 0 的成因)。段落形状按载荷分派,见 ``_evidence_section``。
+
+    ``contract`` 非空时追加【系统契约】段(#75 A):状态机与工具能力由代码派生,让「状态怎么流转 /
+    系统有没有某能力」这类**真实的系统契约陈述**可核(此前四段材料都承载不了它们)。
     """
     lines = [
         "你是资深电商选品与客服质量评审。请对下面**一条** Agent 产出逐条判定评分标准是否通过。",
@@ -174,6 +189,8 @@ def render_prompt(request: JudgeRequest) -> str:
         if request.evidence is not None:
             lines.extend(_evidence_section(request.evidence))
             lines.append("")
+        if request.contract:
+            lines.extend(["【系统契约(由系统代码派生:订单状态机与本域工具能力)】", request.contract, ""])
     lines.extend(["【评分标准】"])
     lines.extend(f"{index}. {criterion}" for index, criterion in enumerate(request.criteria, start=1))
     lines.extend(
@@ -196,10 +213,20 @@ def render_prompt(request: JudgeRequest) -> str:
             "- **同一文档可能并存不同口径**(正文叙述一处、附表 / 摘要行一处,数字可差一个取整幅度):"
             "产出所述数字与材料中该文档**任一处**记载相符(含「约」一类的约数)即算有据,"
             "不得因材料里另一处口径不同而判无据——但材料里一处都对不上的数字,仍按凭空论断判(#71)。",
+            "- **系统契约段是系统的真实能力**(订单状态流转与工具清单,由系统代码派生):产出对"
+            "**状态流转 / 审批语义 / 有没有某类工具**的陈述,与该段一致即算有据、与该段矛盾即判失败;"
+            "这类陈述不是语料或商品/订单事实,**不要求引用标记**。该段只覆盖系统自身能力,"
+            "语料 / 商品 / 订单类事实照上面两条原口径判(#75 A)。",
+            "- **判据的适用面**(#76):只有当判据的**对象在本片结构上不存在**时才判 2(不适用)"
+            "——例如判据要求「给出评分等级」,而本片职责明确是数据收集 / 检索整理,全片无评分、"
+            "无报告。判 2 时理由里写明依据。**「没把握」「证据不足」「无法核验」都不是不适用**,"
+            "照判 0;判 2 是例外而非常规,拿不准一律判 0。**元对话产出不适用本例外**(上一条):"
+            "那按上一条一律判 0——「什么都没做」与「本片没有该对象」是两回事。",
             "",
             "【输出格式】每条标准输出一行,形如:",
-            "<标准序号>|<0 或 1>|<一句话理由>",
-            "0 = 未通过,1 = 通过。共 " + str(len(request.criteria)) + " 行,序号自 1 起、与评分标准一一对应;",
+            "<标准序号>|<0 或 1 或 2>|<一句话理由>",
+            "0 = 未通过,1 = 通过,2 = 不适用(该判据的对象在本片结构上不存在,该条不落分)。"
+            "共 " + str(len(request.criteria)) + " 行,序号自 1 起、与评分标准一一对应;",
             "不要输出任何其他内容。",
         ]
     )
@@ -361,8 +388,9 @@ def _chunk_line(chunk: dict, budget: int) -> tuple[str, int]:
 def parse_judgment(text: str, expected: int) -> list[RubricScore]:
     """judge 输出 → 逐条判定;行数 / 序号 / 判定值任一对不上即 ``JudgeError``(带原文片段)。
 
-    按**行**收(序号 | 0/1 | 理由)——行数即判据条数,多判漏判都是坏输出;理由里的 ``|``
-    不参与切分(只从左切两刀),剔除空行、容 ``` 围栏。
+    按**行**收(序号 | 0 / 1 / 2 | 理由)——行数即判据条数,多判漏判都是坏输出;理由里的 ``|``
+    不参与切分(只从左切两刀),剔除空行、容 ``` 围栏。判定值 **2 = 不适用**(#76):收成
+    ``applicable=False`` 的判定,由落分侧跳过(不是判定值以外的噪声,不许当坏输出拒掉)。
     """
     outcomes: dict[int, RubricScore] = {}
     for raw_line in _unwrap_fence(text).splitlines():
@@ -372,7 +400,13 @@ def parse_judgment(text: str, expected: int) -> list[RubricScore]:
         index, verdict, comment = _parse_line(line, text)
         if index in outcomes:
             raise JudgeError(f"judge 输出第 {index} 条判据给了两行——坏输出:{text[:_RAW_EXCERPT]!r}")
-        outcomes[index] = RubricScore(index=index, passed=verdict, comment=comment)
+        outcomes[index] = RubricScore(
+            index=index,
+            # 不适用(#76)时判定值不是「通过/失败」二选一:如实落 False,消费面看 applicable
+            passed=verdict == "1",
+            comment=comment,
+            applicable=verdict != "2",
+        )
 
     expected_indexes = set(range(1, expected + 1))
     if set(outcomes) != expected_indexes:
@@ -393,19 +427,20 @@ def _unwrap_fence(text: str) -> str:
     return body.rsplit("```", 1)[0] if "```" in body else body
 
 
-def _parse_line(line: str, text: str) -> tuple[int, bool, str]:
+def _parse_line(line: str, text: str) -> tuple[int, str, str]:
+    """一行 → (序号, 判定值 ``"0"/"1"/"2"``, 理由);形状不合即 ``JudgeError``(带原文)。"""
     parts = [part.strip() for part in line.split("|", 2)]
     if len(parts) != 3:
-        raise JudgeError(f"judge 输出行不成形状(须「序号|0 或 1|理由」):{line!r} ← 原文 {text[:_RAW_EXCERPT]!r}")
+        raise JudgeError(f"judge 输出行不成形状(须「序号|0 或 1 或 2|理由」):{line!r} ← 原文 {text[:_RAW_EXCERPT]!r}")
     try:
         index = int(parts[0])
     except ValueError as error:
         raise JudgeError(f"judge 输出的判据序号不是整数:{parts[0]!r} ← 原文 {text[:_RAW_EXCERPT]!r}") from error
-    if parts[1] not in ("0", "1"):
-        raise JudgeError(f"judge 判定值不是 0/1:{parts[1]!r} ← 原文 {text[:_RAW_EXCERPT]!r}")
+    if parts[1] not in ("0", "1", "2"):
+        raise JudgeError(f"judge 判定值不是 0/1/2:{parts[1]!r} ← 原文 {text[:_RAW_EXCERPT]!r}")
     if not parts[2]:
         raise JudgeError(f"judge 未给理由(comment 空):{line!r} ← 原文 {text[:_RAW_EXCERPT]!r}")
-    return index, parts[1] == "1", parts[2]
+    return index, parts[1], parts[2]
 
 
 class AnthropicJudge:

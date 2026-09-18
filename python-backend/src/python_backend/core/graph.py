@@ -281,6 +281,8 @@ async def _execute_slice(
             "citations": run.get("citations"),
             # issue #69:系统记录类查证结果(判分材料据此核商品/订单事实;durable 重放须一并恢复)
             "evidence": run.get("evidence"),
+            # #75 B:本片检索命中池的切块标识(只落 id;durable 重放一并恢复)
+            "hits": run.get("hits"),
         }
         await audit.record(
             thread_id=thread_id,
@@ -342,6 +344,9 @@ async def _execute_slice(
     if run.get("evidence"):
         # issue #69:系统记录类查证结果随切片产物下发(跑批器经 GET /api/tasks 读它落快照)
         merged["evidence"] = run["evidence"]
+    if run.get("hits"):
+        # #75 B:本片检索命中池(未引用的命中也在)——跑批器经 GET /api/tasks 读它落快照
+        merged["hits"] = run["hits"]
     if run.get("incomplete"):
         # 未完成如实上报(B17 步数超限 / issue #10 子图 LLM 失败),由 _aggregate 转 error
         merged["incomplete"] = run["incomplete"]

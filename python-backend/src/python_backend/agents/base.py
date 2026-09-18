@@ -96,10 +96,19 @@ def slice_prompt(task_request: str, description: str) -> str:
     **两段都要**:原请求缺席时,切片描述一旦没点名对象(规划器写「基于切片1数据做需求趋势与价格带
     分析…(漏水、续航、清洗难等)」),执行段只能从字面猜——2026-09-16 实录里它猜成了「宠物饮水机」,
     整片跑偏。全局任务缺省(直接驱动子图的测试与旧调用)时退化为纯描述,不摆一个空的「全局任务」段。
+
+    末句是**转述纪律**(#77 B):切片描述是系统给执行段的职责说明,不是用户原话——2026-09-17 实录里
+    规划器在描述里凭空写「该买家跨境订单」(用户只问了「怎么查询关税和清关费用」),执行段把它转述成
+    「**你的描述是**『该买家跨境订单』」,judge 判「凭空设定的前提」判 0(判得对:那句话确实不在
+    任务指令里)。该断句写在这里而不是三个域的 SYSTEM_PROMPT 各抄一份:两段文本的 juxtaposition
+    只在本函数发生,提示词分散布局域则漏一处就漏一条线。
     """
     if not task_request.strip():
         return description
-    return f"【全局任务】{task_request}\n\n【本切片职责】{description}"
+    return (
+        f"【全局任务】{task_request}\n\n【本切片职责】{description}\n\n"
+        "(说明:「本切片职责」是系统派给你的任务说明,不是用户原话;转述用户意图、引用用户说法时以「全局任务」为准)"
+    )
 
 
 def answer_is_blank(result: ToolCallResult) -> bool:
@@ -160,6 +169,25 @@ def retrieval_hits_from(executed: list[ExecutedCall]) -> list[dict]:
     两个子图共用(issue #51 客服线 / #52 ReAct 线):非检索工具的结果没有 hits 形状,自然落空。
     """
     return [hit for call in executed for hit in retrieval_hits(call.result)]
+
+
+def retrieval_ids(hits: list[dict]) -> list[str]:
+    """检索命中 → **去重保序**的切块标识清单(#75 B:本片命中池随切片产出落快照)。
+
+    只落 id 不落正文:它是**诊断与判分核对**用的「模型当时看得到哪些切块」,正文由引用载荷
+    (被引切块)与语料真源各自承载,重复落一份只是把快照撑大。``build_citations`` 只对答案里
+    **出现过的标记**建引用条目 ⇒ 快照原先只有「被引池」——「检索到了但没标引用」与「凭自身记忆
+    补写」在数据上不可区分(2026-09-17 批 `smart-band-us#3#2` 的判 0 正卡在这里,分诊时
+    逐块核对才敢下结论)。这份 id 清单把两者分开。
+    """
+    seen: set[str] = set()
+    ids: list[str] = []
+    for hit in hits:
+        chunk_id = str(hit.get("id", ""))
+        if chunk_id and chunk_id not in seen:
+            seen.add(chunk_id)
+            ids.append(chunk_id)
+    return ids
 
 
 # 系统记录类查证动作(#69):这三者的**查回结果**进切片证据块——判据②③核「商品/订单类结论有没有
@@ -381,7 +409,8 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
 
     返回 {"actions": 收集的审批动作参数快照, "answer": 最终答复, "incomplete": 未完成原因|None,
     "citations": 引用条目(#51,随答案一起下发;无检索依据即空),
-    "evidence": 系统记录类查证结果块(#69,无查证即 None——判分材料据此核商品/订单事实)}。
+    "evidence": 系统记录类查证结果块(#69,无查证即 None——判分材料据此核商品/订单事实),
+    "hits": 本片检索命中池的切块标识清单(#75 B,只落 id——快照据此区分「引了」与「命中了没引」)}。
 
     子图内 LLM 失败(issue #10)在此单点收敛(三个业务 Agent 一次覆盖):与工具失败同策略,
     切片如实产出「未完成+原因」,不穿透为 REST 500、不触发重规划(重规划仅由人工拒绝触发);
@@ -400,6 +429,7 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
                 "citations": [],
                 "executed": True,
                 "evidence": None,
+                "hits": [],
             }
         answer = final.get("answer")
         return {
@@ -410,6 +440,8 @@ def make_agent_runner(graph: CompiledStateGraph) -> AgentRunner:
             "executed": True,
             # #69:出块与裁剪同处一步(裁剪要答案点名哪些记录,见 evidence_block_from)
             "evidence": evidence_block_from(final.get("evidence_calls") or [], answer or ""),
+            # #75 B:本片检索命中池的切块标识(只落 id;未引用与凭记忆补写在快照上由此分开)
+            "hits": retrieval_ids(final.get("retrieval") or []),
         }
 
     return run

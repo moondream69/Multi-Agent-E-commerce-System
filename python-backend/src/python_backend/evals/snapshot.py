@@ -1,7 +1,7 @@
 """产出快照(spec #55 B / 票 #58):跑批的**本地真源**——``score`` 只读快照回评,不重跑任务。
 
 一条场景一次运行 = 一个 JSON 文件(``<快照目录>/<run 名>/<场景 id>.json``):场景 id / thread_id /
-trace_id / **切片级产出**(answer / citations / executed / evidence)/ **规划段**(plan,票 #61)/
+trace_id / **切片级产出**(answer / citations / executed / evidence / hits)/ **规划段**(plan,票 #61)/
 语料版本锚 / 时间。目录由调用方给定(CLI 默认 ``docs/evals/runs/``,gitignore)。
 
 **切片级保真,不拼顶层长文**:citations 编号是**切片内**编号(``build_citations`` 每片各自从 1 排),
@@ -26,6 +26,9 @@ from pathlib import Path
 from typing import Any
 
 # 快照 schema 版本:字段增删即升版(读旧快照时报错清晰,不静默按新形状解释)。
+# **5**(#75 B):切片增 ``hits``(本片**检索命中池**的切块标识,只落 id)——快照原先只带**被引池**
+# (``citations`` 由答案里出现过的标记构建),「检索到了但没标引用」与「凭自身记忆补写」在数据上
+# 不可区分(2026-09-17 批 `smart-band-us#3#2` 的分诊卡在这里)。
 # **4**(#67):切片增 ``evidence``(工作台线的查证证据块)——判据②③要核的商品/订单事实
 # 原先不在判分材料里,商品类结论**结构性不可核验**(实评实录见 issue #67)。
 # **3**(#64 A3):切片增 ``incomplete``(未完成原因)——三态可辨(B30④)。
@@ -34,8 +37,9 @@ from typing import Any
 # 一次性产物,不承担历史可比性——历史分数归 Langfuse,不归本地 JSON)。
 # ⚠️ 升版前先想清**次序**(#64 spec 的教训):判分材料修正后的「现批重评」必须**先于**升版跑完,
 # 版本闸一旦抬起,旧版快照就读不动了。3 → 4 无此顾虑:material 修正本身要求重跑(旧快照里
-# 没有 evidence 这份数据,重评也核不出商品事实)。
-SNAPSHOT_VERSION = 4
+# 没有 evidence 这份数据,重评也核不出商品事实)。4 → 5 同理:``hits`` 是**新数据**,旧快照
+# 重评也变不出来(判分材料本身不消费它,故 4 → 5 不影响既有材料)。
+SNAPSHOT_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,11 @@ class SliceOutput:
     返回的那份原样载荷(FAQ 命中 / 订单 / 商品 + 截断标志);任务线是系统记录类查证
     (``order_lookup`` / ``product_lookup`` / ``list_orders``)的逐调用**查回结果**。两线都没有
     这份载荷时如实 ``None``(判分材料随之不渲染该段)。判据②③核「不编造 / 无凭空论断」要的正是它。
+
+    ``hits``(#75 B):该切片的**检索命中池**(切块标识,去重保序,只落 id 不落正文)。``citations``
+    是**被引池**(只收答案里出现过标记的切块)⇒ 两者之差 = 「命中了但没标引用」;没有这份清单时,
+    它与「凭自身记忆补写」在快照上同形(2026-09-17 批 `smart-band-us#3#2` 的分诊即卡在这里)。
+    没有检索轨迹的线(工作台线走端点载荷)如实为空元组。
     """
 
     no: int
@@ -61,6 +70,7 @@ class SliceOutput:
     executed: bool
     incomplete: str | None = None
     evidence: dict | None = None
+    hits: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,6 +141,8 @@ def slices_from_results(results: object) -> tuple[SliceOutput, ...]:
                 incomplete=_optional_str(entry.get("incomplete")),
                 # #69:任务线的系统记录查证块随 results 下发(工作台线由 runner 直接构造,不走这里)
                 evidence=_optional_dict(entry.get("evidence")),
+                # #75 B:本片检索命中池(未引用的命中也在;缺省即空——没有检索轨迹的产出不编)
+                hits=_chunk_ids(entry.get("hits")),
             )
         )
     return tuple(sorted(slices, key=lambda item: item.no))
@@ -277,7 +289,21 @@ def _slice_from_json(entry: Any, path: Path) -> SliceOutput:
         executed=bool(entry.get("executed")),
         incomplete=_optional_str(entry.get("incomplete")),
         evidence=_optional_dict(entry.get("evidence")),
+        hits=_chunk_ids(entry.get("hits")),
     )
+
+
+def _chunk_ids(value: Any) -> tuple[str, ...]:
+    """切块标识清单(``hits``,#75 B)字段级容错:缺席/空即空元组;形状坏掉即报错,不当空处理。
+
+    与 ``evidence`` 同一姿势——**同一版本内**的合法留空(工作台线无检索轨迹、旧形状的 API 载荷)
+    vs 「有清单但形状不对」是两回事,后者是契约违反,报错不静默。
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"hits 须是切块标识字符串清单,实际是 {value!r}")
+    return tuple(value)
 
 
 def _optional_str(value: Any) -> str | None:
@@ -313,6 +339,7 @@ def _payload(snapshot: Snapshot) -> dict:
                 "executed": item.executed,
                 "incomplete": item.incomplete,
                 "evidence": item.evidence,
+                "hits": list(item.hits),
             }
             for item in snapshot.slices
         ],

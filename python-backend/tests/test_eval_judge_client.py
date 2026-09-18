@@ -67,13 +67,29 @@ def test_parse_judgment_sorts_and_tolerates_shape_noise() -> None:
     ]
 
 
+def test_parse_judgment_reads_not_applicable_verdict() -> None:
+    """#76:判定值 2 = 不适用(判据对象在本片结构上不存在)——收成 applicable=False,不是坏输出。
+
+    依据:``smart-band-us#1#1`` 判 0,判词「明确声明『未执行评分』…未给出任何分级」——本片职责是
+    **数据收集**,判据①(给出评分等级)的对象在这类片上结构上不存在;逐片套用场景级判据,数据收集片
+    必挂。判定值收成三态后,该条**不落分**(与机械防伪引「零对象判不适用、不作通过计」同口径)。
+    """
+    scores = parse_judgment("1|1|给了明确分级\n2|2|本片只做数据收集,无评分对象\n", expected=2)
+
+    assert [(score.index, score.applicable, score.passed) for score in scores] == [
+        (1, True, True),
+        (2, False, False),  # 不适用时 passed 无意义(如实 False,消费面看 applicable)
+    ]
+    assert scores[1].comment == "本片只做数据收集,无评分对象"
+
+
 @pytest.mark.parametrize(
     ("text", "expected", "reason"),
     [
         ("1|1|甲", 2, "漏判一条"),
         ("1|1|甲\n2|1|乙\n3|1|丙", 2, "多判一条"),
         ("1|1|甲\n1|0|乙", 1, "同一序号两行"),
-        ("1|maybe|甲\n2|0|乙", 2, "判定值不是 0/1"),
+        ("1|maybe|甲\n2|0|乙", 2, "判定值不是 0/1/2"),
         ("一句话结论:都很好,没有问题", 2, "整段散文、无一行成形"),
         ("1|1\n2|0|乙", 2, "缺分隔段"),
         ("1|1|\n2|0|乙", 2, "理由空"),
@@ -98,7 +114,7 @@ def test_render_prompt_carries_question_answer_citations_and_criteria() -> None:
     assert "[1] 全球数字贸易 — USITC" in prompt
     assert "usitc-digital-trade#3:2016 年全球可穿戴市场增长 20%,达 $16.2B。" in prompt
     assert "1. 判据甲" in prompt and "2. 判据乙" in prompt
-    assert "<标准序号>|<0 或 1>|<一句话理由>" in prompt  # 输出格式约束写进提示词(不靠参数)
+    assert "<标准序号>|<0 或 1 或 2>|<一句话理由>" in prompt  # 输出格式约束写进提示词(不靠参数)
 
 
 def test_render_prompt_carries_chunk_text_so_citations_are_verifiable() -> None:
@@ -408,6 +424,39 @@ def test_render_prompt_scopes_product_claims_out_of_citation_marker_rule() -> No
     assert "商品/订单是系统查询结果" in prompt
     assert "不因其未标引用编号而判失败" in prompt
     assert "凭空论断" in prompt
+
+
+def test_render_prompt_states_applicability_rule() -> None:
+    """#76:适用面写进判定要求——**只在判据对象于本片结构上不存在时**才判 2;
+
+    「没把握 / 证据不足 / 无法核验」都不是不适用(#73 才刚把「前提落空 ≠ 不适用」写死,
+    这里不许开出反向的逃生口:判 2 是例外,拿不准一律判 0)。
+    """
+    prompt = render_prompt(_request())
+
+    assert "判据的适用面" in prompt
+    assert "对象在本片结构上不存在" in prompt
+    assert "2 = 不适用" in prompt
+    assert "都不是不适用" in prompt
+    assert "拿不准一律判 0" in prompt
+    # #73 的元对话防线不许被这个例外放掉(「什么都没做」≠「本片没有该对象」)
+    assert "元对话产出不适用本例外" in prompt
+
+
+def test_render_prompt_carries_system_contract_section() -> None:
+    """#75 A:系统契约段进判分材料——状态机与工具能力由代码派生,让真实契约陈述可核。
+
+    依据:``cs-task-returns-zh#3#3`` 判 0,三条陈述(delivered→returned 合法、pending/confirmed 只能
+    取消、无「创建退货单」工具)全为真系统契约(``VALID_TRANSITIONS`` / ``ORDER_TOOLS``),而材料
+    四段都承载不了它们。契约段只对订单域切片非空(收口面见 ``system_contract``);空串即不渲染该段。
+    """
+    prompt = render_prompt(replace(_taskline_request(), contract="pending → confirmed、cancelled"))
+
+    assert "【系统契约(由系统代码派生:订单状态机与本域工具能力)】" in prompt
+    assert "pending → confirmed、cancelled" in prompt
+    assert "系统契约段是系统的真实能力" in prompt  # 判定要求里给了用法
+    assert "不要求引用标记" in prompt  # 契约事实不是语料/商品事实
+    assert "【系统契约" not in render_prompt(_request())  # 非订单域:如实不渲染该段
 
 
 def test_render_prompt_swaps_production_block_for_plan_request() -> None:

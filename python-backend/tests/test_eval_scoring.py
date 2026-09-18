@@ -223,6 +223,47 @@ def test_judge_receives_workbench_evidence_block(tmp_path: Path) -> None:
     assert judge.requests[1].evidence is None
 
 
+def test_not_applicable_judgment_lands_no_score(tmp_path: Path) -> None:
+    """#76:judge 判 2(不适用)→ **不落分**,但**不静默**(经 ``result.skipped`` 浮上回显面)。
+
+    依据:``smart-band-us#1#1`` 是数据收集片,判据①(给出评分等级)没有对象可判。判 1 会稀释跨场景
+    指标、判 0 是把「没得判」记成「没做到」,两样都是假信息 ⇒ 该条跳过(键缺席即如实:
+    本批这条判据在该片不存在)。跳过的条目连同判词留在 ``skipped`` 里——机械线的「不适用」能从
+    产出形状复算,judge 的「不适用」复算不出来,悄悄丢掉就没法与「根本没评」区分。
+    """
+    write_snapshot(tmp_path / "run-1", _snapshot(_slice()))
+    judge = FakeJudge(
+        scores=[
+            RubricScore(index=1, passed=True, comment="给了明确分级"),
+            RubricScore(index=2, passed=False, comment="本片只做数据收集,无评分对象", applicable=False),
+        ]
+    )
+    sink = RecordingSink()
+
+    result = score_run(load_run_snapshots(tmp_path / "run-1"), [_scenario()], judge=judge, sink=sink)
+
+    assert [record.name for record in sink.records] == ["coffee-maker-us#1#机械", "coffee-maker-us#1#1"]
+    assert len(result.skipped) == 1
+    assert result.skipped[0].scenario_id == "coffee-maker-us"
+    assert result.skipped[0].slice_no == "1"
+    assert result.skipped[0].criterion == "判据乙"  # 真源文案(不是请求内的子集)
+    assert result.skipped[0].comment == "本片只做数据收集,无评分对象"
+
+
+def test_order_slice_receives_system_contract_and_others_do_not(tmp_path: Path) -> None:
+    """#75 A:契约段按**切片业务域**渲染——订单片带,选品片不带(收口面见 system_contract)。"""
+    write_snapshot(
+        tmp_path / "run-1",
+        _snapshot(_slice(no=1, agent="order_management"), _slice(no=2, answer="第二片 [1]")),
+    )
+    judge = FakeJudge()
+
+    score_run(load_run_snapshots(tmp_path / "run-1"), [_scenario()], judge=judge, sink=RecordingSink())
+
+    assert "订单状态流转" in judge.requests[0].contract
+    assert judge.requests[1].contract == ""  # 选品片:材料零变化
+
+
 def test_full_score_records_link_trace_dataset_run_and_corpus_anchor(tmp_path: Path) -> None:
     """分数互链:挂任务 trace + dataset run id;metadata 带语料指纹(主锚)与批次号(附记)。"""
     write_snapshot(tmp_path / "run-1", _snapshot(_slice()))

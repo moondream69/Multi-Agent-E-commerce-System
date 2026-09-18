@@ -197,3 +197,18 @@ class TestManagerPlanner:
         system_prompt = llm.calls[0]["messages"][0]["content"]
         assert "写操作" in system_prompt and "approval_points" in system_prompt
         assert "不得留空" in system_prompt
+
+    async def test_system_prompt_forbids_unstated_premises_in_slice_description(self) -> None:
+        """#77 B:切片描述不得把用户没提供的信息写成既有前提(缺标识写成待补项)。
+
+        依据:``cs-task-customs-zh#1#3`` 判 0——用户只问「怎么查询关税和清关费用」,规划器却写下
+        「调取**该买家**跨境订单的清关记录与税费明细…」;执行段转述成「你的描述是『该买家跨境订单』」,
+        归因给用户。切片描述是执行段看到的全部上下文,凭空前提会被当成既有事实往下传。
+        """
+        llm = FakeLlm([json.dumps(plan_dict([slice_(1)]))])
+        await ManagerPlanner(llm).plan("怎么查询关税和清关费用?")
+
+        system_prompt = llm.calls[0]["messages"][0]["content"]
+        assert "切片描述纪律" in system_prompt
+        assert "不得把用户没提供的信息" in system_prompt
+        assert "待补项" in system_prompt

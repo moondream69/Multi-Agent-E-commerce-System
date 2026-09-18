@@ -42,6 +42,7 @@ from python_backend.core.citations import check_citations
 from python_backend.evals.judge import Judge, JudgeRequest, RubricScore
 from python_backend.evals.schema import PLANNING_SURFACE, Scenario
 from python_backend.evals.snapshot import SliceOutput, Snapshot, plan_lines, read_snapshot
+from python_backend.evals.system_contract import system_contract
 from python_backend.infrastructure.tracing import eval_root_trace_id
 
 # 机械防伪引在分数稳定键里的段名(判据序号段的并列物):零 LLM、全量跑、不设开关(ADR-0008)
@@ -113,10 +114,30 @@ class ScoreSink(Protocol):
 
 
 @dataclass(frozen=True)
+class NotApplicable:
+    """judge 判 2(不适用)的一条判据:**不落分,但绝不静默**(#76)。
+
+    机械线的「零对象判不适用」可从产出形状重算(有没有标记、有没有载荷,谁都能复算),
+    judge 的「不适用」是一条 **LLM 判定**,不复算得出来——落分侧若悄悄跳过,读分数的人
+    分不清「这条判据判了不适用」与「这条判据根本没评」。故它带着判词一路浮到编排层的回显面。
+    """
+
+    scenario_id: str
+    slice_no: str
+    criterion: str
+    comment: str
+
+
+@dataclass(frozen=True)
 class ScoringResult:
-    """一次回评的**全部落分**(顺序即写入顺序;调用方据此打印汇总)。"""
+    """一次回评的**全部落分**(顺序即写入顺序;调用方据此打印汇总)。
+
+    ``skipped``:判不适用因而**未落分**的判据(#76,见 ``NotApplicable``)——单独列出来,
+    不混进 ``records``(它不是分数)。
+    """
 
     records: tuple[ScoreRecord, ...]
+    skipped: tuple[NotApplicable, ...] = ()
 
     @property
     def passed(self) -> int:
@@ -149,15 +170,23 @@ def scenario_map(scenarios: Sequence[Scenario], snapshots: Sequence[Snapshot]) -
     return by_id
 
 
-def score_snapshot(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) -> tuple[ScoreRecord, ...]:
+def score_snapshot(
+    snapshot: Snapshot,
+    scenario: Scenario,
+    judge: JudgeSession,
+    *,
+    on_skip: Callable[[NotApplicable], None] | None = None,
+) -> tuple[ScoreRecord, ...]:
     """一份快照 → 分数清单:逐切片跑机械线 + judge 线,组装成可落库的记录(不写库)。
 
     **规划切片面**(票 #61)走另一条:判分对象是快照随带的 ``plan`` 段(整份计划),三条判据一次全判,
     不带机械线(计划没有答案文本、没有引用载荷,机械线在那里的「不适用」不是信息)。空切片即报错
     (跑批不落空快照,快照无产出等于无可评对象);四个产出面都已在跑批器落地,不存在「未实现即跳过」的面。
+
+    ``on_skip``:judge 判 2(不适用)的判据不落分(#76),但经它浮上回显面——不静默丢。
     """
     if scenario.surface == PLANNING_SURFACE:
-        return _plan_records(snapshot, scenario, judge)
+        return _plan_records(snapshot, scenario, judge, on_skip=on_skip)
     if not snapshot.slices:
         raise RuntimeError(f"快照 {snapshot.scenario_id} 没有切片产出——无可评对象(跑批不落空快照)")
     records: list[ScoreRecord] = []
@@ -166,11 +195,17 @@ def score_snapshot(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) 
         answer = item.answer or ""
         records.extend(_mechanical_records(snapshot, str(item.no), answer, item.citations))
         criteria, indexes = criteria_for[position]
-        records.extend(_judge_records(snapshot, item, scenario, criteria, indexes, judge))
+        records.extend(_judge_records(snapshot, item, scenario, criteria, indexes, judge, on_skip=on_skip))
     return tuple(records)
 
 
-def _plan_records(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) -> tuple[ScoreRecord, ...]:
+def _plan_records(
+    snapshot: Snapshot,
+    scenario: Scenario,
+    judge: JudgeSession,
+    *,
+    on_skip: Callable[[NotApplicable], None] | None = None,
+) -> tuple[ScoreRecord, ...]:
     """规划切片面:整份计划 → 三条判据一次判(依赖声明 / 划分 / 领域路由)。
 
     切片计划缺席即报错:该面的场景必须由任务线跑出 ``plan`` 段(跑批时的任务详情随带),快照里没有
@@ -201,6 +236,7 @@ def _plan_records(snapshot: Snapshot, scenario: Scenario, judge: JudgeSession) -
         suffix_of=lambda score: str(score.index),
         criterion=lambda score: scenario.rubric[score.index - 1],
         judge_model=judge.model,
+        on_skip=on_skip,
     )
 
 
@@ -211,6 +247,7 @@ def score_run(
     judge: Judge,
     sink: ScoreSink,
     on_record: Callable[[ScoreRecord], None] | None = None,
+    on_skip: Callable[[NotApplicable], None] | None = None,
     judge_model: str = "",
 ) -> ScoringResult:
     """快照集与真源场景配对后逐条评分并落库;返回全部记录(与写入顺序一致)。
@@ -218,18 +255,25 @@ def score_run(
     ``judge_model`` 是**所判型号**(随分数落 metadata,供按 judge 版本读历史);机械线无 judge
     不记。``on_record`` 只作进度回显(一条场景烧一次 judge 调用,CLI 要能报出刚评到哪)。judge
     失败或坏输出经 ``JudgeError`` 抛出:评到一半中止(已落的分是**已判定的那部分**,不是半份判定),
-    快照仍在盘上,可原样重跑。
+    快照仍在盘上,可原样重跑。``on_skip`` 回显判 2(不适用)的判据(#76;不落分,但不静默)。
     """
     session = JudgeSession(judge=judge, model=judge_model)
     by_id = scenario_map(scenarios, snapshots)
     records: list[ScoreRecord] = []
+    skipped: list[NotApplicable] = []
+
+    def note_skip(item: NotApplicable) -> None:
+        skipped.append(item)
+        if on_skip is not None:
+            on_skip(item)
+
     for snapshot in snapshots:
-        for record in score_snapshot(snapshot, by_id[snapshot.scenario_id], session):
+        for record in score_snapshot(snapshot, by_id[snapshot.scenario_id], session, on_skip=note_skip):
             sink.write(record)
             records.append(record)
             if on_record is not None:
                 on_record(record)
-    return ScoringResult(records=tuple(records))
+    return ScoringResult(records=tuple(records), skipped=tuple(skipped))
 
 
 def _criteria_pairing(rubric: tuple[str, ...], slice_count: int) -> list[tuple[tuple[str, ...], tuple[int, ...]]]:
@@ -271,6 +315,8 @@ def _judge_records(
     criteria: tuple[str, ...],
     indexes: tuple[int, ...],
     judge: JudgeSession,
+    *,
+    on_skip: Callable[[NotApplicable], None] | None = None,
 ) -> tuple[ScoreRecord, ...]:
     """judge 判据:一次请求发全部判据,逐条收 0/1 + comment(坏输出在 judge 层即报错)。
 
@@ -279,6 +325,9 @@ def _judge_records(
     ``item.no`` 在本层是切片号(进 ``JudgeRequest`` 的定位文案与落分键段名)。``indexes`` 是
     **1 起的判据序号**(见 ``_criteria_pairing``):该号既是键里的段名、也是**真源 rubric 里的位置**
     ——本条判据的文案取自真源(本片只带一条时,请求里的 ``criteria`` 是子集,拿它取文案会错位)。
+
+    ``item.agent`` 决定要不要给【系统契约】段(#75 A):只对订单域渲染,其余线留空
+    (选品 / 规划 / 工作台 / 客服线材料零变化,口径同 #69 的收口面)。
     """
     scores = judge(
         JudgeRequest(
@@ -289,6 +338,7 @@ def _judge_records(
             citations=item.citations,
             criteria=criteria,
             evidence=item.evidence,
+            contract=system_contract(item.agent),
         )
     )
 
@@ -302,6 +352,7 @@ def _judge_records(
         suffix_of=lambda score: str(indexes[score.index - 1]),  # 键里是**判据序号**(真源位置),非请求内位置
         criterion=criterion_of,
         judge_model=judge.model,
+        on_skip=on_skip,
     )
 
 
@@ -313,24 +364,43 @@ def _record_scores(
     suffix_of: Callable[[RubricScore], str],
     criterion: Callable[[RubricScore], str],
     judge_model: str,
+    on_skip: Callable[[NotApplicable], None] | None = None,
 ) -> tuple[ScoreRecord, ...]:
     """逐条判定 → 分数记录(**两条判定线共用的组装配法**):键段 = 切片号/``plan`` + 判据序号。
 
     ``suffix_of`` / ``criterion`` 是两条线各自的序号映射(逐片判要经配对映射:键取**判据在真源里的
     序号**、文案同样回真源取;整份计划判直接用序号)——**组装与取值分开**,同一套落分写法不为面复制一份。
+
+    **不适用不落分**(#76,``applicable=False``):判据的对象在本片结构上不存在时该条直接跳过
+    ——与机械防伪引「零对象判不适用、不作通过计」同一条口径(``evals/schema.py`` 的决策记录):
+    拿它判 1 会稀释跨场景指标,判 0 则是把「没得判」记成「没做到」,两样都是假信息。
+    跳过的条目经 ``on_skip`` 浮上回显面(不静默;理由只有 judge 知道,复算不出来)。
     """
-    return tuple(
-        _record(
-            snapshot,
-            slice_no,
-            suffix=suffix_of(score),
-            value=1 if score.passed else 0,
-            comment=score.comment,
-            criterion=criterion(score),
-            judge_model=judge_model,
+    records: list[ScoreRecord] = []
+    for score in scores:
+        if not score.applicable:
+            if on_skip is not None:
+                on_skip(
+                    NotApplicable(
+                        scenario_id=snapshot.scenario_id,
+                        slice_no=slice_no,
+                        criterion=criterion(score),
+                        comment=score.comment,
+                    )
+                )
+            continue
+        records.append(
+            _record(
+                snapshot,
+                slice_no,
+                suffix=suffix_of(score),
+                value=1 if score.passed else 0,
+                comment=score.comment,
+                criterion=criterion(score),
+                judge_model=judge_model,
+            )
         )
-        for score in scores
-    )
+    return tuple(records)
 
 
 def _record(

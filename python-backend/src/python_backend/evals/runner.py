@@ -231,6 +231,9 @@ class EvalRunner:
                     # #67:查证证据块随产出落快照——判据②③核「不编造 / 无凭空论断」要的就是它
                     # (草稿的库存数等商品类结论只在证据块里可核;缺了它判分材料结构性不可核验)
                     evidence=payload.get("evidence"),
+                    # #75 B:该线没有任务轨迹的检索状态,命中池取自证据块里的 FAQ 命中(该线全量给出,
+                    # 未被引的也在)——没有命中即空元组,不编。
+                    hits=tuple(str(hit.get("id", "")) for hit in (payload.get("evidence") or {}).get("faq_hits") or []),
                 ),
             ),
             plan=(),  # 该线无任务轨迹 ⇒ 无规划段(如实留空,不编一个)
