@@ -52,7 +52,7 @@ cd python-backend && uv run python scripts/evals.py list|validate|reset-db|run|s
 > ⚠️ 改后端**或前端**代码后须 `docker compose build app && docker compose up -d app`——镜像 COPY 源码 + 构建期打包前端产物(`Dockerfile` 多阶段),无挂载,不重建即跑旧码。生产形态前端与 API 同源单端口(`create_app(static_dir=...)` 注入位挂载);跨 origin 访问须列入 `CORS_ORIGINS`,否则 socket.io 握手 400。
 > ⚠️ `alembic check` 只看有无 `modify_type` 判漂移(`checkpoint_*` 与 `uq_orders_reference_partial` 恒报 remove 类噪声),勿整体非零即慌。
 > ⚠️ ty 有平台差异:Windows 专属分支(`if sys.platform == "win32":`)里的 `# ty: ignore` 在 Linux 目标下会被判"未使用"而致 CI 红。推送前用 `uv run ty check --python-platform linux .` 复现 CI。
-> CI(`.github/workflows/ci.yml`)在 push(main/rebuild)与 PR 上跑:后端 ruff/ty/快速 pytest,前端 lint/vitest/build。
+> CI 两条 workflow:`.github/workflows/ci.yml`(push main 与 PR:后端 ruff/ty/快速 pytest,前端 lint/vitest/build);`.github/workflows/gitleaks.yml`(push/PR 全历史密钥扫描,误报豁免在 `.gitleaks.toml`——勿扩面)。
 > ⚠️ 快速套件(`-m "not e2e and not integration"`)须保持**离线可跑**(CI 无任何外部服务):新增依赖 PG/Milvus 的用例请标 `integration` + `requires_postgres` 守卫(⚠️ 该守卫按「连得上即跑」:`DATABASE_URL` 不带 `:5433` 死端口覆盖直接 `uv run pytest` 会**直写 .env 指向的真库**——2026-09-13 两度残留清理,样板见 evidence/cleanup*.sql,引用 users 的表须先删);离线自检命令与背景见 issue #13(⚠️ **派发可能跑测试的 sub-agent 时,提示词里必须写死这条覆盖命令**——评审/探索 agent 不会自己带,2026-09-14 #52 轮两度直写 dev 库,处置样板见 `docs/handoffs/evidence-2026-09-14-issue52/`)。当前基线(死端口仿真)**536 passed / 67 skipped / 54 deselected**(净额 597;在线全量(净库)449 passed / 0 skipped;前端 vitest 74 passed;含 #39 起草台商品查证 2 例 PG 门控、#42 类目直查再 1 例门控,故 skip 计 67)
 > 
 > (增量为 #13 任务行缝、增量 8 通知缝、#21 会话/买家/工单/报表四缝 + 生产装配接线守卫、#20 会话消息流、#25 摘要字符串口径、#26 POST /api/tasks 响应键驼峰收口、#27 思考模式 reasoning_content 回传、#28 sim 客户端超时、#29 fx 基址配置、协作管线三事件与空正文上抛护栏(思考预算)、

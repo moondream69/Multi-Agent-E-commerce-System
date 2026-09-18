@@ -1,0 +1,21 @@
+# gitleaks 配置(CI 全历史密钥扫描用;本地复现:
+#   docker run --rm -w /repo -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest git --log-opts=--all -c /repo/.gitleaks.toml)
+title = "Multi-Agent E-commerce System"
+
+# 保留内置规则集,仅做定点豁免(见下)
+[extend]
+useDefault = true
+
+# ---- 已核误报豁免(2026-09-18 全历史扫描:168 提交 / 6.58MB,0 真实密钥) ----
+# 两处均为字面占位符/键名,非遗留密钥。豁免面收窄到具体字符串;
+# 新增豁免前必须先重跑全历史扫描核实,勿凭印象扩面。
+
+[[allowlists]]
+description = "useNotificationBells.ts 的 localStorage 键名(历史提交 ×2)"
+regexTarget = "match"
+regexes = ['''notification-bells-v1''']
+
+[[allowlists]]
+description = "NestJS 脚手架模板 README 的 badge token 占位符(7c4b382f)"
+regexTarget = "match"
+regexes = ['''token=abc123def456''']

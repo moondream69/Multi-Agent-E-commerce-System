@@ -1,0 +1,21 @@
+# 全历史密钥扫描。豁免清单见 .gitleaks.toml(3 处已核误报;
+# 2026-09-18 全量扫描 168 提交 / 6.58MB 为 0 真实密钥)。
+name: gitleaks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 全历史:gitleaks 需要完整提交图
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 个人账号无需 GITLEAKS_LICENSE
+          GITLEAKS_CONFIG: .gitleaks.toml
