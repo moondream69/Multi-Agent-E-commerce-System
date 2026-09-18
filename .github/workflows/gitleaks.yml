@@ -1,10 +1,13 @@
-# 全历史密钥扫描。豁免清单见 .gitleaks.toml(3 处已核误报;
-# 2026-09-18 全量扫描 168 提交 / 6.58MB 为 0 真实密钥)。
+# 密钥扫描。事件语义(gitleaks-action@v3 源码):push/PR 只扫本次推送范围;
+# 排程与手动触发不带 --log-opts ⇒ 全历史重扫(新规则回溯旧提交)。
+# 豁免清单见 .gitleaks.toml(3 处已核误报;2026-09-18 全量扫描 168 提交 / 6.58MB 为 0 真实密钥)。
 name: gitleaks
 
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 3 * * 1" # 每周一 03:17 UTC:全历史重扫
   workflow_dispatch:
 
 jobs:
@@ -14,8 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 全历史:gitleaks 需要完整提交图
+          fetch-depth: 0 # 全历史可得(增量/全量的取舍由 action 按事件决定)
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 个人账号无需 GITLEAKS_LICENSE
           GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: 8.30.1 # 钉在本地实证过的版本(格式不带 v)
